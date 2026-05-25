@@ -37,6 +37,12 @@ def load_pbp(season: int) -> pd.DataFrame:
         "passing_yards", "rushing_yards", "receiving_yards",
         "pass_touchdown", "rush_touchdown",
         "interception", "fumble_lost",
+        "complete_pass", "pass_attempt", "rush_attempt",
+        "first_down",
+        "air_yards",
+        "third_down_converted", "third_down_failed",
+        "fourth_down_converted", "fourth_down_failed",
+        "goal_to_go", "yardline_100",
     ]
     df = nfl.import_pbp_data([season], columns=cols, downcast=True)
     return df
@@ -107,20 +113,139 @@ def boxscore(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+def _rate(num: float, den: float) -> float:
+    return num / den if den > 0 else float("nan")
+
+
 def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
-    """Basic offensive team stats so far."""
-    rows = []
+    """Advanced offensive team stats, returned as a transposed comparison table.
+
+    Rows are stat names; columns are [away, home] team abbreviations.
+    """
+    stats: dict[str, list] = {}
+
     for team in [away, home]:
         td = revealed[revealed["posteam"] == team]
-        passing = int(td["passing_yards"].fillna(0).sum())
-        rushing = int(td["rushing_yards"].fillna(0).sum())
-        plays = int(((td["play_type"].isin(["pass", "run"]))).sum())
+
+        pass_mask = td["pass_attempt"].fillna(0) == 1
+        rush_mask = td["rush_attempt"].fillna(0) == 1
+        scrimmage_mask = pass_mask | rush_mask
+
+        pass_plays = int(pass_mask.sum())
+        rush_plays = int(rush_mask.sum())
+        total_plays = int(scrimmage_mask.sum())
+
+        pass_yds = int(td["passing_yards"].fillna(0).sum())
+        rush_yds = int(td["rushing_yards"].fillna(0).sum())
+
+        cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
+        adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
+
+        pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
+        rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
+        total_epa = td.loc[scrimmage_mask, "epa"].fillna(0).sum()
+
+        pass_sr = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
+        rush_sr = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
+
+        first_downs = td.loc[scrimmage_mask, "first_down"].fillna(0).sum()
+
+        third_conv = td["third_down_converted"].fillna(0).sum()
+        third_fail = td["third_down_failed"].fillna(0).sum()
+
+        rz_mask = scrimmage_mask & (td["yardline_100"].fillna(100) <= 20)
+        rz_plays = int(rz_mask.sum())
+        rz_td = td.loc[rz_mask, "touchdown"].fillna(0).sum()
+
         tos = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
-        epa = round(float(td["epa"].fillna(0).sum()), 2)
-        rows.append({"Team": team, "Plays": plays, "Pass Yds": passing,
-                     "Rush Yds": rushing, "Total Yds": passing + rushing,
-                     "Turnovers": tos, "Total EPA": epa})
-    return pd.DataFrame(rows)
+
+        col = [
+            total_plays,
+            pass_plays,
+            rush_plays,
+            pass_yds,
+            rush_yds,
+            pass_yds + rush_yds,
+            _rate(cmp, pass_plays),
+            adot if not pd.isna(adot) else float("nan"),
+            _rate(pass_epa, pass_plays),
+            _rate(rush_epa, rush_plays),
+            _rate(total_epa, total_plays),
+            _rate(pass_sr, pass_plays),
+            _rate(rush_sr, rush_plays),
+            _rate(first_downs, total_plays),
+            _rate(third_conv, third_conv + third_fail),
+            _rate(rz_td, rz_plays),
+            tos,
+        ]
+        stats[team] = col
+
+    index = [
+        "Plays", "Pass Plays", "Rush Plays",
+        "Pass Yds", "Rush Yds", "Total Yds",
+        "CMP%", "aDoT",
+        "Pass EPA/play", "Rush EPA/play", "EPA/play",
+        "Pass SR", "Rush SR",
+        "1st Down %", "3rd Down %", "RZ TD%",
+        "Turnovers",
+    ]
+    return pd.DataFrame(stats, index=index)
+
+
+# EPA/play columns — used by styler to pick color direction
+_EPA_ROWS = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
+# Rate rows where higher = better (0-1 scale)
+_RATE_ROWS = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_PCT_FORMAT_ROWS = _RATE_ROWS
+_EPA_FORMAT_ROWS = _EPA_ROWS
+
+
+def style_stat_table(df: pd.DataFrame, away: str, home: str):
+    """Return a pandas Styler with color-coded EPA and formatted rate columns."""
+
+    def _color_epa(val):
+        if pd.isna(val):
+            return ""
+        if val > 0:
+            return "background-color: #d4edda; color: #155724"
+        if val < 0:
+            return "background-color: #f8d7da; color: #721c24"
+        return ""
+
+    def _color_sr(val):
+        if pd.isna(val):
+            return ""
+        if val >= 0.50:
+            return "background-color: #d4edda; color: #155724"
+        if val <= 0.40:
+            return "background-color: #f8d7da; color: #721c24"
+        return ""
+
+    fmt: dict[str, str] = {}
+    for row in df.index:
+        if row in _PCT_FORMAT_ROWS:
+            fmt[row] = "{:.1%}"
+        elif row in _EPA_FORMAT_ROWS:
+            fmt[row] = "{:+.2f}"
+        elif row == "aDoT":
+            fmt[row] = "{:.1f}"
+        else:
+            fmt[row] = "{:.0f}"
+
+    styled = df.style.format(fmt, na_rep="—")
+
+    for row in _EPA_ROWS:
+        if row in df.index:
+            styled = styled.applymap(_color_epa, subset=pd.IndexSlice[row, :])
+    for row in _RATE_ROWS:
+        if row in df.index:
+            styled = styled.applymap(_color_sr, subset=pd.IndexSlice[row, :])
+
+    styled = styled.set_properties(**{"text-align": "right"})
+    styled = styled.set_table_styles(
+        [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+    )
+    return styled
 
 
 def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.DataFrame:
@@ -271,7 +396,8 @@ st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_widt
 
 # ---------- Team stats ----------
 st.subheader("Team stats")
-st.dataframe(team_stats(revealed, home, away), hide_index=True, use_container_width=True)
+stat_df = team_stats(revealed, home, away)
+st.dataframe(style_stat_table(stat_df, away, home), use_container_width=True)
 
 # ---------- Player leaders ----------
 if not hide_leaders:
