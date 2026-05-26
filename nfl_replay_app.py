@@ -285,6 +285,9 @@ with st.sidebar:
             st.stop()
 
     games = list_games(pbp)
+    if games.empty:
+        st.warning(f"No games found for the {int(season)} season yet.")
+        st.stop()
     game_label = st.selectbox("Game", games["label"].tolist())
     game_id = games.loc[games["label"] == game_label, "game_id"].iloc[0]
 
