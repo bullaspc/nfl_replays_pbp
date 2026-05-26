@@ -1,5 +1,5 @@
+setuptools>=68.0.0
 streamlit
 nfl_data_py
 pandas
 plotly
-setuptools>=68.0.0
