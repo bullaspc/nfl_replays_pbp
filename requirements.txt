@@ -2,4 +2,4 @@ streamlit
 nfl_data_py
 pandas
 plotly
-setuptools
+setuptools>=68.0.0
