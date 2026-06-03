@@ -436,13 +436,27 @@ if not hide_wp:
 
 # ---------- Recent plays ----------
 st.subheader("Recent plays")
+_recent_raw = revealed.tail(15).copy()
+_recent_raw["Type"] = _recent_raw.apply(
+    lambda r: "Pass" if r["pass_attempt"] == 1 else ("Run" if r["rush_attempt"] == 1 else ""),
+    axis=1,
+)
 if hide_descriptions:
-    recent = revealed.tail(15)[["qtr", "time", "posteam", "yards_gained", "epa"]]
-    recent.columns = ["Q", "Clock", "Off", "Yds", "EPA"]
+    recent = _recent_raw[["qtr", "time", "posteam", "Type", "yards_gained", "epa"]].copy()
+    recent.columns = ["Q", "Clock", "Off", "Type", "Yds", "EPA"]
 else:
-    recent = revealed.tail(15)[["qtr", "time", "posteam", "desc", "yards_gained", "epa"]]
-    recent.columns = ["Q", "Clock", "Off", "Description", "Yds", "EPA"]
-st.dataframe(recent.iloc[::-1], hide_index=True, use_container_width=True)
+    recent = _recent_raw[["qtr", "time", "posteam", "Type", "desc", "yards_gained", "epa"]].copy()
+    recent.columns = ["Q", "Clock", "Off", "Type", "Description", "Yds", "EPA"]
+recent = recent.iloc[::-1]
+
+def _style_recent(row):
+    if row["Type"] == "Pass":
+        return ["background-color: #dce8f5"] * len(row)
+    if row["Type"] == "Run":
+        return ["background-color: #fde8cc"] * len(row)
+    return [""] * len(row)
+
+st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
 
 # ---------- Auto-refresh ----------
 if auto:
