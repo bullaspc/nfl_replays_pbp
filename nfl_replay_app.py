@@ -459,14 +459,16 @@ recent = recent.iloc[::-1]
 def _style_recent(row):
     t = row["Type"]
     if t.startswith("4th"):
-        return ["background-color: #f8d7da"] * len(row)
-    if t.startswith("3rd"):
-        return ["background-color: #fff3cd"] * len(row)
-    if "Pass" in t:
-        return ["background-color: #dce8f5"] * len(row)
-    if "Run" in t:
-        return ["background-color: #fde8cc"] * len(row)
-    return [""] * len(row)
+        bg = "#f8d7da"
+    elif t.startswith("3rd"):
+        bg = "#fff3cd"
+    elif "Pass" in t:
+        bg = "#dce8f5"
+    elif "Run" in t:
+        bg = "#fde8cc"
+    else:
+        bg = "#ffffff"
+    return [f"background-color: {bg}; color: #000000"] * len(row)
 
 st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
 
