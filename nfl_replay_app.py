@@ -221,18 +221,17 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str):
             return "background-color: #f8d7da; color: #721c24"
         return ""
 
-    fmt: dict[str, str] = {}
+    styled = df.style
     for row in df.index:
         if row in _PCT_FORMAT_ROWS:
-            fmt[row] = "{:.1%}"
+            fmt_str = "{:.1%}"
         elif row in _EPA_FORMAT_ROWS:
-            fmt[row] = "{:+.2f}"
+            fmt_str = "{:+.2f}"
         elif row == "aDoT":
-            fmt[row] = "{:.1f}"
+            fmt_str = "{:.1f}"
         else:
-            fmt[row] = "{:.0f}"
-
-    styled = df.style.format(fmt, na_rep="—")
+            fmt_str = "{:.0f}"
+        styled = styled.format(fmt_str, subset=pd.IndexSlice[row, :], na_rep="—")
 
     for row in _EPA_ROWS:
         if row in df.index:
