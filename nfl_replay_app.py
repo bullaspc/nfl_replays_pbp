@@ -28,7 +28,7 @@ def load_pbp(season: int) -> pd.DataFrame:
     cols = [
         "game_id", "season", "week", "game_date", "home_team", "away_team",
         "posteam", "defteam", "qtr", "time", "game_seconds_remaining",
-        "play_id", "desc", "play_type", "yards_gained",
+        "play_id", "desc", "play_type", "down", "yards_gained",
         "touchdown", "field_goal_result", "extra_point_result",
         "two_point_conv_result", "safety", "sp",
         "total_home_score", "total_away_score",
@@ -437,10 +437,17 @@ if not hide_wp:
 # ---------- Recent plays ----------
 st.subheader("Recent plays")
 _recent_raw = revealed.tail(15).copy()
-_recent_raw["Type"] = _recent_raw.apply(
-    lambda r: "Pass" if r["pass_attempt"] == 1 else ("Run" if r["rush_attempt"] == 1 else ""),
-    axis=1,
-)
+def _play_type_label(r) -> str:
+    down = r["down"]
+    is_pass = r["pass_attempt"] == 1
+    is_run = r["rush_attempt"] == 1
+    play_kind = "Pass" if is_pass else ("Run" if is_run else "")
+    if down in (3, 4):
+        prefix = f"{int(down)}rd" if down == 3 else "4th"
+        return f"{prefix} & {play_kind}" if play_kind else prefix
+    return play_kind
+
+_recent_raw["Type"] = _recent_raw.apply(_play_type_label, axis=1)
 if hide_descriptions:
     recent = _recent_raw[["qtr", "time", "posteam", "Type", "yards_gained", "epa"]].copy()
     recent.columns = ["Q", "Clock", "Off", "Type", "Yds", "EPA"]
@@ -450,9 +457,14 @@ else:
 recent = recent.iloc[::-1]
 
 def _style_recent(row):
-    if row["Type"] == "Pass":
+    t = row["Type"]
+    if t.startswith("4th"):
+        return ["background-color: #f8d7da"] * len(row)
+    if t.startswith("3rd"):
+        return ["background-color: #fff3cd"] * len(row)
+    if "Pass" in t:
         return ["background-color: #dce8f5"] * len(row)
-    if row["Type"] == "Run":
+    if "Run" in t:
         return ["background-color: #fde8cc"] * len(row)
     return [""] * len(row)
 
