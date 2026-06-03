@@ -28,7 +28,7 @@ def load_pbp(season: int) -> pd.DataFrame:
     cols = [
         "game_id", "season", "week", "game_date", "home_team", "away_team",
         "posteam", "defteam", "qtr", "time", "game_seconds_remaining",
-        "play_id", "desc", "play_type", "yards_gained",
+        "play_id", "desc", "play_type", "down", "yards_gained",
         "touchdown", "field_goal_result", "extra_point_result",
         "two_point_conv_result", "safety", "sp",
         "total_home_score", "total_away_score",
@@ -221,18 +221,17 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str):
             return "background-color: #f8d7da; color: #721c24"
         return ""
 
-    fmt: dict[str, str] = {}
+    styled = df.style
     for row in df.index:
         if row in _PCT_FORMAT_ROWS:
-            fmt[row] = "{:.1%}"
+            fmt_str = "{:.1%}"
         elif row in _EPA_FORMAT_ROWS:
-            fmt[row] = "{:+.2f}"
+            fmt_str = "{:+.2f}"
         elif row == "aDoT":
-            fmt[row] = "{:.1f}"
+            fmt_str = "{:.1f}"
         else:
-            fmt[row] = "{:.0f}"
-
-    styled = df.style.format(fmt, na_rep="—")
+            fmt_str = "{:.0f}"
+        styled = styled.format(fmt_str, subset=pd.IndexSlice[row, :], na_rep="—")
 
     for row in _EPA_ROWS:
         if row in df.index:
@@ -437,13 +436,39 @@ if not hide_wp:
 
 # ---------- Recent plays ----------
 st.subheader("Recent plays")
+_recent_raw = revealed.tail(15).copy()
+def _play_type_label(r) -> str:
+    down = r["down"]
+    is_pass = r["pass_attempt"] == 1
+    is_run = r["rush_attempt"] == 1
+    play_kind = "Pass" if is_pass else ("Run" if is_run else "")
+    if down in (3, 4):
+        prefix = f"{int(down)}rd" if down == 3 else "4th"
+        return f"{prefix} & {play_kind}" if play_kind else prefix
+    return play_kind
+
+_recent_raw["Type"] = _recent_raw.apply(_play_type_label, axis=1)
 if hide_descriptions:
-    recent = revealed.tail(15)[["qtr", "time", "posteam", "yards_gained", "epa"]]
-    recent.columns = ["Q", "Clock", "Off", "Yds", "EPA"]
+    recent = _recent_raw[["qtr", "time", "posteam", "Type", "yards_gained", "epa"]].copy()
+    recent.columns = ["Q", "Clock", "Off", "Type", "Yds", "EPA"]
 else:
-    recent = revealed.tail(15)[["qtr", "time", "posteam", "desc", "yards_gained", "epa"]]
-    recent.columns = ["Q", "Clock", "Off", "Description", "Yds", "EPA"]
-st.dataframe(recent.iloc[::-1], hide_index=True, use_container_width=True)
+    recent = _recent_raw[["qtr", "time", "posteam", "Type", "desc", "yards_gained", "epa"]].copy()
+    recent.columns = ["Q", "Clock", "Off", "Type", "Description", "Yds", "EPA"]
+recent = recent.iloc[::-1]
+
+def _style_recent(row):
+    t = row["Type"]
+    if t.startswith("4th"):
+        return ["background-color: #f8d7da"] * len(row)
+    if t.startswith("3rd"):
+        return ["background-color: #fff3cd"] * len(row)
+    if "Pass" in t:
+        return ["background-color: #dce8f5"] * len(row)
+    if "Run" in t:
+        return ["background-color: #fde8cc"] * len(row)
+    return [""] * len(row)
+
+st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
 
 # ---------- Auto-refresh ----------
 if auto:
