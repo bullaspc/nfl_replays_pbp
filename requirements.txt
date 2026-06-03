@@ -3,3 +3,4 @@ streamlit
 nfl_data_py
 pandas
 plotly
+streamlit-autorefresh

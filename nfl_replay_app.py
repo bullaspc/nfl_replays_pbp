@@ -17,6 +17,7 @@ import streamlit as st
 import pandas as pd
 import nfl_data_py as nfl
 import plotly.express as px
+from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timedelta, time
 
 st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="🏈")
@@ -305,12 +306,17 @@ with st.sidebar:
         start_dt = datetime.combine(start_date, start_time)
         viewing_minutes = max((datetime.now() - start_dt).total_seconds() / 60.0, 0.0)
         elapsed_s = elapsed_game_seconds(viewing_minutes)
+        auto = st.checkbox("Auto-refresh every 30s", value=False,
+                           help="Recalculates your position from the clock every 30 seconds.")
+        if auto:
+            st_autorefresh(interval=30_000, key="autorefresh")
 
     elif mode == "I'm X minutes into the broadcast":
         viewing_minutes = st.number_input("Minutes into broadcast",
                                           min_value=0.0, max_value=240.0,
                                           value=30.0, step=1.0)
         elapsed_s = elapsed_game_seconds(viewing_minutes)
+        auto = False
 
     else:  # Jump to a specific game clock
         # Game clock counts DOWN within each quarter from 15:00 to 0:00
@@ -332,12 +338,10 @@ with st.sidebar:
         elapsed_s = completed_qtrs * 900 + (900 - remaining_in_qtr)
         # Derive an approximate viewing-minutes equivalent just for the caption
         viewing_minutes = (elapsed_s / 3600.0) * 190.0
+        auto = False
 
     st.caption(f"⏱ Game time elapsed: **{elapsed_s/60:.1f} min** "
                f"(≈ {viewing_minutes:.1f} broadcast min)")
-    auto = st.checkbox("Auto-refresh every 30s", value=False)
-    if auto:
-        st.experimental_rerun if False else None  # placeholder; see note below
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
@@ -472,8 +476,3 @@ def _style_recent(row):
 
 st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
 
-# ---------- Auto-refresh ----------
-if auto:
-    import time as _t
-    _t.sleep(30)
-    st.rerun()
