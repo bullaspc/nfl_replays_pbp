@@ -315,8 +315,18 @@ with st.sidebar:
         viewing_minutes = st.number_input("Minutes into broadcast",
                                           min_value=0.0, max_value=240.0,
                                           value=30.0, step=1.0)
-        elapsed_s = elapsed_game_seconds(viewing_minutes)
-        auto = False
+        baseline_elapsed = elapsed_game_seconds(viewing_minutes)
+        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        if auto:
+            # If baseline changed, reset the advancing position to the new input.
+            if st.session_state.get("_fix_baseline") != round(baseline_elapsed):
+                st.session_state["_fix_elapsed"] = baseline_elapsed
+                st.session_state["_fix_baseline"] = round(baseline_elapsed)
+            elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
+            viewing_minutes = (elapsed_s / 3600.0) * 190.0
+            st_autorefresh(interval=30_000, key="autorefresh")
+        else:
+            elapsed_s = baseline_elapsed
 
     else:  # Jump to a specific game clock
         # Game clock counts DOWN within each quarter from 15:00 to 0:00
@@ -335,10 +345,19 @@ with st.sidebar:
         # Game seconds elapsed = full quarters completed * 900 + (900 - remaining)
         # OT in pbp is qtr=5; treat it as starting after Q4 ends.
         completed_qtrs = qtr_idx - 1
-        elapsed_s = completed_qtrs * 900 + (900 - remaining_in_qtr)
+        baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
+        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        if auto:
+            _baseline_key = (qtr_pick, clock_str)
+            if st.session_state.get("_fix_baseline") != _baseline_key:
+                st.session_state["_fix_elapsed"] = baseline_elapsed
+                st.session_state["_fix_baseline"] = _baseline_key
+            elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
+            st_autorefresh(interval=30_000, key="autorefresh")
+        else:
+            elapsed_s = baseline_elapsed
         # Derive an approximate viewing-minutes equivalent just for the caption
         viewing_minutes = (elapsed_s / 3600.0) * 190.0
-        auto = False
 
     st.caption(f"⏱ Game time elapsed: **{elapsed_s/60:.1f} min** "
                f"(≈ {viewing_minutes:.1f} broadcast min)")
@@ -475,4 +494,14 @@ def _style_recent(row):
     return [f"background-color: {bg}; color: #000000"] * len(row)
 
 st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
+
+# ---------- Auto-advance to next play ----------
+# For fixed-position modes, advance session_state to the next play's timestamp so
+# the next st_autorefresh tick reveals exactly one more play.
+if auto and mode != "I started the broadcast at...":
+    _cur = float(st.session_state.get("_fix_elapsed", 0.0))
+    _played_at = 3600 - pbp_game["game_seconds_remaining"].fillna(3600)
+    _future = _played_at[_played_at > _cur + 0.5]
+    if not _future.empty:
+        st.session_state["_fix_elapsed"] = float(_future.min())
 
