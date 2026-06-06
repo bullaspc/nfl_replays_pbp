@@ -472,7 +472,21 @@ def _style_plays(row):
         bg = "#ffffff"
     return [f"background-color: {bg}; color: #000000"] * len(row)
 
-_EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
+def _render_plays_table(df: pd.DataFrame) -> None:
+    """Render a plays DataFrame as HTML so Description text wraps on mobile."""
+    styler = df.style.apply(_style_plays, axis=1).format({"EPA": "{:.2f}"}, na_rep="")
+    if "Description" in df.columns:
+        styler = styler.set_properties(
+            subset=["Description"],
+            **{"white-space": "normal", "word-break": "break-word",
+               "min-width": "140px", "max-width": "340px"}
+        )
+    styler = styler.hide(axis="index")
+    st.markdown(
+        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">'
+        f"{styler.to_html()}</div>",
+        unsafe_allow_html=True,
+    )
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
@@ -491,11 +505,7 @@ if not revealed.empty:
 
     _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
     recent_df = _build_plays_df(_slice, hide_descriptions, reverse=False)
-    st.dataframe(
-        recent_df.style.apply(_style_plays, axis=1),
-        hide_index=True, use_container_width=True,
-        column_config=_EPA_COL_CFG,
-    )
+    _render_plays_table(recent_df)
     col_prev, col_info, col_next = st.columns([1, 4, 1])
     with col_prev:
         if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
@@ -517,11 +527,7 @@ if not revealed.empty:
     if _cur_drive is not None:
         _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
-        st.dataframe(
-            drive_df.style.apply(_style_plays, axis=1),
-            hide_index=True, use_container_width=True,
-            column_config=_EPA_COL_CFG,
-        )
+        _render_plays_table(drive_df)
     else:
         st.caption("No drive data available.")
 else:
