@@ -252,20 +252,22 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     """Leaders for a team so far."""
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
-        g = td.groupby("passer_player_name", as_index=False).agg(
+        g = td[td["pass_attempt"] == 1].groupby("passer_player_name", as_index=False).agg(
             Yds=("passing_yards", "sum"), TD=("pass_touchdown", "sum"),
-            INT=("interception", "sum"))
+            INT=("interception", "sum"), EPA=("epa", "sum"))
         g = g.rename(columns={"passer_player_name": "Player"})
     elif kind == "rushing":
-        g = td.groupby("rusher_player_name", as_index=False).agg(
-            Yds=("rushing_yards", "sum"), TD=("rush_touchdown", "sum"))
+        g = td[td["rush_attempt"] == 1].groupby("rusher_player_name", as_index=False).agg(
+            Yds=("rushing_yards", "sum"), TD=("rush_touchdown", "sum"), EPA=("epa", "sum"))
         g = g.rename(columns={"rusher_player_name": "Player"})
     else:  # receiving
-        g = td.groupby("receiver_player_name", as_index=False).agg(
-            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"))
+        g = td[td["receiving_yards"].notna()].groupby("receiver_player_name", as_index=False).agg(
+            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"), EPA=("epa", "sum"))
         g = g.rename(columns={"receiver_player_name": "Player"})
     g = g.dropna(subset=["Player"])
-    g[g.select_dtypes("number").columns] = g.select_dtypes("number").astype(int)
+    int_cols = [c for c in g.select_dtypes("number").columns if c != "EPA"]
+    g[int_cols] = g[int_cols].astype(int)
+    g["EPA"] = g["EPA"].round(2)
     return g.sort_values("Yds", ascending=False).head(n)
 
 
@@ -415,29 +417,6 @@ if blur_until_ready:
 
 st.divider()
 
-# ---------- Boxscore ----------
-st.subheader("Boxscore")
-st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_width=True)
-
-# ---------- Team stats ----------
-st.subheader("Team stats")
-stat_df = team_stats(revealed, home, away)
-st.dataframe(style_stat_table(stat_df, away, home), use_container_width=True)
-
-# ---------- Player leaders ----------
-if not hide_leaders:
-    st.subheader("Player leaders")
-    col_a, col_h = st.columns(2)
-    for col, team in [(col_a, away), (col_h, home)]:
-        with col:
-            st.markdown(f"**{team}**")
-            st.caption("Passing"); st.dataframe(top_players(revealed, team, "passing"),
-                                                hide_index=True, use_container_width=True)
-            st.caption("Rushing"); st.dataframe(top_players(revealed, team, "rushing"),
-                                                hide_index=True, use_container_width=True)
-            st.caption("Receiving"); st.dataframe(top_players(revealed, team, "receiving"),
-                                                  hide_index=True, use_container_width=True)
-
 # ---------- Shared plays helpers ----------
 def _play_type_label(r) -> str:
     down = r["down"]
@@ -459,7 +438,7 @@ def _success_emoji(r) -> str:
         return "✅"
     return ""
 
-def _build_plays_df(raw: pd.DataFrame, hide_desc: bool) -> pd.DataFrame:
+def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) -> pd.DataFrame:
     raw = raw.copy()
     raw["Type"] = raw.apply(_play_type_label, axis=1)
     raw["D&D"] = raw.apply(_down_distance, axis=1)
@@ -475,7 +454,7 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool) -> pd.DataFrame:
         df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Description", "Yds", "EPA"]
     df["Yds"] = pd.to_numeric(df["Yds"], errors="coerce").fillna(0).astype(int)
     df["EPA"] = pd.to_numeric(df["EPA"], errors="coerce").round(2)
-    return df.iloc[::-1]
+    return df.iloc[::-1] if reverse else df
 
 def _style_plays(row):
     t = row["Type"]
@@ -491,18 +470,79 @@ def _style_plays(row):
         bg = "#ffffff"
     return [f"background-color: {bg}; color: #000000"] * len(row)
 
-# ---------- Current drive (2nd table) ----------
+_EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
+
+# ---------- Boxscore ----------
+st.subheader("Boxscore")
+st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_width=True)
+
+# ---------- Recent plays (with pagination) ----------
+st.subheader("Recent plays")
+if not revealed.empty:
+    _PAGE_SIZE = 15
+    _all_rev = revealed.iloc[::-1].copy()
+    _total_plays = len(_all_rev)
+    _total_pages = max(1, (_total_plays + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    if "recent_plays_page" not in st.session_state:
+        st.session_state.recent_plays_page = 1
+    _page = min(int(st.session_state.recent_plays_page), _total_pages)
+
+    _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
+    recent_df = _build_plays_df(_slice, hide_descriptions, reverse=False)
+    st.dataframe(
+        recent_df.style.apply(_style_plays, axis=1),
+        hide_index=True, use_container_width=True,
+        column_config=_EPA_COL_CFG,
+    )
+    col_prev, col_info, col_next = st.columns([1, 4, 1])
+    with col_prev:
+        if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
+            st.session_state.recent_plays_page = _page - 1
+            st.rerun()
+    with col_info:
+        st.caption(f"Page {_page} of {_total_pages}  ({_total_plays} plays total)")
+    with col_next:
+        if st.button("Next ▶", disabled=(_page >= _total_pages), key="next_plays"):
+            st.session_state.recent_plays_page = _page + 1
+            st.rerun()
+else:
+    st.caption("No plays revealed yet.")
+
+# ---------- Current drive ----------
 st.subheader("Current drive")
 if not revealed.empty:
     _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
     if _cur_drive is not None:
         _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
-        st.dataframe(drive_df.style.apply(_style_plays, axis=1), hide_index=True, use_container_width=True)
+        st.dataframe(
+            drive_df.style.apply(_style_plays, axis=1),
+            hide_index=True, use_container_width=True,
+            column_config=_EPA_COL_CFG,
+        )
     else:
         st.caption("No drive data available.")
 else:
     st.caption("No plays revealed yet.")
+
+# ---------- Team stats ----------
+st.subheader("Team stats")
+stat_df = team_stats(revealed, home, away)
+st.dataframe(style_stat_table(stat_df, away, home), use_container_width=True)
+
+# ---------- Player leaders ----------
+if not hide_leaders:
+    st.subheader("Player leaders")
+    col_a, col_h = st.columns(2)
+    for col, team in [(col_a, away), (col_h, home)]:
+        with col:
+            st.markdown(f"**{team}**")
+            st.caption("Passing"); st.dataframe(top_players(revealed, team, "passing"),
+                                                hide_index=True, use_container_width=True)
+            st.caption("Rushing"); st.dataframe(top_players(revealed, team, "rushing"),
+                                                hide_index=True, use_container_width=True)
+            st.caption("Receiving"); st.dataframe(top_players(revealed, team, "receiving"),
+                                                  hide_index=True, use_container_width=True)
 
 # ---------- Win probability chart ----------
 if not hide_wp:
@@ -522,15 +562,6 @@ if not hide_wp:
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
         st.plotly_chart(fig, use_container_width=True)
-
-# ---------- Recent plays (3rd table) ----------
-st.subheader("Recent plays")
-if not revealed.empty:
-    _recent_raw = revealed.tail(15).copy()
-    recent = _build_plays_df(_recent_raw, hide_descriptions)
-    st.dataframe(recent.style.apply(_style_plays, axis=1), hide_index=True, use_container_width=True)
-else:
-    st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
 # For fixed-position modes, advance session_state to the next play's timestamp so
