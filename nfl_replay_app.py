@@ -82,8 +82,10 @@ def elapsed_game_seconds(viewing_minutes: float) -> float:
 def filter_revealed(pbp_game: pd.DataFrame, elapsed_game_s: float) -> pd.DataFrame:
     """Keep only plays that have happened by 'elapsed_game_s' of game time."""
     # game_seconds_remaining counts DOWN from 3600 at kickoff to 0 at final whistle
-    # So a play has happened iff (3600 - game_seconds_remaining) <= elapsed_game_s
-    played_at = 3600 - pbp_game["game_seconds_remaining"].fillna(3600)
+    # Null-clock rows (timeouts, end-of-period admin plays) inherit the nearest
+    # real clock value so they aren't accidentally always-revealed.
+    clock = pbp_game["game_seconds_remaining"].ffill().bfill().fillna(3600)
+    played_at = 3600 - clock
     return pbp_game[played_at <= elapsed_game_s].copy()
 
 
