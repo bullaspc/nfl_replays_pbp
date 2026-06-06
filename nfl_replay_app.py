@@ -29,7 +29,7 @@ def load_pbp(season: int) -> pd.DataFrame:
     cols = [
         "game_id", "season", "week", "game_date", "home_team", "away_team",
         "posteam", "defteam", "qtr", "time", "game_seconds_remaining",
-        "play_id", "desc", "play_type", "down", "yards_gained",
+        "play_id", "desc", "play_type", "down", "ydstogo", "yards_gained",
         "touchdown", "field_goal_result", "extra_point_result",
         "two_point_conv_result", "safety", "sp",
         "total_home_score", "total_away_score",
@@ -43,7 +43,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "air_yards",
         "third_down_converted", "third_down_failed",
         "fourth_down_converted", "fourth_down_failed",
-        "goal_to_go", "yardline_100",
+        "goal_to_go", "yardline_100", "drive",
     ]
     df = nfl.import_pbp_data([season], columns=cols, downcast=True)
     return df
@@ -438,6 +438,70 @@ if not hide_leaders:
             st.caption("Receiving"); st.dataframe(top_players(revealed, team, "receiving"),
                                                   hide_index=True, use_container_width=True)
 
+# ---------- Shared plays helpers ----------
+def _play_type_label(r) -> str:
+    down = r["down"]
+    is_pass = r["pass_attempt"] == 1
+    is_run = r["rush_attempt"] == 1
+    play_kind = "Pass" if is_pass else ("Run" if is_run else "")
+    if pd.notna(down) and down in (3, 4):
+        prefix = f"{int(down)}rd" if down == 3 else "4th"
+        return f"{prefix} & {play_kind}" if play_kind else prefix
+    return play_kind
+
+def _down_distance(r) -> str:
+    if pd.notna(r["down"]) and pd.notna(r["ydstogo"]):
+        return f"{int(r['down'])} & {int(r['ydstogo'])}"
+    return ""
+
+def _success_emoji(r) -> str:
+    if pd.notna(r["epa"]) and r["epa"] > 0:
+        return "✅"
+    return ""
+
+def _build_plays_df(raw: pd.DataFrame, hide_desc: bool) -> pd.DataFrame:
+    raw = raw.copy()
+    raw["Type"] = raw.apply(_play_type_label, axis=1)
+    raw["D&D"] = raw.apply(_down_distance, axis=1)
+    raw[""] = raw.apply(_success_emoji, axis=1)
+    raw["Q"] = raw["qtr"].apply(lambda x: int(x) if pd.notna(x) else "")
+    if hide_desc:
+        cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "yards_gained", "epa"]
+        df = raw[cols_sel].copy()
+        df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Yds", "EPA"]
+    else:
+        cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "desc", "yards_gained", "epa"]
+        df = raw[cols_sel].copy()
+        df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Description", "Yds", "EPA"]
+    return df.iloc[::-1]
+
+def _style_plays(row):
+    t = row["Type"]
+    if t.startswith("4th"):
+        bg = "#f8d7da"
+    elif t.startswith("3rd"):
+        bg = "#fff3cd"
+    elif "Pass" in t:
+        bg = "#dce8f5"
+    elif "Run" in t:
+        bg = "#fde8cc"
+    else:
+        bg = "#ffffff"
+    return [f"background-color: {bg}; color: #000000"] * len(row)
+
+# ---------- Current drive (2nd table) ----------
+st.subheader("Current drive")
+if not revealed.empty:
+    _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
+    if _cur_drive is not None:
+        _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
+        drive_df = _build_plays_df(_drive_raw, hide_descriptions)
+        st.dataframe(drive_df.style.apply(_style_plays, axis=1), hide_index=True, use_container_width=True)
+    else:
+        st.caption("No drive data available.")
+else:
+    st.caption("No plays revealed yet.")
+
 # ---------- Win probability chart ----------
 if not hide_wp:
     st.subheader("Win probability")
@@ -457,43 +521,14 @@ if not hide_wp:
         fig.update_xaxes(range=[0, x_cap])
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------- Recent plays ----------
+# ---------- Recent plays (3rd table) ----------
 st.subheader("Recent plays")
-_recent_raw = revealed.tail(15).copy()
-def _play_type_label(r) -> str:
-    down = r["down"]
-    is_pass = r["pass_attempt"] == 1
-    is_run = r["rush_attempt"] == 1
-    play_kind = "Pass" if is_pass else ("Run" if is_run else "")
-    if down in (3, 4):
-        prefix = f"{int(down)}rd" if down == 3 else "4th"
-        return f"{prefix} & {play_kind}" if play_kind else prefix
-    return play_kind
-
-_recent_raw["Type"] = _recent_raw.apply(_play_type_label, axis=1)
-if hide_descriptions:
-    recent = _recent_raw[["qtr", "time", "posteam", "Type", "yards_gained", "epa"]].copy()
-    recent.columns = ["Q", "Clock", "Off", "Type", "Yds", "EPA"]
+if not revealed.empty:
+    _recent_raw = revealed.tail(15).copy()
+    recent = _build_plays_df(_recent_raw, hide_descriptions)
+    st.dataframe(recent.style.apply(_style_plays, axis=1), hide_index=True, use_container_width=True)
 else:
-    recent = _recent_raw[["qtr", "time", "posteam", "Type", "desc", "yards_gained", "epa"]].copy()
-    recent.columns = ["Q", "Clock", "Off", "Type", "Description", "Yds", "EPA"]
-recent = recent.iloc[::-1]
-
-def _style_recent(row):
-    t = row["Type"]
-    if t.startswith("4th"):
-        bg = "#f8d7da"
-    elif t.startswith("3rd"):
-        bg = "#fff3cd"
-    elif "Pass" in t:
-        bg = "#dce8f5"
-    elif "Run" in t:
-        bg = "#fde8cc"
-    else:
-        bg = "#ffffff"
-    return [f"background-color: {bg}; color: #000000"] * len(row)
-
-st.dataframe(recent.style.apply(_style_recent, axis=1), hide_index=True, use_container_width=True)
+    st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
 # For fixed-position modes, advance session_state to the next play's timestamp so
