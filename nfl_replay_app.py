@@ -473,6 +473,8 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool) -> pd.DataFrame:
         cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "desc", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
         df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Description", "Yds", "EPA"]
+    df["Yds"] = pd.to_numeric(df["Yds"], errors="coerce").fillna(0).astype(int)
+    df["EPA"] = pd.to_numeric(df["EPA"], errors="coerce").round(2)
     return df.iloc[::-1]
 
 def _style_plays(row):
