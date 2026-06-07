@@ -691,23 +691,33 @@ if not hide_leaders:
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
-            st.caption("Passing"); st.dataframe(
-                top_players(revealed, team, "passing"),
-                hide_index=True, use_container_width=True,
-                column_config={
-                    "EPA/play": st.column_config.NumberColumn(format="%.2f"),
-                    "SR%": st.column_config.NumberColumn(format="%.1f%%"),
-                    "aDOT": st.column_config.NumberColumn(format="%.1f"),
-                })
-            st.caption("Rushing"); st.dataframe(
-                top_players(revealed, team, "rushing"),
-                hide_index=True, use_container_width=True,
-                column_config={
-                    "EPA/play": st.column_config.NumberColumn(format="%.2f"),
-                    "SR%": st.column_config.NumberColumn(format="%.1f%%"),
-                })
-            st.caption("Receiving"); st.dataframe(top_players(revealed, team, "receiving"),
-                                                  hide_index=True, use_container_width=True)
+            _pass_df = top_players(revealed, team, "passing")
+            st.caption("Passing")
+            if not _pass_df.empty:
+                st.dataframe(_pass_df, hide_index=True, use_container_width=True,
+                             column_config={
+                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                                 "SR%": st.column_config.NumberColumn(format="%.1f%%"),
+                                 "aDOT": st.column_config.NumberColumn(format="%.1f"),
+                             })
+            else:
+                st.caption("No data yet")
+            _rush_df = top_players(revealed, team, "rushing")
+            st.caption("Rushing")
+            if not _rush_df.empty:
+                st.dataframe(_rush_df, hide_index=True, use_container_width=True,
+                             column_config={
+                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                                 "SR%": st.column_config.NumberColumn(format="%.1f%%"),
+                             })
+            else:
+                st.caption("No data yet")
+            _recv_df = top_players(revealed, team, "receiving")
+            st.caption("Receiving")
+            if not _recv_df.empty:
+                st.dataframe(_recv_df, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No data yet")
 
 # ---------- Win probability chart ----------
 if not hide_wp:
