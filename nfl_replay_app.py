@@ -23,6 +23,13 @@ from datetime import datetime, timedelta, time
 st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="🏈")
 
 # ---------- Data loading ----------
+@st.cache_data(ttl=3600)
+def load_team_colors() -> dict[str, str]:
+    """Map team abbreviation → primary hex color."""
+    df = nfl.import_team_desc()
+    return dict(zip(df["team_abbr"], df["team_color"]))
+
+
 @st.cache_data(ttl=120)  # refresh every 2 minutes; pbp updates aren't instant anyway
 def load_pbp(season: int) -> pd.DataFrame:
     """Load play-by-play for a given season."""
@@ -37,7 +44,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "passer_player_name", "rusher_player_name", "receiver_player_name",
         "passing_yards", "rushing_yards", "receiving_yards",
         "pass_touchdown", "rush_touchdown",
-        "interception", "fumble_lost",
+        "interception", "fumble_lost", "sack", "qb_hit",
         "complete_pass", "pass_attempt", "rush_attempt",
         "first_down",
         "air_yards",
@@ -195,6 +202,95 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return pd.DataFrame(stats, index=index)
 
 
+def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
+    """Success rate and EPA/play split by down group × distance × play type."""
+    def _sr(plays) -> float:
+        if plays.empty:
+            return float("nan")
+        return (plays["epa"].fillna(0) > 0).mean() * 100
+
+    def _epa_per_play(plays) -> float:
+        if plays.empty:
+            return float("nan")
+        return plays["epa"].fillna(0).mean()
+
+    situations = [
+        ("Early · Short",  (1, 2), (1,  3)),
+        ("Late · Short",   (3, 4), (1,  3)),
+        ("Early · Medium", (1, 2), (4,  6)),
+        ("Late · Medium",  (3, 4), (4,  6)),
+        ("Early · Long",   (1, 2), (7, 99)),
+        ("Late · Long",    (3, 4), (7, 99)),
+    ]
+
+    rows = []
+    for label, downs, (d_min, d_max) in situations:
+        sit_mask = (
+            revealed["down"].isin(downs) &
+            revealed["ydstogo"].fillna(0).between(d_min, d_max)
+        )
+        for team in [away, home]:
+            tm = revealed[sit_mask & (revealed["posteam"] == team)]
+            pass_plays = tm[tm["pass_attempt"].fillna(0) == 1]
+            rush_plays = tm[tm["rush_attempt"].fillna(0) == 1]
+            rows.append({
+                "Situation": label,
+                "Team": team,
+                "Pass SR%": _sr(pass_plays),
+                "Pass EPA/play": _epa_per_play(pass_plays),
+                "Rush SR%": _sr(rush_plays),
+                "Rush EPA/play": _epa_per_play(rush_plays),
+            })
+
+    df = pd.DataFrame(rows)
+    metrics = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
+    pivot = df.pivot(index="Situation", columns="Team", values=metrics)
+    pivot.columns = [f"{team} {stat}" for stat, team in pivot.columns]
+    col_order = []
+    for team in [away, home]:
+        for m in metrics:
+            col_order.append(f"{team} {m}")
+    pivot = pivot[[c for c in col_order if c in pivot.columns]]
+    pivot.index.name = None
+    return pivot.T
+
+
+def _style_sr_table(df: pd.DataFrame) -> object:
+    def _color_sr(val):
+        if pd.isna(val):
+            return ""
+        if val >= 55:
+            return "background-color: #d4edda; color: #155724"
+        if val <= 40:
+            return "background-color: #f8d7da; color: #721c24"
+        return ""
+
+    def _color_epa(val):
+        if pd.isna(val):
+            return ""
+        if val > 0:
+            return "background-color: #d4edda; color: #155724"
+        if val < 0:
+            return "background-color: #f8d7da; color: #721c24"
+        return ""
+
+    sr_rows  = [r for r in df.index if "SR%"      in r]
+    epa_rows = [r for r in df.index if "EPA/play" in r]
+
+    styled = df.style
+    for r in sr_rows:
+        styled = styled.map(_color_sr,  subset=pd.IndexSlice[r, :]).format("{:.0f}%", subset=pd.IndexSlice[r, :], na_rep="—")
+    for r in epa_rows:
+        styled = styled.map(_color_epa, subset=pd.IndexSlice[r, :]).format("{:+.2f}", subset=pd.IndexSlice[r, :], na_rep="—")
+    return (
+        styled
+        .set_properties(**{"text-align": "right"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
 # EPA/play columns — used by styler to pick color direction
 _EPA_ROWS = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
 # Rate rows where higher = better (0-1 scale)
@@ -238,10 +334,10 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str):
 
     for row in _EPA_ROWS:
         if row in df.index:
-            styled = styled.applymap(_color_epa, subset=pd.IndexSlice[row, :])
+            styled = styled.map(_color_epa, subset=pd.IndexSlice[row, :])
     for row in _RATE_ROWS:
         if row in df.index:
-            styled = styled.applymap(_color_sr, subset=pd.IndexSlice[row, :])
+            styled = styled.map(_color_sr, subset=pd.IndexSlice[row, :])
 
     styled = styled.set_properties(**{"text-align": "right"})
     styled = styled.set_table_styles(
@@ -254,22 +350,40 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     """Leaders for a team so far."""
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
-        g = td[td["pass_attempt"] == 1].groupby("passer_player_name", as_index=False).agg(
-            Yds=("passing_yards", "sum"), TD=("pass_touchdown", "sum"),
-            INT=("interception", "sum"), EPA=("epa", "sum"))
+        pass_td = td[td["pass_attempt"] == 1].copy()
+        pass_td["_success"] = (pass_td["epa"].fillna(0) > 0).astype(int)
+        sr = pass_td.groupby("passer_player_name")["_success"].mean().rename("SR%")
+        g = pass_td.groupby("passer_player_name", as_index=False).agg(
+            Att=("pass_attempt", "sum"), Yds=("passing_yards", "sum"),
+            TD=("pass_touchdown", "sum"), INT=("interception", "sum"),
+            aDOT=("air_yards", "mean"), Sacks=("sack", "sum"), Hits=("qb_hit", "sum"),
+            _epa=("epa", "sum"), _plays=("epa", "count"))
         g = g.rename(columns={"passer_player_name": "Player"})
+        g = g.join(sr, on="Player")
+        g["aDOT"] = g["aDOT"].round(1)
+        g["SR%"] = (g["SR%"] * 100).round(1)
     elif kind == "rushing":
-        g = td[td["rush_attempt"] == 1].groupby("rusher_player_name", as_index=False).agg(
-            Yds=("rushing_yards", "sum"), TD=("rush_touchdown", "sum"), EPA=("epa", "sum"))
+        rush_td = td[td["rush_attempt"] == 1].copy()
+        rush_td["_success"] = (rush_td["epa"].fillna(0) > 0).astype(int)
+        rush_td["_stuffed"] = (rush_td["yards_gained"].fillna(0) <= 0).astype(int)
+        sr = rush_td.groupby("rusher_player_name")["_success"].mean().rename("SR%")
+        g = rush_td.groupby("rusher_player_name", as_index=False).agg(
+            Att=("rush_attempt", "sum"), Yds=("rushing_yards", "sum"),
+            TD=("rush_touchdown", "sum"), Stuffed=("_stuffed", "sum"),
+            _epa=("epa", "sum"), _plays=("epa", "count"))
         g = g.rename(columns={"rusher_player_name": "Player"})
+        g = g.join(sr, on="Player")
+        g["SR%"] = (g["SR%"] * 100).round(1)
     else:  # receiving
         g = td[td["receiving_yards"].notna()].groupby("receiver_player_name", as_index=False).agg(
-            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"), EPA=("epa", "sum"))
+            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"),
+            _epa=("epa", "sum"), _plays=("epa", "count"))
         g = g.rename(columns={"receiver_player_name": "Player"})
     g = g.dropna(subset=["Player"])
-    int_cols = [c for c in g.select_dtypes("number").columns if c != "EPA"]
+    int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
     g[int_cols] = g[int_cols].astype(int)
-    g["EPA"] = g["EPA"].round(2)
+    g["EPA/play"] = (g["_epa"] / g["_plays"]).round(2)
+    g = g.drop(columns=["_epa", "_plays"])
     return g.sort_values("Yds", ascending=False).head(n)
 
 
@@ -391,17 +505,22 @@ elapsed_s = max(float(elapsed_s) - float(safety_margin), 0.0)
 revealed = filter_revealed(pbp_game, elapsed_s)
 
 # Header summary (no future info)
-shown_plays = len(revealed)
 qtr_now = int(revealed["qtr"].iloc[-1]) if not revealed.empty else 1
 game_clock = "—"
 if not revealed.empty and pd.notna(revealed["time"].iloc[-1]):
     game_clock = str(revealed["time"].iloc[-1])
 
-c1, c2, c3, c4 = st.columns(4)
+if not revealed.empty:
+    _last = revealed.iloc[-1]
+    home_score = int(_last["total_home_score"] or 0)
+    away_score = int(_last["total_away_score"] or 0)
+else:
+    home_score = away_score = 0
+
+c1, c2, c3 = st.columns(3)
 c1.metric("Quarter", f"Q{qtr_now}" if qtr_now <= 4 else "OT")
 c2.metric("Game clock (last play)", game_clock)
-c3.metric("Plays revealed", f"{shown_plays}")  # no denominator — would leak OT/blowout
-c4.metric("Game time elapsed", f"{elapsed_s/60:.1f} min")
+c3.metric("Score", f"{away} {away_score}  —  {home_score} {home}")
 
 # ---------- Reveal gate ----------
 if blur_until_ready:
@@ -424,9 +543,10 @@ def _play_type_label(r) -> str:
     down = r["down"]
     is_pass = r["pass_attempt"] == 1
     is_run = r["rush_attempt"] == 1
-    play_kind = "Pass" if is_pass else ("Run" if is_run else "")
+    icon = "🏈 " if is_pass else ("🏃 " if is_run else "")
+    play_kind = f"{icon}Pass" if is_pass else (f"{icon}Run" if is_run else "")
     if pd.notna(down) and down in (3, 4):
-        prefix = f"{int(down)}rd" if down == 3 else "4th"
+        prefix = "3rd" if down == 3 else "4th"
         return f"{prefix} & {play_kind}" if play_kind else prefix
     return play_kind
 
@@ -461,13 +581,9 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
 def _style_plays(row):
     t = row["Type"]
     if t.startswith("4th"):
-        bg = "#f8d7da"
+        bg = "#f5c6cb"
     elif t.startswith("3rd"):
-        bg = "#fff3cd"
-    elif "Pass" in t:
-        bg = "#dce8f5"
-    elif "Run" in t:
-        bg = "#fde8cc"
+        bg = "#ffeeba"
     else:
         bg = "#ffffff"
     return [f"background-color: {bg}; color: #000000"] * len(row)
@@ -480,6 +596,13 @@ st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_widt
 
 # ---------- Recent plays (with pagination) ----------
 st.subheader("Recent plays")
+st.markdown(
+    '<span style="background:#f5c6cb;padding:2px 8px;border-radius:3px;margin-right:6px">4th down</span>'
+    '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
+    '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
+    '<span style="margin-right:6px">✅ Positive EPA</span>',
+    unsafe_allow_html=True,
+)
 if not revealed.empty:
     _PAGE_SIZE = 15
     _all_rev = revealed.iloc[::-1].copy()
@@ -516,6 +639,29 @@ if not revealed.empty:
     _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
     if _cur_drive is not None:
         _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
+
+        # Drive summary stats
+        _scrimmage = _drive_raw[
+            (_drive_raw["pass_attempt"].fillna(0) == 1) |
+            (_drive_raw["rush_attempt"].fillna(0) == 1)
+        ]
+        _drive_plays = len(_scrimmage)
+        _drive_sr = (_scrimmage["epa"].fillna(0) > 0).mean() * 100 if _drive_plays > 0 else float("nan")
+
+        _clocks = _drive_raw["game_seconds_remaining"].dropna()
+        if len(_clocks) >= 2:
+            _top_seconds = int(_clocks.iloc[0] - _clocks.iloc[-1])
+            _top_str = f"{_top_seconds // 60}:{_top_seconds % 60:02d}"
+        else:
+            _top_str = "—"
+
+        _possession_team = _drive_raw["posteam"].iloc[0] if not _drive_raw.empty else "—"
+        _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
+        st.caption(
+            f"**{_possession_team}** · {_drive_plays} plays · "
+            f"Success rate: {_sr_str} · Time of possession: {_top_str}"
+        )
+
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
@@ -532,6 +678,12 @@ st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
 st.dataframe(style_stat_table(stat_df, away, home), use_container_width=True)
 
+# ---------- Situational success rates ----------
+st.subheader("Situational success rates")
+st.caption("Short ≤3 yd · Medium 4–6 yd · Long 7+ yd · green ≥55% · red ≤40%")
+sr_df = situational_success_rate(revealed, home, away)
+st.dataframe(_style_sr_table(sr_df), use_container_width=True)
+
 # ---------- Player leaders ----------
 if not hide_leaders:
     st.subheader("Player leaders")
@@ -539,10 +691,21 @@ if not hide_leaders:
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
-            st.caption("Passing"); st.dataframe(top_players(revealed, team, "passing"),
-                                                hide_index=True, use_container_width=True)
-            st.caption("Rushing"); st.dataframe(top_players(revealed, team, "rushing"),
-                                                hide_index=True, use_container_width=True)
+            st.caption("Passing"); st.dataframe(
+                top_players(revealed, team, "passing"),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                    "SR%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "aDOT": st.column_config.NumberColumn(format="%.1f"),
+                })
+            st.caption("Rushing"); st.dataframe(
+                top_players(revealed, team, "rushing"),
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                    "SR%": st.column_config.NumberColumn(format="%.1f%%"),
+                })
             st.caption("Receiving"); st.dataframe(top_players(revealed, team, "receiving"),
                                                   hide_index=True, use_container_width=True)
 
@@ -555,7 +718,11 @@ if not hide_wp:
         wp_long = wp_df.melt(id_vars="elapsed", value_vars=["home_wp", "away_wp"],
                              var_name="team", value_name="wp")
         wp_long["team"] = wp_long["team"].map({"home_wp": home, "away_wp": away})
+        _team_colors = load_team_colors()
+        _color_map = {home: _team_colors.get(home, "#1f77b4"),
+                      away: _team_colors.get(away, "#ff7f0e")}
         fig = px.line(wp_long, x="elapsed", y="wp", color="team",
+                      color_discrete_map=_color_map,
                       labels={"elapsed": "Game minutes elapsed", "wp": "Win probability"})
         fig.update_yaxes(range=[0, 1])
         # Lock x-axis to elapsed-so-far. Otherwise Plotly auto-fits to the data
