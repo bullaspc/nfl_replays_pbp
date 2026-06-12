@@ -413,9 +413,9 @@ with st.sidebar:
     st.subheader("Your viewing")
     mode = st.radio(
         "How do you want to set your position?",
-        ["I started the broadcast at...",
-         "I'm X minutes into the broadcast",
-         "Jump to a specific game clock"],
+        ["Jump to a specific game clock","I started the broadcast at...",
+         "I'm X minutes into the broadcast"
+         ],
     )
 
     if mode == "I started the broadcast at...":
@@ -565,7 +565,7 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
     raw["Type"] = raw.apply(_play_type_label, axis=1)
     raw["D&D"] = raw.apply(_down_distance, axis=1)
     raw[""] = raw.apply(_success_emoji, axis=1)
-    raw["Q"] = raw["qtr"].apply(lambda x: int(x) if pd.notna(x) else "")
+    raw["Q"] = raw["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
     if hide_desc:
         cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
