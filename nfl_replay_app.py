@@ -635,7 +635,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
 
 def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame:
     """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs."""
-    td = revealed[revealed["defteam"] == team]
+    td = revealed[(revealed["defteam"] == team) & (revealed["sp"].fillna(0) == 0)]
     if td.empty:
         return pd.DataFrame()
 
