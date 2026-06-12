@@ -396,16 +396,17 @@ def _style_sr_table(df: pd.DataFrame) -> object:
     )
 
 
-# EPA/play columns — used by styler to pick color direction
-_EPA_ROWS = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
-# Rate rows where higher = better (0-1 scale)
-_RATE_ROWS = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_EPA_ROWS     = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
+_RATE_ROWS    = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS
 
 
-def style_stat_table(df: pd.DataFrame, away: str, home: str):
-    """Return a pandas Styler with color-coded EPA and formatted rate columns."""
+def style_stat_table(df: pd.DataFrame, away: str, home: str,
+                     baselines: dict | None = None):
+    """Return a pandas Styler with percentile-based diverging colors and EPA coloring."""
+    if baselines is None:
+        baselines = {}
 
     def _color_epa(val):
         if pd.isna(val):
@@ -416,16 +417,8 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str):
             return "background-color: #f8d7da; color: #721c24"
         return ""
 
-    def _color_sr(val):
-        if pd.isna(val):
-            return ""
-        if val >= 0.50:
-            return "background-color: #d4edda; color: #155724"
-        if val <= 0.40:
-            return "background-color: #f8d7da; color: #721c24"
-        return ""
-
     styled = df.style
+
     for row in df.index:
         if row in _PCT_FORMAT_ROWS:
             fmt_str = "{:.1%}"
@@ -440,9 +433,24 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str):
     for row in _EPA_ROWS:
         if row in df.index:
             styled = styled.map(_color_epa, subset=pd.IndexSlice[row, :])
-    for row in _RATE_ROWS:
-        if row in df.index:
-            styled = styled.map(_color_sr, subset=pd.IndexSlice[row, :])
+
+    for row in df.index:
+        if row in _EPA_ROWS:
+            continue
+        arr   = baselines.get(row, np.array([]))
+        lower = row in _LOWER_IS_BETTER
+
+        def _cell(val, _arr=arr, _lower=lower):
+            if pd.isna(val):
+                return ""
+            pct = _percentile_of(float(val), _arr)
+            if pd.isna(pct):
+                return ""
+            if _lower:
+                pct = 100.0 - pct
+            return _percentile_color(pct)
+
+        styled = styled.map(_cell, subset=pd.IndexSlice[row, :])
 
     styled = styled.set_properties(**{"text-align": "right"})
     styled = styled.set_table_styles(
