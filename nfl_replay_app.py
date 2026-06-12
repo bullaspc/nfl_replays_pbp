@@ -351,6 +351,8 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
         pass_td = td[td["pass_attempt"] == 1].copy()
+        if pass_td.empty:
+            return pd.DataFrame()
         pass_td["_success"] = (pass_td["epa"].fillna(0) > 0).astype(int)
         sr = pass_td.groupby("passer_player_name")["_success"].mean().rename("SR%")
         g = pass_td.groupby("passer_player_name", as_index=False).agg(
@@ -364,6 +366,8 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
         g["SR%"] = (g["SR%"] * 100).round(1)
     elif kind == "rushing":
         rush_td = td[td["rush_attempt"] == 1].copy()
+        if rush_td.empty:
+            return pd.DataFrame()
         rush_td["_success"] = (rush_td["epa"].fillna(0) > 0).astype(int)
         rush_td["_stuffed"] = (rush_td["yards_gained"].fillna(0) <= 0).astype(int)
         sr = rush_td.groupby("rusher_player_name")["_success"].mean().rename("SR%")
@@ -375,7 +379,10 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
         g = g.join(sr, on="Player")
         g["SR%"] = (g["SR%"] * 100).round(1)
     else:  # receiving
-        g = td[td["receiving_yards"].notna()].groupby("receiver_player_name", as_index=False).agg(
+        recv_td = td[td["receiving_yards"].notna()]
+        if recv_td.empty:
+            return pd.DataFrame()
+        g = recv_td.groupby("receiver_player_name", as_index=False).agg(
             Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"),
             _epa=("epa", "sum"), _plays=("epa", "count"))
         g = g.rename(columns={"receiver_player_name": "Player"})
