@@ -250,7 +250,7 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
     ]
     try:
         raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
-    except Exception:
+    except Exception:  # network error, missing season data, etc.
         return {}
 
     raw = raw[raw["posteam"].notna()]
@@ -262,8 +262,8 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         pp = int(pass_mask.sum())
         rp = int(rush_mask.sum())
         tp = int(sc_mask.sum())
-        pass_yds = td["passing_yards"].fillna(0).sum()
-        rush_yds = td["rushing_yards"].fillna(0).sum()
+        pass_yds = int(td["passing_yards"].fillna(0).sum())
+        rush_yds = int(td["rushing_yards"].fillna(0).sum())
         cmp      = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
         adot     = td.loc[pass_mask, "air_yards"].mean()
         pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
@@ -276,7 +276,7 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         tf       = td["third_down_failed"].fillna(0).sum()
         rz_mask  = sc_mask & (td["yardline_100"].fillna(100) <= 20)
         rz_plays = int(rz_mask.sum())
-        rz_td    = td.loc[rz_mask, "touchdown"].fillna(0).sum()
+        rz_td    = int(td.loc[rz_mask, "touchdown"].fillna(0).sum())
         tos      = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
         return pd.Series({
             "Plays":        tp,
