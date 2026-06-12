@@ -15,6 +15,7 @@ Run with:
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import nfl_data_py as nfl
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
@@ -127,6 +128,36 @@ def _rate(num: float, den: float) -> float:
     return num / den if den > 0 else float("nan")
 
 
+_LOWER_IS_BETTER = {"Turnovers"}
+
+
+def _percentile_of(value: float, sorted_arr: np.ndarray) -> float:
+    """0–100 percentile rank of value in a pre-sorted array."""
+    if pd.isna(value) or len(sorted_arr) == 0:
+        return float("nan")
+    return float(np.searchsorted(sorted_arr, value, side="right") / len(sorted_arr) * 100)
+
+
+def _percentile_color(pct: float) -> str:
+    """CSS string for a red→white→green diverging color at the given percentile."""
+    if pd.isna(pct):
+        return ""
+    # Red(220,53,69) → White(255,255,255) → Green(40,167,69)
+    if pct <= 50:
+        t = pct / 50.0
+        r = int(220 + t * (255 - 220))
+        g = int(53  + t * (255 - 53))
+        b = int(69  + t * (255 - 69))
+    else:
+        t = (pct - 50) / 50.0
+        r = int(255 + t * (40  - 255))
+        g = int(255 + t * (167 - 255))
+        b = int(255 + t * (69  - 255))
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    text = "#ffffff" if lum < 0.45 else "#212529"
+    return f"background-color: #{r:02x}{g:02x}{b:02x}; color: {text}"
+
+
 def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     """Advanced offensive team stats, returned as a transposed comparison table.
 
@@ -199,7 +230,7 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
         "1st Down %", "3rd Down %", "RZ TD%",
         "Turnovers",
     ]
-    return pd.DataFrame(stats, index=index)
+    return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
 
 def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
@@ -251,8 +282,8 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
         for m in metrics:
             col_order.append(f"{team} {m}")
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
-    pivot.index.name = None
-    return pivot.T
+    pivot.index.name = "Situation"
+    return pivot
 
 
 def _style_sr_table(df: pd.DataFrame) -> object:
@@ -274,14 +305,14 @@ def _style_sr_table(df: pd.DataFrame) -> object:
             return "background-color: #f8d7da; color: #721c24"
         return ""
 
-    sr_rows  = [r for r in df.index if "SR%"      in r]
-    epa_rows = [r for r in df.index if "EPA/play" in r]
+    sr_cols  = [c for c in df.columns if "SR%"      in c]
+    epa_cols = [c for c in df.columns if "EPA/play" in c]
 
     styled = df.style
-    for r in sr_rows:
-        styled = styled.map(_color_sr,  subset=pd.IndexSlice[r, :]).format("{:.0f}%", subset=pd.IndexSlice[r, :], na_rep="—")
-    for r in epa_rows:
-        styled = styled.map(_color_epa, subset=pd.IndexSlice[r, :]).format("{:+.2f}", subset=pd.IndexSlice[r, :], na_rep="—")
+    for c in sr_cols:
+        styled = styled.map(_color_sr,  subset=pd.IndexSlice[:, c]).format("{:.0f}%", subset=pd.IndexSlice[:, c], na_rep="—")
+    for c in epa_cols:
+        styled = styled.map(_color_epa, subset=pd.IndexSlice[:, c]).format("{:+.2f}", subset=pd.IndexSlice[:, c], na_rep="—")
     return (
         styled
         .set_properties(**{"text-align": "right"})
@@ -546,6 +577,18 @@ if blur_until_ready:
 st.divider()
 
 # ---------- Shared plays helpers ----------
+def _field_pos_label(r) -> str:
+    yl = r["yardline_100"]
+    if pd.isna(yl):
+        return ""
+    yl = int(yl)
+    if yl > 50:
+        return f"OWN {100 - yl}"
+    elif yl == 50:
+        return "50"
+    else:
+        return f"OPP {yl}"
+
 def _play_type_label(r) -> str:
     down = r["down"]
     is_pass = r["pass_attempt"] == 1
@@ -571,16 +614,19 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
     raw = raw.copy()
     raw["Type"] = raw.apply(_play_type_label, axis=1)
     raw["D&D"] = raw.apply(_down_distance, axis=1)
-    raw[""] = raw.apply(_success_emoji, axis=1)
+    raw["Success?"] = raw.apply(_success_emoji, axis=1)
     raw["Q"] = raw["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
+    raw["Field"] = raw.apply(_field_pos_label, axis=1)
+    is_special = raw["play_type"].isin(["field_goal", "extra_point"])
+    raw["_rz"] = (raw["yardline_100"].fillna(100) <= 20) & ~is_special
     if hide_desc:
-        cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "yards_gained", "epa"]
+        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "Type", "D&D", "Success?", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
-        df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Yds", "EPA"]
+        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "Type", "D&D", "Success?", "Yds", "EPA"]
     else:
-        cols_sel = ["Q", "time", "posteam", "Type", "D&D", "", "desc", "yards_gained", "epa"]
+        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "Type", "D&D", "Success?", "desc", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
-        df.columns = ["Q", "Clock", "Off", "Type", "D&D", "", "Description", "Yds", "EPA"]
+        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "Type", "D&D", "Success?", "Description", "Yds", "EPA"]
     df["Yds"] = pd.to_numeric(df["Yds"], errors="coerce").fillna(0).astype(int)
     df["EPA"] = pd.to_numeric(df["EPA"], errors="coerce").round(2)
     return df.iloc[::-1] if reverse else df
@@ -588,12 +634,20 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
 def _style_plays(row):
     t = row["Type"]
     if t.startswith("4th"):
-        bg = "#f5c6cb"
+        row_bg = "#f5c6cb"
     elif t.startswith("3rd"):
-        bg = "#ffeeba"
+        row_bg = "#ffeeba"
     else:
-        bg = "#ffffff"
-    return [f"background-color: {bg}; color: #000000"] * len(row)
+        row_bg = "#ffffff"
+    styles = []
+    for col in row.index:
+        if col == "_rz":
+            styles.append("")
+        elif col == "Field" and row.get("_rz", False):
+            styles.append("background-color: #dc3545; color: #ffffff")
+        else:
+            styles.append(f"background-color: {row_bg}; color: #000000")
+    return styles
 
 _EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
 
@@ -606,6 +660,7 @@ st.subheader("Recent plays")
 st.markdown(
     '<span style="background:#f5c6cb;padding:2px 8px;border-radius:3px;margin-right:6px">4th down</span>'
     '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
+    '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
     '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
     '<span style="margin-right:6px">✅ Positive EPA</span>',
     unsafe_allow_html=True,
@@ -624,7 +679,7 @@ if not revealed.empty:
     st.dataframe(
         recent_df.style.apply(_style_plays, axis=1),
         hide_index=True, use_container_width=True,
-        column_config=_EPA_COL_CFG,
+        column_config={**_EPA_COL_CFG, "_rz": None},
     )
     col_prev, col_info, col_next = st.columns([1, 4, 1])
     with col_prev:
@@ -643,11 +698,22 @@ else:
 # ---------- Current drive ----------
 st.subheader("Current drive")
 if not revealed.empty:
-    _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
+    # Anchor the current drive on the most recent scrimmage play so that after a
+    # score → PAT → kickoff sequence the section still shows the offensive drive,
+    # not a one-play kickoff "drive".
+    _scrimmage_all = revealed[
+        (revealed["pass_attempt"].fillna(0) == 1) |
+        (revealed["rush_attempt"].fillna(0) == 1)
+    ]
+    if not _scrimmage_all.empty:
+        _cur_drive = _scrimmage_all["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
+    else:
+        _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
+
     if _cur_drive is not None:
         _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
 
-        # Drive summary stats
+        # Drive summary stats (scrimmage plays only)
         _scrimmage = _drive_raw[
             (_drive_raw["pass_attempt"].fillna(0) == 1) |
             (_drive_raw["rush_attempt"].fillna(0) == 1)
@@ -655,14 +721,16 @@ if not revealed.empty:
         _drive_plays = len(_scrimmage)
         _drive_sr = (_scrimmage["epa"].fillna(0) > 0).mean() * 100 if _drive_plays > 0 else float("nan")
 
-        _clocks = _drive_raw["game_seconds_remaining"].dropna()
+        _clocks = _scrimmage["game_seconds_remaining"].dropna()
         if len(_clocks) >= 2:
             _top_seconds = int(_clocks.iloc[0] - _clocks.iloc[-1])
             _top_str = f"{_top_seconds // 60}:{_top_seconds % 60:02d}"
         else:
             _top_str = "—"
 
-        _possession_team = _drive_raw["posteam"].iloc[0] if not _drive_raw.empty else "—"
+        _possession_team = _scrimmage["posteam"].dropna().iloc[-1] if not _scrimmage.empty else (
+            _drive_raw["posteam"].dropna().iloc[-1] if not _drive_raw.empty else "—"
+        )
         _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
         st.caption(
             f"**{_possession_team}** · {_drive_plays} plays · "
@@ -673,7 +741,7 @@ if not revealed.empty:
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
             hide_index=True, use_container_width=True,
-            column_config=_EPA_COL_CFG,
+            column_config={**_EPA_COL_CFG, "_rz": None},
         )
     else:
         st.caption("No drive data available.")
