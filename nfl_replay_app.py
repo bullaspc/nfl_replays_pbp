@@ -324,9 +324,12 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
             "TOP":          top,
         })
 
-    per_game = raw.groupby(["game_id", "posteam"]).apply(
-        _game_stats, include_groups=False
-    )
+    try:
+        per_game = raw.groupby(["game_id", "posteam"]).apply(
+            _game_stats, include_groups=False
+        )
+    except TypeError:
+        per_game = raw.groupby(["game_id", "posteam"]).apply(_game_stats)
     return {
         stat: np.sort(per_game[stat].dropna().values)
         for stat in per_game.columns
