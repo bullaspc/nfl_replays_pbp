@@ -333,6 +333,17 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
     }
 
 
+_SR_SITUATIONS = [
+    ("Early · Short",  (1, 2), (1,  3)),
+    ("Late · Short",   (3, 4), (1,  3)),
+    ("Early · Medium", (1, 2), (4,  6)),
+    ("Late · Medium",  (3, 4), (4,  6)),
+    ("Early · Long",   (1, 2), (7, 99)),
+    ("Late · Long",    (3, 4), (7, 99)),
+]
+_SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
+
+
 def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     """Success rate and EPA/play split by down group × distance × play type."""
     def _sr(plays) -> float:
@@ -345,17 +356,8 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
             return float("nan")
         return plays["epa"].fillna(0).mean()
 
-    situations = [
-        ("Early · Short",  (1, 2), (1,  3)),
-        ("Late · Short",   (3, 4), (1,  3)),
-        ("Early · Medium", (1, 2), (4,  6)),
-        ("Late · Medium",  (3, 4), (4,  6)),
-        ("Early · Long",   (1, 2), (7, 99)),
-        ("Late · Long",    (3, 4), (7, 99)),
-    ]
-
     rows = []
-    for label, downs, (d_min, d_max) in situations:
+    for label, downs, (d_min, d_max) in _SR_SITUATIONS:
         sit_mask = (
             revealed["down"].isin(downs) &
             revealed["ydstogo"].fillna(0).between(d_min, d_max)
@@ -386,18 +388,76 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
     return pivot
 
 
-def _style_sr_table(df: pd.DataFrame) -> object:
-    def _color_sr(val):
+@st.cache_data(ttl=86400)
+def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
+    """Per-situation metric distributions from the 3 seasons prior to `season`."""
+    prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
+    if not prior:
+        return {}
+    cols = ["game_id", "posteam", "pass_attempt", "rush_attempt", "epa", "down", "ydstogo"]
+    try:
+        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
+    except Exception:
+        return {}
+
+    raw = raw[raw["posteam"].notna()]
+
+    def _sr(plays) -> float:
+        if plays.empty:
+            return float("nan")
+        return (plays["epa"].fillna(0) > 0).mean() * 100
+
+    def _epa_per_play(plays) -> float:
+        if plays.empty:
+            return float("nan")
+        return plays["epa"].fillna(0).mean()
+
+    result: dict[str, dict[str, np.ndarray]] = {}
+    for label, downs, (d_min, d_max) in _SR_SITUATIONS:
+        sit_mask = (
+            raw["down"].isin(downs) &
+            raw["ydstogo"].fillna(0).between(d_min, d_max)
+        )
+        sit = raw[sit_mask]
+
+        rows = []
+        for (game_id, team), grp in sit[sit["posteam"].notna()].groupby(["game_id", "posteam"]):
+            pass_plays = grp[grp["pass_attempt"].fillna(0) == 1]
+            rush_plays = grp[grp["rush_attempt"].fillna(0) == 1]
+            rows.append({
+                "Pass SR%":      _sr(pass_plays),
+                "Pass EPA/play": _epa_per_play(pass_plays),
+                "Rush SR%":      _sr(rush_plays),
+                "Rush EPA/play": _epa_per_play(rush_plays),
+            })
+
+        if not rows:
+            result[label] = {}
+            continue
+        per_game = pd.DataFrame(rows)
+        result[label] = {
+            m: np.sort(per_game[m].dropna().values) for m in _SR_METRICS
+        }
+    return result
+
+
+def _style_sr_table(df: pd.DataFrame,
+                    baselines: dict[str, dict[str, np.ndarray]] | None = None) -> object:
+    _b = baselines or {}
+
+    def _color_cell(val, situation: str, metric: str) -> str:
         if pd.isna(val):
             return ""
-        if val >= 55:
-            return "background-color: #d4edda; color: #155724"
-        if val <= 40:
-            return "background-color: #f8d7da; color: #721c24"
-        return ""
-
-    def _color_epa(val):
-        if pd.isna(val):
+        sit_bl = _b.get(situation, {})
+        arr = sit_bl.get(metric)
+        if arr is not None and len(arr) > 0:
+            return _percentile_color(_percentile_of(float(val), arr))
+        # fallback: fixed thresholds
+        if metric == "Pass SR%" or metric == "Rush SR%":
+            if val >= 55:
+                return "background-color: #d4edda; color: #155724"
+            if val <= 40:
+                return "background-color: #f8d7da; color: #721c24"
             return ""
         if val > 0:
             return "background-color: #d4edda; color: #155724"
@@ -405,14 +465,17 @@ def _style_sr_table(df: pd.DataFrame) -> object:
             return "background-color: #f8d7da; color: #721c24"
         return ""
 
-    sr_cols  = [c for c in df.columns if "SR%"      in c]
-    epa_cols = [c for c in df.columns if "EPA/play" in c]
-
     styled = df.style
-    for c in sr_cols:
-        styled = styled.map(_color_sr,  subset=pd.IndexSlice[:, c]).format("{:.0f}%", subset=pd.IndexSlice[:, c], na_rep="—")
-    for c in epa_cols:
-        styled = styled.map(_color_epa, subset=pd.IndexSlice[:, c]).format("{:+.2f}", subset=pd.IndexSlice[:, c], na_rep="—")
+    for col in df.columns:
+        metric = next((m for m in _SR_METRICS if col.endswith(m)), None)
+        if metric is None:
+            continue
+        fmt = "{:.0f}%" if "SR%" in metric else "{:+.2f}"
+        for sit in df.index:
+            styled = styled.map(
+                lambda v, s=sit, m=metric: _color_cell(v, s, m),
+                subset=pd.IndexSlice[sit, col],
+            ).format(fmt, subset=pd.IndexSlice[sit, col], na_rep="—")
     return (
         styled
         .set_properties(**{"text-align": "right"})
@@ -869,9 +932,10 @@ st.caption("Colors show percentile vs last 3 seasons · green = top of league ·
 
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
-st.caption("Short ≤3 yd · Medium 4–6 yd · Long 7+ yd · green ≥55% · red ≤40%")
+st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
 sr_df = situational_success_rate(revealed, home, away)
-st.dataframe(_style_sr_table(sr_df), use_container_width=True)
+_sit_baselines = load_situational_baselines(int(season))
+st.dataframe(_style_sr_table(sr_df, _sit_baselines), use_container_width=True)
 
 # ---------- Player leaders ----------
 if not hide_leaders:
