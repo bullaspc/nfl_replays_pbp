@@ -131,6 +131,23 @@ def _rate(num: float, den: float) -> float:
 _LOWER_IS_BETTER = {"Turnovers"}
 
 
+def _top_seconds(td: pd.DataFrame) -> float:
+    """Time of possession in seconds, estimated from drive×quarter clock diffs."""
+    top = 0.0
+    for _, grp in td.groupby(["drive", "qtr"], dropna=True):
+        gsr = grp["game_seconds_remaining"].dropna()
+        if len(gsr) >= 2:
+            top += max(0.0, float(gsr.max() - gsr.min()))
+    return top
+
+
+def _fmt_top(v) -> str:
+    if pd.isna(v):
+        return "—"
+    v = int(v)
+    return f"{v // 60}:{v % 60:02d}"
+
+
 def _percentile_of(value: float, sorted_arr: np.ndarray) -> float:
     """0–100 percentile rank of value in a pre-sorted array."""
     if pd.isna(value) or len(sorted_arr) == 0:
@@ -199,11 +216,14 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
         rz_td = td.loc[rz_mask, "touchdown"].fillna(0).sum()
 
         tos = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
+        comp_rush = int(cmp) + rush_plays
+        top = _top_seconds(td)
 
         col = [
             total_plays,
             pass_plays,
             rush_plays,
+            comp_rush,
             pass_yds,
             rush_yds,
             pass_yds + rush_yds,
@@ -218,17 +238,18 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
             _rate(third_conv, third_conv + third_fail),
             _rate(rz_td, rz_plays),
             tos,
+            top,
         ]
         stats[team] = col
 
     index = [
-        "Plays", "Pass Plays", "Rush Plays",
+        "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
         "Pass Yds", "Rush Yds", "Total Yds",
         "CMP%", "aDoT",
         "Pass EPA/play", "Rush EPA/play", "EPA/play",
         "Pass SR", "Rush SR",
         "1st Down %", "3rd Down %", "RZ TD%",
-        "Turnovers",
+        "Turnovers", "TOP",
     ]
     return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
@@ -247,6 +268,7 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         "interception", "fumble_lost", "first_down",
         "third_down_converted", "third_down_failed",
         "yardline_100", "touchdown",
+        "drive", "qtr", "game_seconds_remaining",
     ]
     try:
         raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
@@ -278,10 +300,13 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         rz_plays = int(rz_mask.sum())
         rz_td    = int(td.loc[rz_mask, "touchdown"].fillna(0).sum())
         tos      = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
+        comp_rush = int(cmp) + rp
+        top       = _top_seconds(td)
         return pd.Series({
             "Plays":        tp,
             "Pass Plays":   pp,
             "Rush Plays":   rp,
+            "Rush+Comp":    comp_rush,
             "Pass Yds":     pass_yds,
             "Rush Yds":     rush_yds,
             "Total Yds":    pass_yds + rush_yds,
@@ -296,6 +321,7 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
             "3rd Down %":   _rate(tc, tc + tf),
             "RZ TD%":       _rate(rz_td, rz_plays),
             "Turnovers":    tos,
+            "TOP":          top,
         })
 
     per_game = raw.groupby(["game_id", "posteam"]).apply(
@@ -396,8 +422,9 @@ def _style_sr_table(df: pd.DataFrame) -> object:
     )
 
 
-_EPA_ROWS     = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
-_RATE_ROWS    = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
+_RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "TOP"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS
 
@@ -420,6 +447,9 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
     styled = df.style
 
     for row in df.index:
+        if row == "TOP":
+            styled = styled.format(_fmt_top, subset=pd.IndexSlice[row, :])
+            continue
         if row in _PCT_FORMAT_ROWS:
             fmt_str = "{:.1%}"
         elif row in _EPA_FORMAT_ROWS:
@@ -435,7 +465,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
             styled = styled.map(_color_epa, subset=pd.IndexSlice[row, :])
 
     for row in df.index:
-        if row in _EPA_ROWS:
+        if row in _EPA_ROWS or row in _NO_COLOR_ROWS:
             continue
         arr   = baselines.get(row, np.array([]))
         lower = row in _LOWER_IS_BETTER
@@ -805,8 +835,8 @@ if not revealed.empty:
 
         _clocks = _scrimmage["game_seconds_remaining"].dropna()
         if len(_clocks) >= 2:
-            _top_seconds = int(_clocks.iloc[0] - _clocks.iloc[-1])
-            _top_str = f"{_top_seconds // 60}:{_top_seconds % 60:02d}"
+            _drive_top_s = int(_clocks.iloc[0] - _clocks.iloc[-1])
+            _top_str = f"{_drive_top_s // 60}:{_drive_top_s % 60:02d}"
         else:
             _top_str = "—"
 
