@@ -233,6 +233,80 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
 
+@st.cache_data(ttl=86400)
+def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
+    """Per-stat distributions from the 3 seasons prior to `season`, sorted ascending."""
+    prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
+    if not prior:
+        return {}
+    cols = [
+        "game_id", "posteam",
+        "pass_attempt", "rush_attempt", "epa",
+        "passing_yards", "rushing_yards",
+        "complete_pass", "air_yards",
+        "interception", "fumble_lost", "first_down",
+        "third_down_converted", "third_down_failed",
+        "yardline_100", "touchdown",
+    ]
+    try:
+        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
+    except Exception:
+        return {}
+
+    raw = raw[raw["posteam"].notna()]
+
+    def _game_stats(td):
+        pass_mask = td["pass_attempt"].fillna(0) == 1
+        rush_mask = td["rush_attempt"].fillna(0) == 1
+        sc_mask   = pass_mask | rush_mask
+        pp = int(pass_mask.sum())
+        rp = int(rush_mask.sum())
+        tp = int(sc_mask.sum())
+        pass_yds = td["passing_yards"].fillna(0).sum()
+        rush_yds = td["rushing_yards"].fillna(0).sum()
+        cmp      = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
+        adot     = td.loc[pass_mask, "air_yards"].mean()
+        pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
+        rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
+        tot_epa  = td.loc[sc_mask,   "epa"].fillna(0).sum()
+        pass_sr  = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
+        rush_sr  = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
+        fd       = td.loc[sc_mask, "first_down"].fillna(0).sum()
+        tc       = td["third_down_converted"].fillna(0).sum()
+        tf       = td["third_down_failed"].fillna(0).sum()
+        rz_mask  = sc_mask & (td["yardline_100"].fillna(100) <= 20)
+        rz_plays = int(rz_mask.sum())
+        rz_td    = td.loc[rz_mask, "touchdown"].fillna(0).sum()
+        tos      = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
+        return pd.Series({
+            "Plays":        tp,
+            "Pass Plays":   pp,
+            "Rush Plays":   rp,
+            "Pass Yds":     pass_yds,
+            "Rush Yds":     rush_yds,
+            "Total Yds":    pass_yds + rush_yds,
+            "CMP%":         _rate(cmp, pp),
+            "aDoT":         adot,
+            "Pass EPA/play":_rate(pass_epa, pp),
+            "Rush EPA/play":_rate(rush_epa, rp),
+            "EPA/play":     _rate(tot_epa,  tp),
+            "Pass SR":      _rate(pass_sr,  pp),
+            "Rush SR":      _rate(rush_sr,  rp),
+            "1st Down %":   _rate(fd, tp),
+            "3rd Down %":   _rate(tc, tc + tf),
+            "RZ TD%":       _rate(rz_td, rz_plays),
+            "Turnovers":    tos,
+        })
+
+    per_game = raw.groupby(["game_id", "posteam"]).apply(
+        _game_stats, include_groups=False
+    )
+    return {
+        stat: np.sort(per_game[stat].dropna().values)
+        for stat in per_game.columns
+    }
+
+
 def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     """Success rate and EPA/play split by down group × distance × play type."""
     def _sr(plays) -> float:
