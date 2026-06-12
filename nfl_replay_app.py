@@ -833,7 +833,9 @@ else:
 # ---------- Team stats ----------
 st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
-st.dataframe(style_stat_table(stat_df, away, home), use_container_width=True)
+_baselines = load_stat_baselines(season)
+st.dataframe(style_stat_table(stat_df, away, home, _baselines), use_container_width=True)
+st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
 
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
