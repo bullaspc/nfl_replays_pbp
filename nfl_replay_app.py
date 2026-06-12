@@ -148,11 +148,11 @@ def _fmt_top(v) -> str:
     return f"{v // 60}:{v % 60:02d}"
 
 
-_styler_map = "map" if hasattr(pd.io.formats.style.Styler, "map") else "applymap"
-
-
 def _smap(styled, func, **kwargs):
-    return getattr(styled, _styler_map)(func, **kwargs)
+    try:
+        return styled.map(func, **kwargs)
+    except AttributeError:
+        return styled.applymap(func, **kwargs)
 
 
 def _percentile_of(value: float, sorted_arr: np.ndarray) -> float:
