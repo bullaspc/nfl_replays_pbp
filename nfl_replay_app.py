@@ -148,6 +148,13 @@ def _fmt_top(v) -> str:
     return f"{v // 60}:{v % 60:02d}"
 
 
+_styler_map = "map" if hasattr(pd.io.formats.style.Styler, "map") else "applymap"
+
+
+def _smap(styled, func, **kwargs):
+    return getattr(styled, _styler_map)(func, **kwargs)
+
+
 def _percentile_of(value: float, sorted_arr: np.ndarray) -> float:
     """0–100 percentile rank of value in a pre-sorted array."""
     if pd.isna(value) or len(sorted_arr) == 0:
@@ -475,7 +482,8 @@ def _style_sr_table(df: pd.DataFrame,
             continue
         fmt = "{:.0f}%" if "SR%" in metric else "{:+.2f}"
         for sit in df.index:
-            styled = styled.map(
+            styled = _smap(
+                styled,
                 lambda v, s=sit, m=metric: _color_cell(v, s, m),
                 subset=pd.IndexSlice[sit, col],
             ).format(fmt, subset=pd.IndexSlice[sit, col], na_rep="—")
@@ -528,7 +536,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
 
     for row in _EPA_ROWS:
         if row in df.index:
-            styled = styled.map(_color_epa, subset=pd.IndexSlice[row, :])
+            styled = _smap(styled, _color_epa, subset=pd.IndexSlice[row, :])
 
     for row in df.index:
         if row in _EPA_ROWS or row in _NO_COLOR_ROWS:
@@ -546,7 +554,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
                 pct = 100.0 - pct
             return _percentile_color(pct)
 
-        styled = styled.map(_cell, subset=pd.IndexSlice[row, :])
+        styled = _smap(styled, _cell, subset=pd.IndexSlice[row, :])
 
     styled = styled.set_properties(**{"text-align": "right"})
     styled = styled.set_table_styles(
