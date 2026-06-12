@@ -2,5 +2,6 @@ setuptools>=68.0.0
 streamlit
 nfl_data_py
 pandas
+numpy
 plotly
 streamlit-autorefresh
