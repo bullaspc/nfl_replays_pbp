@@ -52,6 +52,16 @@ def load_pbp(season: int) -> pd.DataFrame:
         "third_down_converted", "third_down_failed",
         "fourth_down_converted", "fourth_down_failed",
         "goal_to_go", "yardline_100", "drive",
+        # defensive player columns
+        "solo_tackle_1_player_name", "solo_tackle_2_player_name",
+        "assist_tackle_1_player_name", "assist_tackle_2_player_name",
+        "assist_tackle_3_player_name", "assist_tackle_4_player_name",
+        "sack_player_name", "half_sack_1_player_name", "half_sack_2_player_name",
+        "qb_hit_1_player_name", "qb_hit_2_player_name",
+        "tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name",
+        "interception_player_name",
+        "pass_defense_1_player_name", "pass_defense_2_player_name",
+        "forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name",
     ]
     df = nfl.import_pbp_data([season], columns=cols, downcast=True)
     return df
@@ -367,6 +377,7 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
         return plays["epa"].fillna(0).mean()
 
     rows = []
+    counts: dict[tuple, dict[str, int]] = {}
     for label, downs, (d_min, d_max) in _SR_SITUATIONS:
         sit_mask = (
             revealed["down"].isin(downs) &
@@ -376,6 +387,7 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
             tm = revealed[sit_mask & (revealed["posteam"] == team)]
             pass_plays = tm[tm["pass_attempt"].fillna(0) == 1]
             rush_plays = tm[tm["rush_attempt"].fillna(0) == 1]
+            counts[(label, team)] = {"Pass": len(pass_plays), "Rush": len(rush_plays)}
             rows.append({
                 "Situation": label,
                 "Team": team,
@@ -395,7 +407,7 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
             col_order.append(f"{team} {m}")
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
     pivot.index.name = "Situation"
-    return pivot
+    return pivot, counts
 
 
 @st.cache_data(ttl=86400)
@@ -452,8 +464,10 @@ def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
 
 
 def _style_sr_table(df: pd.DataFrame,
-                    baselines: dict[str, dict[str, np.ndarray]] | None = None) -> object:
+                    baselines: dict[str, dict[str, np.ndarray]] | None = None,
+                    counts: dict | None = None) -> object:
     _b = baselines or {}
+    _c = counts or {}
 
     def _color_cell(val, situation: str, metric: str) -> str:
         if pd.isna(val):
@@ -480,16 +494,22 @@ def _style_sr_table(df: pd.DataFrame,
         metric = next((m for m in _SR_METRICS if col.endswith(m)), None)
         if metric is None:
             continue
-        fmt = "{:.0f}%" if "SR%" in metric else "{:+.2f}"
+        team_part = col[: -len(metric)].strip()
+        play_type = "Pass" if "Pass" in metric else "Rush"
         for sit in df.index:
+            n = _c.get((sit, team_part), {}).get(play_type)
+            if "SR%" in metric:
+                fmt_fn = lambda v, c=n: ("—" if pd.isna(v) else (f"{v:.0f}% ({c})" if c is not None else f"{v:.0f}%"))
+            else:
+                fmt_fn = lambda v, c=n: ("—" if pd.isna(v) else (f"{v:+.2f} ({c})" if c is not None else f"{v:+.2f}"))
             styled = _smap(
                 styled,
                 lambda v, s=sit, m=metric: _color_cell(v, s, m),
                 subset=pd.IndexSlice[sit, col],
-            ).format(fmt, subset=pd.IndexSlice[sit, col], na_rep="—")
+            ).format(fmt_fn, subset=pd.IndexSlice[sit, col])
     return (
         styled
-        .set_properties(**{"text-align": "right"})
+        .set_properties(**{"text-align": "center"})
         .set_table_styles(
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
@@ -556,7 +576,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
 
         styled = _smap(styled, _cell, subset=pd.IndexSlice[row, :])
 
-    styled = styled.set_properties(**{"text-align": "right"})
+    styled = styled.set_properties(**{"text-align": "center"})
     styled = styled.set_table_styles(
         [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
     )
@@ -596,12 +616,14 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
         g = g.join(sr, on="Player")
         g["SR%"] = (g["SR%"] * 100).round(1)
     else:  # receiving
-        recv_td = td[td["receiving_yards"].notna()]
+        recv_td = td[td["receiver_player_name"].notna() & (td["pass_attempt"].fillna(0) == 1)]
         if recv_td.empty:
             return pd.DataFrame()
         g = recv_td.groupby("receiver_player_name", as_index=False).agg(
+            Tgt=("pass_attempt", "sum"),
             Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"),
             _epa=("epa", "sum"), _plays=("epa", "count"))
+        g["Yds"] = g["Yds"].fillna(0)
         g = g.rename(columns={"receiver_player_name": "Player"})
     g = g.dropna(subset=["Player"])
     int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
@@ -609,6 +631,60 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     g["EPA/play"] = (g["_epa"] / g["_plays"]).round(2)
     g = g.drop(columns=["_epa", "_plays"])
     return g.sort_values("Yds", ascending=False).head(n)
+
+
+def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame:
+    """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs."""
+    td = revealed[revealed["defteam"] == team]
+    if td.empty:
+        return pd.DataFrame()
+
+    def _count(cols: list[str], weight: float = 1.0) -> pd.Series:
+        frames = []
+        for col in cols:
+            if col in td.columns:
+                s = td[col].dropna()
+                frames.append(s)
+        if not frames:
+            return pd.Series(dtype=float)
+        stacked = pd.concat(frames)
+        return (stacked.value_counts() * weight).rename("v")
+
+    solo   = _count(["solo_tackle_1_player_name", "solo_tackle_2_player_name"], 1.0)
+    assist = _count([
+        "assist_tackle_1_player_name", "assist_tackle_2_player_name",
+        "assist_tackle_3_player_name", "assist_tackle_4_player_name",
+    ], 0.5)
+    tackles = solo.add(assist, fill_value=0).rename("Tackles")
+
+    sacks = _count(["sack_player_name"], 1.0).add(
+        _count(["half_sack_1_player_name", "half_sack_2_player_name"], 0.5), fill_value=0
+    ).rename("Sacks")
+
+    qb_hits = _count(["qb_hit_1_player_name", "qb_hit_2_player_name"]).rename("QB Hits")
+    tfls    = _count(["tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name"]).rename("TFL")
+    ints    = _count(["interception_player_name"]).rename("INT")
+    pds     = _count(["pass_defense_1_player_name", "pass_defense_2_player_name"]).rename("PD")
+    ffs     = _count(["forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name"]).rename("FF")
+
+    g = pd.concat([tackles, sacks, qb_hits, tfls, ints, pds, ffs], axis=1).fillna(0)
+    g.index.name = "Player"
+    g = g.reset_index()
+    g = g[g["Player"].notna()]
+
+    for col in ["Tackles", "QB Hits", "TFL", "INT", "PD", "FF"]:
+        if col in g.columns:
+            g[col] = g[col].round(1)
+    if "Sacks" in g.columns:
+        g["Sacks"] = g["Sacks"].round(1)
+
+    # weight sacks/INTs heavily so impact players surface even with low tackle counts
+    g["_sort"] = (
+        g.get("Tackles", 0) + g.get("Sacks", 0) * 3
+        + g.get("INT", 0) * 2 + g.get("TFL", 0) + g.get("QB Hits", 0) * 0.5
+        + g.get("PD", 0) * 0.5 + g.get("FF", 0) * 1.5
+    )
+    return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
 
 
 # ---------- UI ----------
@@ -944,9 +1020,9 @@ st.caption("Colors show percentile vs last 3 seasons · green = top of league ·
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
 st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
-sr_df = situational_success_rate(revealed, home, away)
+sr_df, _sit_counts = situational_success_rate(revealed, home, away)
 _sit_baselines = load_situational_baselines(int(season))
-st.dataframe(_style_sr_table(sr_df, _sit_baselines), use_container_width=True)
+st.dataframe(_style_sr_table(sr_df, _sit_baselines, _sit_counts), use_container_width=True)
 
 # ---------- Player leaders ----------
 if not hide_leaders:
@@ -966,7 +1042,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _rush_df = top_players(revealed, team, "rushing")
+            _rush_df = top_players(revealed, team, "rushing",4)
             st.caption("Rushing")
             if not _rush_df.empty:
                 st.dataframe(_rush_df, hide_index=True, use_container_width=True,
@@ -976,10 +1052,25 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _recv_df = top_players(revealed, team, "receiving")
+            _recv_df = top_players(revealed, team, "receiving",8)
             st.caption("Receiving")
             if not _recv_df.empty:
                 st.dataframe(_recv_df, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No data yet")
+            _def_df = top_defenders(revealed, team,10)
+            st.caption("Defense")
+            if not _def_df.empty:
+                st.dataframe(_def_df, hide_index=True, use_container_width=True,
+                             column_config={
+                                 "Tackles": st.column_config.NumberColumn(format="%.1f"),
+                                 "Sacks": st.column_config.NumberColumn(format="%.1f"),
+                                 "QB Hits": st.column_config.NumberColumn(format="%.0f"),
+                                 "TFL": st.column_config.NumberColumn(format="%.0f"),
+                                 "INT": st.column_config.NumberColumn(format="%.0f"),
+                                 "PD": st.column_config.NumberColumn(format="%.0f"),
+                                 "FF": st.column_config.NumberColumn(format="%.0f"),
+                             })
             else:
                 st.caption("No data yet")
 
