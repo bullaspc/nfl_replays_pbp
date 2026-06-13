@@ -687,6 +687,114 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame
     return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
 
 
+def _drive_outcome(drive_plays: pd.DataFrame) -> str:
+    """Determine how a drive ended from its plays."""
+    if drive_plays["touchdown"].fillna(0).astype(bool).any():
+        return "TD"
+    fg = drive_plays[drive_plays["play_type"] == "field_goal"]
+    if not fg.empty:
+        r = fg["field_goal_result"].dropna()
+        if not r.empty:
+            v = r.iloc[-1]
+            return "FG" if v == "made" else ("FG Blocked" if v == "blocked" else "FG Miss")
+    if drive_plays["interception"].fillna(0).astype(bool).any():
+        return "Interception"
+    if drive_plays["fumble_lost"].fillna(0).astype(bool).any():
+        return "Fumble"
+    if (drive_plays["play_type"] == "punt").any():
+        return "Punt"
+    if drive_plays["fourth_down_failed"].fillna(0).astype(bool).any():
+        return "Downs"
+    if drive_plays["safety"].fillna(0).astype(bool).any():
+        return "Safety"
+    return "EOH/EOG"
+
+
+def drive_chart(revealed: pd.DataFrame) -> pd.DataFrame:
+    """One row per drive: team, plays, pass/run split, yards, first downs, outcome."""
+    if revealed.empty or "drive" not in revealed.columns:
+        return pd.DataFrame()
+    rows = []
+    for drive_num, grp in revealed.groupby("drive", sort=True):
+        off = grp[grp["posteam"].notna()]
+        if off.empty:
+            continue
+        posteam = off["posteam"].dropna().iloc[0]
+        qtr_start = int(off["qtr"].dropna().iloc[0]) if off["qtr"].notna().any() else ""
+        yl_series = off["yardline_100"].dropna()
+        if not yl_series.empty:
+            y = int(yl_series.iloc[0])
+            start = f"OWN {100 - y}" if y > 50 else ("50" if y == 50 else f"OPP {y}")
+        else:
+            start = ""
+        p_mask = off["pass_attempt"].fillna(0) == 1
+        r_mask = off["rush_attempt"].fillna(0) == 1
+        sc = off[p_mask | r_mask]
+        rows.append({
+            "Drive": int(drive_num),
+            "Team": posteam,
+            "Qtr": qtr_start,
+            "Start": start,
+            "Plays": len(sc),
+            "Pass": int(p_mask.sum()),
+            "Run": int(r_mask.sum()),
+            "Yards": int(sc["yards_gained"].fillna(0).sum()),
+            "1st Downs": int(sc["first_down"].fillna(0).sum()),
+            "Outcome": _drive_outcome(grp),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("Drive", ascending=False).reset_index(drop=True)
+
+
+def _style_drive_chart(df: pd.DataFrame):
+    def _outcome_color(val):
+        if val == "TD":
+            return "background-color: #d4edda; color: #155724; font-weight: bold"
+        if val in ("Interception", "Fumble", "Downs", "Safety"):
+            return "background-color: #f8d7da; color: #721c24"
+        if val == "FG":
+            return "background-color: #cce5ff; color: #004085"
+        if val in ("FG Miss", "FG Blocked"):
+            return "background-color: #fff3cd; color: #856404"
+        if val == "Punt":
+            return "background-color: #e2e3e5; color: #383d41"
+        return ""
+    styled = df.style
+    if "Outcome" in df.columns:
+        styled = _smap(styled, _outcome_color, subset=["Outcome"])
+    return (
+        styled
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
+def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> pd.DataFrame:
+    """Top n plays by absolute win probability added, computed from home_wp shifts."""
+    if revealed.empty:
+        return pd.DataFrame()
+    df = revealed.copy().reset_index(drop=True)
+    wp = df["home_wp"].copy()
+    wpa = wp.shift(-1) - wp
+    df["_wpa"] = wpa
+    df["_abs_wpa"] = wpa.abs()
+    plays = df[df["_abs_wpa"].notna() & (df["_abs_wpa"] > 0)].nlargest(n, "_abs_wpa").copy()
+    if plays.empty:
+        return pd.DataFrame()
+    plays["Q"] = plays["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
+    plays["Score"] = plays.apply(
+        lambda r: f"{away} {int(r['total_away_score'] or 0)}–{int(r['total_home_score'] or 0)} {home}", axis=1
+    )
+    plays["WPA"] = plays["_wpa"].round(3)
+    plays["For"] = plays["_wpa"].apply(lambda x: home if x > 0 else away)
+    return plays[["Q", "time", "posteam", "Score", "For", "desc", "WPA", "_abs_wpa"]].rename(
+        columns={"time": "Clock", "posteam": "Off", "desc": "Description"}
+    ).reset_index(drop=True)
+
+
 # ---------- UI ----------
 st.title("🏈 NFL Tape-Delay Replay")
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
@@ -1010,6 +1118,21 @@ if not revealed.empty:
 else:
     st.caption("No plays revealed yet.")
 
+# ---------- Drive chart ----------
+st.subheader("Drive chart")
+if not revealed.empty:
+    _dc = drive_chart(revealed)
+    if not _dc.empty:
+        st.dataframe(
+            _style_drive_chart(_dc),
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.caption("No drive data available.")
+else:
+    st.caption("No plays revealed yet.")
+
 # ---------- Team stats ----------
 st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
@@ -1096,6 +1219,40 @@ if not hide_wp:
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
         st.plotly_chart(fig, use_container_width=True)
+
+# ---------- Top plays by win probability added ----------
+st.subheader("Top plays by win probability added")
+if not revealed.empty:
+    _top_wpa = top_plays_wpa(revealed, home, away)
+    if not _top_wpa.empty:
+        display_cols = ["Q", "Clock", "Off", "Score", "For", "WPA"]
+        if not hide_descriptions:
+            display_cols = ["Q", "Clock", "Off", "Score", "For", "Description", "WPA"]
+        _top_display = _top_wpa[display_cols].copy()
+        _top_display.index = range(1, len(_top_display) + 1)
+
+        def _wpa_color(val):
+            if pd.isna(val):
+                return ""
+            if val > 0.15:
+                return "background-color: #d4edda; color: #155724"
+            if val < -0.15:
+                return "background-color: #f8d7da; color: #721c24"
+            if val > 0:
+                return "background-color: #e8f5e9; color: #155724"
+            return "background-color: #fdecea; color: #721c24"
+
+        styled_wpa = _smap(_top_display.style, _wpa_color, subset=["WPA"])
+        styled_wpa = styled_wpa.format({"WPA": "{:+.3f}"})
+        styled_wpa = styled_wpa.set_properties(**{"text-align": "center"}).set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+        st.dataframe(styled_wpa, hide_index=False, use_container_width=True)
+        st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits")
+    else:
+        st.caption("No win probability data available.")
+else:
+    st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
 # For fixed-position modes, advance session_state to the next play's timestamp so
