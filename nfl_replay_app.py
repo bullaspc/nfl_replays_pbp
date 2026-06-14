@@ -1096,7 +1096,7 @@ _EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
-st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_width=True)
+st.dataframe(boxscore(revealed, home, away), hide_index=True, width='stretch')
 
 # ---------- Scoring timeline ----------
 st.subheader("Scoring timeline")
@@ -1109,7 +1109,7 @@ if not revealed.empty:
         st.dataframe(
             _style_scoring_timeline(_stl_df[_stl_cols]),
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
         )
     else:
         st.caption("No scores yet.")
@@ -1139,7 +1139,7 @@ if not revealed.empty:
     recent_df = _build_plays_df(_slice, hide_descriptions, reverse=False)
     st.dataframe(
         recent_df.style.apply(_style_plays, axis=1),
-        hide_index=True, use_container_width=True,
+        hide_index=True, width = 'stretch',
         column_config={**_EPA_COL_CFG, "_rz": None},
     )
     col_prev, col_info, col_next = st.columns([1, 4, 1])
@@ -1201,7 +1201,7 @@ if not revealed.empty:
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
-            hide_index=True, use_container_width=True,
+            hide_index=True, width='stretch',
             column_config={**_EPA_COL_CFG, "_rz": None},
         )
     else:
@@ -1219,7 +1219,7 @@ if not revealed.empty:
             st.dataframe(
                 exp_display.style.apply(_style_plays, axis=1),
                 hide_index=True,
-                use_container_width=True,
+                width='stretch',
                 column_config={**_EPA_COL_CFG, "_rz": None},
             )
         else:
@@ -1233,7 +1233,7 @@ if not revealed.empty:
         st.dataframe(
             _style_drive_chart(_dc),
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
         )
     else:
         st.caption("No drive data available.")
@@ -1244,7 +1244,7 @@ else:
 st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
 _baselines = load_stat_baselines(int(season))
-st.dataframe(style_stat_table(stat_df, away, home, _baselines), use_container_width=True)
+st.dataframe(style_stat_table(stat_df, away, home, _baselines), width='stretch')
 st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
 
 # ---------- Situational success rates ----------
@@ -1252,7 +1252,7 @@ st.subheader("Situational success rates")
 st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
 sr_df, _sit_counts = situational_success_rate(revealed, home, away)
 _sit_baselines = load_situational_baselines(int(season))
-st.dataframe(_style_sr_table(sr_df, _sit_baselines, _sit_counts), use_container_width=True)
+st.dataframe(_style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch')
 
 # ---------- Player leaders ----------
 if not hide_leaders:
@@ -1264,7 +1264,7 @@ if not hide_leaders:
             _pass_df = top_players(revealed, team, "passing")
             st.caption("Passing")
             if not _pass_df.empty:
-                st.dataframe(_pass_df, hide_index=True, use_container_width=True,
+                st.dataframe(_pass_df, hide_index=True, width='stretch',
                              column_config={
                                  "EPA/play": st.column_config.NumberColumn(format="%.2f"),
                                  "SR%": st.column_config.NumberColumn(format="%.1f%%"),
@@ -1275,7 +1275,7 @@ if not hide_leaders:
             _rush_df = top_players(revealed, team, "rushing",4)
             st.caption("Rushing")
             if not _rush_df.empty:
-                st.dataframe(_rush_df, hide_index=True, use_container_width=True,
+                st.dataframe(_rush_df, hide_index=True, width='stretch',
                              column_config={
                                  "EPA/play": st.column_config.NumberColumn(format="%.2f"),
                                  "SR%": st.column_config.NumberColumn(format="%.1f%%"),
@@ -1285,13 +1285,13 @@ if not hide_leaders:
             _recv_df = top_players(revealed, team, "receiving",8)
             st.caption("Receiving")
             if not _recv_df.empty:
-                st.dataframe(_recv_df, hide_index=True, use_container_width=True)
+                st.dataframe(_recv_df, hide_index=True, width='stretch')
             else:
                 st.caption("No data yet")
             _def_df = top_defenders(revealed, team,10)
             st.caption("Defense")
             if not _def_df.empty:
-                st.dataframe(_def_df, hide_index=True, use_container_width=True,
+                st.dataframe(_def_df, hide_index=True, width='stretch',
                              column_config={
                                  "Tackles": st.column_config.NumberColumn(format="%.1f"),
                                  "Sacks": st.column_config.NumberColumn(format="%.1f"),
@@ -1377,7 +1377,7 @@ if not hide_wp:
                         annotation_position="top",
                         annotation_font_size=10,
                     )
-                st.plotly_chart(fig_mom, use_container_width=True)
+                st.plotly_chart(fig_mom, width='stretch')
         else:
             st.caption("Not enough plays for momentum chart.")
 
@@ -1400,7 +1400,7 @@ if not hide_wp:
         # game went to OT, an axis ending at 75+ minutes is itself a spoiler.
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 # ---------- Top plays by win probability added ----------
 st.subheader("Top plays by win probability added")
@@ -1429,7 +1429,7 @@ if not revealed.empty:
         styled_wpa = styled_wpa.set_properties(**{"text-align": "center"}).set_table_styles(
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
-        st.dataframe(styled_wpa, hide_index=False, use_container_width=True)
+        st.dataframe(styled_wpa, hide_index=False, width='stretch')
         st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits")
     else:
         st.caption("No win probability data available.")
