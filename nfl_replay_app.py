@@ -832,25 +832,39 @@ with st.sidebar:
         start_dt = datetime.combine(start_date, start_time)
         viewing_minutes = max((datetime.now() - start_dt).total_seconds() / 60.0, 0.0)
         elapsed_s = elapsed_game_seconds(viewing_minutes)
-        auto = st.checkbox("Auto-refresh every 30s", value=False,
-                           help="Recalculates your position from the clock every 30 seconds.")
+        auto = st.checkbox("Auto-refresh", value=False,
+                           help="Recalculates your position from the clock automatically.")
         if auto:
-            st_autorefresh(interval=30_000, key="autorefresh")
+            refresh_interval_s = st.selectbox(
+                "Refresh interval",
+                options=[15, 30, 45, 60, 90, 120],
+                index=2,
+                format_func=lambda x: f"{x}s",
+                key="refresh_interval_wall",
+            )
+            st_autorefresh(interval=refresh_interval_s * 1000, key="autorefresh")
 
     elif mode == "I'm X minutes into the broadcast":
         viewing_minutes = st.number_input("Minutes into broadcast",
                                           min_value=0.0, max_value=240.0,
                                           value=30.0, step=1.0)
         baseline_elapsed = elapsed_game_seconds(viewing_minutes)
-        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        auto = st.checkbox("Auto-advance play by play", value=False)
         if auto:
+            refresh_interval_s = st.selectbox(
+                "Refresh interval",
+                options=[15, 30, 45, 60, 90, 120],
+                index=2,
+                format_func=lambda x: f"{x}s",
+                key="refresh_interval_min",
+            )
             # If baseline changed, reset the advancing position to the new input.
             if st.session_state.get("_fix_baseline") != round(baseline_elapsed):
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = round(baseline_elapsed)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             viewing_minutes = (elapsed_s / 3600.0) * 190.0
-            st_autorefresh(interval=30_000, key="autorefresh")
+            st_autorefresh(interval=refresh_interval_s * 1000, key="autorefresh")
         else:
             elapsed_s = baseline_elapsed
 
@@ -872,14 +886,21 @@ with st.sidebar:
         # OT in pbp is qtr=5; treat it as starting after Q4 ends.
         completed_qtrs = qtr_idx - 1
         baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        auto = st.checkbox("Auto-advance play by play", value=False)
         if auto:
+            refresh_interval_s = st.selectbox(
+                "Refresh interval",
+                options=[15, 30, 45, 60, 90, 120],
+                index=2,
+                format_func=lambda x: f"{x}s",
+                key="refresh_interval_clock",
+            )
             _baseline_key = (qtr_pick, clock_str)
             if st.session_state.get("_fix_baseline") != _baseline_key:
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = _baseline_key
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
-            st_autorefresh(interval=30_000, key="autorefresh")
+            st_autorefresh(interval=refresh_interval_s * 1000, key="autorefresh")
         else:
             elapsed_s = baseline_elapsed
         # Derive an approximate viewing-minutes equivalent just for the caption
