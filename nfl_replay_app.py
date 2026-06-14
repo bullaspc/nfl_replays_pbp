@@ -1098,6 +1098,24 @@ _EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
 st.subheader("Boxscore")
 st.dataframe(boxscore(revealed, home, away), hide_index=True, use_container_width=True)
 
+# ---------- Scoring timeline ----------
+st.subheader("Scoring timeline")
+if not revealed.empty:
+    _stl_df = scoring_timeline(revealed, home, away)
+    if not _stl_df.empty:
+        _stl_cols = ["Q", "Clock", "Team", "Type", "Score"]
+        if not hide_descriptions:
+            _stl_cols = ["Q", "Clock", "Team", "Type", "Score", "Description"]
+        st.dataframe(
+            _style_scoring_timeline(_stl_df[_stl_cols]),
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.caption("No scores yet.")
+else:
+    st.caption("No plays revealed yet.")
+
 # ---------- Recent plays (with pagination) ----------
 st.subheader("Recent plays")
 st.markdown(
@@ -1191,6 +1209,22 @@ if not revealed.empty:
 else:
     st.caption("No plays revealed yet.")
 
+# ---------- Explosive plays ----------
+if not revealed.empty:
+    _exp_df = explosive_plays(revealed)
+    _exp_count = len(_exp_df)
+    with st.expander(f"Explosive plays ({_exp_count})", expanded=False):
+        if not _exp_df.empty:
+            exp_display = _build_plays_df(_exp_df, hide_descriptions, reverse=False)
+            st.dataframe(
+                exp_display.style.apply(_style_plays, axis=1),
+                hide_index=True,
+                use_container_width=True,
+                column_config={**_EPA_COL_CFG, "_rz": None},
+            )
+        else:
+            st.caption("No explosive plays yet.")
+
 # ---------- Drive chart ----------
 st.subheader("Drive chart")
 if not revealed.empty:
@@ -1272,6 +1306,81 @@ if not hide_leaders:
 
 # ---------- Win probability chart ----------
 if not hide_wp:
+    st.subheader("Momentum")
+    if not revealed.empty:
+        _mom_scrimmage = revealed[
+            (revealed["pass_attempt"].fillna(0) == 1) |
+            (revealed["rush_attempt"].fillna(0) == 1)
+        ].copy()
+        if not _mom_scrimmage.empty:
+            _mom_scrimmage["_elapsed_min"] = (
+                (3600 - _mom_scrimmage["game_seconds_remaining"].fillna(3600)) / 60.0
+            )
+            _mom_team_colors = load_team_colors()
+            _mom_color_map = {
+                home: _mom_team_colors.get(home, "#1f77b4"),
+                away: _mom_team_colors.get(away, "#ff7f0e"),
+            }
+            _mom_rows = []
+            for _mom_team in [away, home]:
+                _td = _mom_scrimmage[_mom_scrimmage["posteam"] == _mom_team].copy()
+                if _td.empty:
+                    continue
+                _td["_rolling_epa"] = (
+                    _td["epa"].fillna(0).rolling(5, center=True, min_periods=1).mean()
+                )
+                for _, _row in _td.iterrows():
+                    _mom_rows.append({
+                        "elapsed_min": _row["_elapsed_min"],
+                        "team": _mom_team,
+                        "rolling_epa": _row["_rolling_epa"],
+                    })
+            if _mom_rows:
+                _mom_df = pd.DataFrame(_mom_rows)
+                fig_mom = px.line(
+                    _mom_df, x="elapsed_min", y="rolling_epa", color="team",
+                    color_discrete_map=_mom_color_map,
+                    labels={
+                        "elapsed_min": "Game minutes elapsed",
+                        "rolling_epa": "EPA/play (5-play rolling avg)",
+                    },
+                )
+                fig_mom.update_yaxes(range=[-2, 2])
+                _mom_x_cap = max(elapsed_s / 60.0, 1.0)
+                fig_mom.update_xaxes(range=[0, _mom_x_cap])
+                fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                _mom_score_mask = (
+                    (revealed["touchdown"].fillna(0) == 1) |
+                    (revealed["field_goal_result"] == "made") |
+                    (revealed["safety"].fillna(0) == 1)
+                )
+                _mom_scores = revealed[_mom_score_mask].copy()
+                _mom_scores["_elapsed"] = (
+                    (3600 - _mom_scores["game_seconds_remaining"].fillna(3600)) / 60.0
+                )
+                _mom_scores["_team"] = _mom_scores.apply(
+                    lambda r: r["defteam"] if r["safety"] == 1 else r["posteam"], axis=1
+                )
+                _mom_scores["_type"] = _mom_scores.apply(
+                    lambda r: "Safety" if r["safety"] == 1
+                    else ("FG" if r["field_goal_result"] == "made" else "TD"),
+                    axis=1,
+                )
+                for _, _se in _mom_scores.iterrows():
+                    _se_color = _mom_team_colors.get(str(_se["_team"]), "#333333")
+                    fig_mom.add_vline(
+                        x=float(_se["_elapsed"]),
+                        line_dash="dot",
+                        line_color=_se_color,
+                        opacity=0.7,
+                        annotation_text=f"{_se['_team']} {_se['_type']}",
+                        annotation_position="top",
+                        annotation_font_size=10,
+                    )
+                st.plotly_chart(fig_mom, use_container_width=True)
+        else:
+            st.caption("Not enough plays for momentum chart.")
+
     st.subheader("Win probability")
     if not revealed.empty:
         wp_df = revealed[["game_seconds_remaining", "home_wp", "away_wp"]].dropna()
