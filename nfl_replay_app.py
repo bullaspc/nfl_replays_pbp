@@ -772,6 +772,79 @@ def _style_drive_chart(df: pd.DataFrame):
     )
 
 
+def scoring_timeline(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
+    """Every scoring play in revealed: TD, FG, Safety, XP, 2PT."""
+    if revealed.empty:
+        return pd.DataFrame()
+    mask = (
+        (revealed["touchdown"].fillna(0) == 1) |
+        (revealed["field_goal_result"] == "made") |
+        (revealed["safety"].fillna(0) == 1) |
+        (revealed["extra_point_result"] == "good") |
+        (revealed["two_point_conv_result"] == "success")
+    )
+    plays = revealed[mask].copy()
+    if plays.empty:
+        return pd.DataFrame()
+
+    def _score_type(r) -> str:
+        if r["safety"] == 1:
+            return "Safety"
+        if r["field_goal_result"] == "made":
+            return "FG"
+        if r["extra_point_result"] == "good":
+            return "XP"
+        if r["two_point_conv_result"] == "success":
+            return "2PT"
+        return "TD"
+
+    plays["Type"] = plays.apply(_score_type, axis=1)
+    plays["Team"] = plays.apply(
+        lambda r: r["defteam"] if r["safety"] == 1 else r["posteam"], axis=1
+    )
+    plays["Score"] = plays.apply(
+        lambda r: f"{away} {int(r['total_away_score'] or 0)} — {int(r['total_home_score'] or 0)} {home}",
+        axis=1,
+    )
+    plays["Q"] = plays["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
+    return plays[["Q", "time", "Team", "Type", "Score", "desc"]].rename(
+        columns={"time": "Clock", "desc": "Description"}
+    ).reset_index(drop=True)
+
+
+def _style_scoring_timeline(df: pd.DataFrame):
+    def _type_color(val):
+        if val == "TD":
+            return "background-color: #d4edda; color: #155724; font-weight: bold"
+        if val == "FG":
+            return "background-color: #cce5ff; color: #004085"
+        if val == "Safety":
+            return "background-color: #f8d7da; color: #721c24"
+        if val in ("XP", "2PT"):
+            return "background-color: #e2e3e5; color: #383d41"
+        return ""
+
+    styled = df.style
+    if "Type" in df.columns:
+        styled = _smap(styled, _type_color, subset=["Type"])
+    return (
+        styled
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
+def explosive_plays(revealed: pd.DataFrame, min_pass_yds: int = 15, min_rush_yds: int = 10) -> pd.DataFrame:
+    """Passing plays >= min_pass_yds yards or rushing plays >= min_rush_yds yards, sorted by yards desc."""
+    if revealed.empty:
+        return pd.DataFrame()
+    pass_mask = (revealed["pass_attempt"].fillna(0) == 1) & (revealed["passing_yards"].fillna(0) >= min_pass_yds)
+    rush_mask = (revealed["rush_attempt"].fillna(0) == 1) & (revealed["rushing_yards"].fillna(0) >= min_rush_yds)
+    return revealed[pass_mask | rush_mask].sort_values("yards_gained", ascending=False)
+
+
 def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> pd.DataFrame:
     """Top n plays by absolute win probability added, computed from home_wp shifts."""
     if revealed.empty:
