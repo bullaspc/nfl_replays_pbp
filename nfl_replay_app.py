@@ -46,7 +46,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "passing_yards", "rushing_yards", "receiving_yards",
         "pass_touchdown", "rush_touchdown",
         "interception", "fumble_lost", "sack", "qb_hit",
-        "complete_pass", "pass_attempt", "rush_attempt",
+        "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
         "first_down",
         "air_yards",
         "third_down_converted", "third_down_failed",
@@ -279,7 +279,7 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         return {}
     cols = [
         "game_id", "posteam",
-        "pass_attempt", "rush_attempt", "epa",
+        "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa",
         "passing_yards", "rushing_yards",
         "complete_pass", "air_yards",
         "interception", "fumble_lost", "first_down",
@@ -295,8 +295,8 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
     raw = raw[raw["posteam"].notna()]
 
     def _game_stats(td):
-        pass_mask = td["pass_attempt"].fillna(0) == 1
-        rush_mask = td["rush_attempt"].fillna(0) == 1
+        pass_mask = (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
+        rush_mask = (td["rush_attempt"].fillna(0) == 1) & (td["qb_kneel"].fillna(0) == 0)
         sc_mask   = pass_mask | rush_mask
         pp = int(pass_mask.sum())
         rp = int(rush_mask.sum())
@@ -385,8 +385,8 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
         )
         for team in [away, home]:
             tm = revealed[sit_mask & (revealed["posteam"] == team)]
-            pass_plays = tm[tm["pass_attempt"].fillna(0) == 1]
-            rush_plays = tm[tm["rush_attempt"].fillna(0) == 1]
+            pass_plays = tm[(tm["pass_attempt"].fillna(0) == 1) & (tm["qb_spike"].fillna(0) == 0)]
+            rush_plays = tm[(tm["rush_attempt"].fillna(0) == 1) & (tm["qb_kneel"].fillna(0) == 0)]
             counts[(label, team)] = {"Pass": len(pass_plays), "Rush": len(rush_plays)}
             rows.append({
                 "Situation": label,
@@ -416,7 +416,7 @@ def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
     prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
     if not prior:
         return {}
-    cols = ["game_id", "posteam", "pass_attempt", "rush_attempt", "epa", "down", "ydstogo"]
+    cols = ["game_id", "posteam", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa", "down", "ydstogo"]
     try:
         raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
     except Exception:
@@ -444,8 +444,8 @@ def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
 
         rows = []
         for (game_id, team), grp in sit[sit["posteam"].notna()].groupby(["game_id", "posteam"]):
-            pass_plays = grp[grp["pass_attempt"].fillna(0) == 1]
-            rush_plays = grp[grp["rush_attempt"].fillna(0) == 1]
+            pass_plays = grp[(grp["pass_attempt"].fillna(0) == 1) & (grp["qb_spike"].fillna(0) == 0)]
+            rush_plays = grp[(grp["rush_attempt"].fillna(0) == 1) & (grp["qb_kneel"].fillna(0) == 0)]
             rows.append({
                 "Pass SR%":      _sr(pass_plays),
                 "Pass EPA/play": _epa_per_play(pass_plays),
@@ -587,7 +587,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     """Leaders for a team so far."""
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
-        pass_td = td[td["pass_attempt"] == 1].copy()
+        pass_td = td[(td["pass_attempt"] == 1) & (td["qb_spike"].fillna(0) == 0)].copy()
         if pass_td.empty:
             return pd.DataFrame()
         pass_td["_success"] = (pass_td["epa"].fillna(0) > 0).astype(int)
@@ -602,7 +602,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
         g["aDOT"] = g["aDOT"].round(1)
         g["SR%"] = (g["SR%"] * 100).round(1)
     elif kind == "rushing":
-        rush_td = td[td["rush_attempt"] == 1].copy()
+        rush_td = td[(td["rush_attempt"] == 1) & (td["qb_kneel"].fillna(0) == 0)].copy()
         if rush_td.empty:
             return pd.DataFrame()
         rush_td["_success"] = (rush_td["epa"].fillna(0) > 0).astype(int)
@@ -616,7 +616,11 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
         g = g.join(sr, on="Player")
         g["SR%"] = (g["SR%"] * 100).round(1)
     else:  # receiving
-        recv_td = td[td["receiver_player_name"].notna() & (td["pass_attempt"].fillna(0) == 1)]
+        recv_td = td[
+            td["receiver_player_name"].notna()
+            & (td["pass_attempt"].fillna(0) == 1)
+            & (td["qb_spike"].fillna(0) == 0)
+        ]
         if recv_td.empty:
             return pd.DataFrame()
         g = recv_td.groupby("receiver_player_name", as_index=False).agg(
@@ -635,7 +639,11 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
 
 def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame:
     """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs."""
-    td = revealed[(revealed["defteam"] == team) & (revealed["sp"].fillna(0) == 0)]
+    _ST_TYPES = {"kickoff", "punt", "field_goal", "extra_point", "no_play"}
+    td = revealed[
+        (revealed["defteam"] == team)
+        & (~revealed["play_type"].isin(_ST_TYPES))
+    ]
     if td.empty:
         return pd.DataFrame()
 
@@ -905,25 +913,29 @@ with st.sidebar:
         start_dt = datetime.combine(start_date, start_time)
         viewing_minutes = max((datetime.now() - start_dt).total_seconds() / 60.0, 0.0)
         elapsed_s = elapsed_game_seconds(viewing_minutes)
-        auto = st.checkbox("Auto-refresh every 30s", value=False,
-                           help="Recalculates your position from the clock every 30 seconds.")
+        auto = st.checkbox("Auto-refresh", value=False,
+                           help="Recalculates your position from the clock automatically.")
         if auto:
-            st_autorefresh(interval=30_000, key="autorefresh")
+            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
+                                            format_func=lambda x: f"{x}s", key="refresh_interval_wall")
+            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
 
     elif mode == "I'm X minutes into the broadcast":
         viewing_minutes = st.number_input("Minutes into broadcast",
                                           min_value=0.0, max_value=240.0,
                                           value=30.0, step=1.0)
         baseline_elapsed = elapsed_game_seconds(viewing_minutes)
-        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        auto = st.checkbox("Auto-advance play by play", value=False)
         if auto:
+            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
+                                            format_func=lambda x: f"{x}s", key="refresh_interval_min")
             # If baseline changed, reset the advancing position to the new input.
             if st.session_state.get("_fix_baseline") != round(baseline_elapsed):
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = round(baseline_elapsed)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             viewing_minutes = (elapsed_s / 3600.0) * 190.0
-            st_autorefresh(interval=30_000, key="autorefresh")
+            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
         else:
             elapsed_s = baseline_elapsed
 
@@ -945,14 +957,16 @@ with st.sidebar:
         # OT in pbp is qtr=5; treat it as starting after Q4 ends.
         completed_qtrs = qtr_idx - 1
         baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-        auto = st.checkbox("Auto-advance play by play every 30s", value=False)
+        auto = st.checkbox("Auto-advance play by play", value=False)
         if auto:
+            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
+                                            format_func=lambda x: f"{x}s", key="refresh_interval_clock")
             _baseline_key = (qtr_pick, clock_str)
             if st.session_state.get("_fix_baseline") != _baseline_key:
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = _baseline_key
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
-            st_autorefresh(interval=30_000, key="autorefresh")
+            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
         else:
             elapsed_s = baseline_elapsed
         # Derive an approximate viewing-minutes equivalent just for the caption
