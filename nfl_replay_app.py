@@ -43,7 +43,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "total_home_score", "total_away_score",
         "home_wp", "away_wp", "epa",
         "passer_player_name", "rusher_player_name", "receiver_player_name",
-        "passing_yards", "rushing_yards", "receiving_yards",
+        "passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
         "pass_touchdown", "rush_touchdown",
         "interception", "fumble_lost", "sack", "qb_hit",
         "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
@@ -620,14 +620,25 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
             td["receiver_player_name"].notna()
             & (td["pass_attempt"].fillna(0) == 1)
             & (td["qb_spike"].fillna(0) == 0)
-        ]
+        ].copy()
         if recv_td.empty:
             return pd.DataFrame()
+        recv_td["_exp"] = (
+            (recv_td["complete_pass"].fillna(0) == 1)
+            & (recv_td["receiving_yards"].fillna(0) >= 20)
+        ).astype(int)
         g = recv_td.groupby("receiver_player_name", as_index=False).agg(
             Tgt=("pass_attempt", "sum"),
-            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"),
+            Rec=("complete_pass", "sum"),
+            Yds=("receiving_yards", "sum"),
+            YAC=("yards_after_catch", "sum"),
+            aDOT=("air_yards", "mean"),
+            TD=("pass_touchdown", "sum"),
+            Exp=("_exp", "sum"),
             _epa=("epa", "sum"), _plays=("epa", "count"))
         g["Yds"] = g["Yds"].fillna(0)
+        g["YAC"] = g["YAC"].fillna(0)
+        g["aDOT"] = g["aDOT"].round(1)
         g = g.rename(columns={"receiver_player_name": "Player"})
     g = g.dropna(subset=["Player"])
     int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
@@ -729,7 +740,10 @@ def drive_chart(revealed: pd.DataFrame) -> pd.DataFrame:
             continue
         posteam = off["posteam"].dropna().iloc[0]
         qtr_start = int(off["qtr"].dropna().iloc[0]) if off["qtr"].notna().any() else ""
-        yl_series = off["yardline_100"].dropna()
+        _special = {"kickoff", "extra_point", "no_play"}
+        yl_series = off[~off["play_type"].isin(_special)]["yardline_100"].dropna()
+        if yl_series.empty:
+            yl_series = off["yardline_100"].dropna()
         if not yl_series.empty:
             y = int(yl_series.iloc[0])
             start = f"OWN {100 - y}" if y > 50 else ("50" if y == 50 else f"OPP {y}")
@@ -933,6 +947,7 @@ with st.sidebar:
             if st.session_state.get("_fix_baseline") != round(baseline_elapsed):
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = round(baseline_elapsed)
+                st.session_state.pop("_fix_play_count", None)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             viewing_minutes = (elapsed_s / 3600.0) * 190.0
             st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
@@ -965,6 +980,7 @@ with st.sidebar:
             if st.session_state.get("_fix_baseline") != _baseline_key:
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = _baseline_key
+                st.session_state.pop("_fix_play_count", None)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
         else:
@@ -998,6 +1014,12 @@ away = pbp_game["away_team"].iloc[0]
 
 elapsed_s = max(float(elapsed_s) - float(safety_margin), 0.0)
 revealed = filter_revealed(pbp_game, elapsed_s)
+# In auto-advance modes cap to the tracked play count so that two plays sharing
+# the same game clock are still revealed one at a time.
+if auto and mode != "I started the broadcast at...":
+    if "_fix_play_count" not in st.session_state:
+        st.session_state["_fix_play_count"] = len(revealed)
+    revealed = revealed.iloc[: st.session_state["_fix_play_count"]]
 
 # Header summary (no future info)
 qtr_now = int(revealed["qtr"].iloc[-1]) if not revealed.empty else 1
@@ -1299,7 +1321,11 @@ if not hide_leaders:
             _recv_df = top_players(revealed, team, "receiving",8)
             st.caption("Receiving")
             if not _recv_df.empty:
-                st.dataframe(_recv_df, hide_index=True, width='stretch')
+                st.dataframe(_recv_df, hide_index=True, width='stretch',
+                             column_config={
+                                 "aDOT": st.column_config.NumberColumn(format="%.1f"),
+                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                             })
             else:
                 st.caption("No data yet")
             _def_df = top_defenders(revealed, team,10)
@@ -1451,12 +1477,17 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
-# For fixed-position modes, advance session_state to the next play's timestamp so
-# the next st_autorefresh tick reveals exactly one more play.
+# Advance by row count (not timestamp) so two plays sharing the same game clock
+# are still revealed one at a time.
 if auto and mode != "I started the broadcast at...":
-    _cur = float(st.session_state.get("_fix_elapsed", 0.0))
-    _played_at = 3600 - pbp_game["game_seconds_remaining"].fillna(3600)
-    _future = _played_at[_played_at > _cur + 0.5]
-    if not _future.empty:
-        st.session_state["_fix_elapsed"] = float(_future.min())
+    _cur_count = st.session_state.get("_fix_play_count", len(revealed))
+    _next_count = _cur_count + 1
+    if _next_count <= len(pbp_game):
+        st.session_state["_fix_play_count"] = _next_count
+        # Sync _fix_elapsed to the newly-revealed play's game time so the position
+        # caption and non-cap filter stay correct on the following run.
+        _next_row = pbp_game.iloc[_next_count - 1]
+        _gsr = _next_row["game_seconds_remaining"]
+        if pd.notna(_gsr):
+            st.session_state["_fix_elapsed"] = float(3600 - _gsr) + float(safety_margin)
 
