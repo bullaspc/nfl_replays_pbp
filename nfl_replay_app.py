@@ -947,6 +947,7 @@ with st.sidebar:
             if st.session_state.get("_fix_baseline") != round(baseline_elapsed):
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = round(baseline_elapsed)
+                st.session_state.pop("_fix_play_count", None)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             viewing_minutes = (elapsed_s / 3600.0) * 190.0
             st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
@@ -979,6 +980,7 @@ with st.sidebar:
             if st.session_state.get("_fix_baseline") != _baseline_key:
                 st.session_state["_fix_elapsed"] = baseline_elapsed
                 st.session_state["_fix_baseline"] = _baseline_key
+                st.session_state.pop("_fix_play_count", None)
             elapsed_s = st.session_state.get("_fix_elapsed", baseline_elapsed)
             st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
         else:
@@ -1012,6 +1014,12 @@ away = pbp_game["away_team"].iloc[0]
 
 elapsed_s = max(float(elapsed_s) - float(safety_margin), 0.0)
 revealed = filter_revealed(pbp_game, elapsed_s)
+# In auto-advance modes cap to the tracked play count so that two plays sharing
+# the same game clock are still revealed one at a time.
+if auto and mode != "I started the broadcast at...":
+    if "_fix_play_count" not in st.session_state:
+        st.session_state["_fix_play_count"] = len(revealed)
+    revealed = revealed.iloc[: st.session_state["_fix_play_count"]]
 
 # Header summary (no future info)
 qtr_now = int(revealed["qtr"].iloc[-1]) if not revealed.empty else 1
@@ -1469,12 +1477,17 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
-# For fixed-position modes, advance session_state to the next play's timestamp so
-# the next st_autorefresh tick reveals exactly one more play.
+# Advance by row count (not timestamp) so two plays sharing the same game clock
+# are still revealed one at a time.
 if auto and mode != "I started the broadcast at...":
-    _cur = float(st.session_state.get("_fix_elapsed", 0.0))
-    _played_at = 3600 - pbp_game["game_seconds_remaining"].fillna(3600)
-    _future = _played_at[_played_at > _cur + 0.5]
-    if not _future.empty:
-        st.session_state["_fix_elapsed"] = float(_future.min())
+    _cur_count = st.session_state.get("_fix_play_count", len(revealed))
+    _next_count = _cur_count + 1
+    if _next_count <= len(pbp_game):
+        st.session_state["_fix_play_count"] = _next_count
+        # Sync _fix_elapsed to the newly-revealed play's game time so the position
+        # caption and non-cap filter stay correct on the following run.
+        _next_row = pbp_game.iloc[_next_count - 1]
+        _gsr = _next_row["game_seconds_remaining"]
+        if pd.notna(_gsr):
+            st.session_state["_fix_elapsed"] = float(3600 - _gsr) + float(safety_margin)
 
