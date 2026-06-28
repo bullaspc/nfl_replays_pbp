@@ -729,7 +729,10 @@ def drive_chart(revealed: pd.DataFrame) -> pd.DataFrame:
             continue
         posteam = off["posteam"].dropna().iloc[0]
         qtr_start = int(off["qtr"].dropna().iloc[0]) if off["qtr"].notna().any() else ""
-        yl_series = off["yardline_100"].dropna()
+        _special = {"kickoff", "extra_point", "no_play"}
+        yl_series = off[~off["play_type"].isin(_special)]["yardline_100"].dropna()
+        if yl_series.empty:
+            yl_series = off["yardline_100"].dropna()
         if not yl_series.empty:
             y = int(yl_series.iloc[0])
             start = f"OWN {100 - y}" if y > 50 else ("50" if y == 50 else f"OPP {y}")
