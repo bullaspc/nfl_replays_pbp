@@ -43,7 +43,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "total_home_score", "total_away_score",
         "home_wp", "away_wp", "epa",
         "passer_player_name", "rusher_player_name", "receiver_player_name",
-        "passing_yards", "rushing_yards", "receiving_yards",
+        "passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
         "pass_touchdown", "rush_touchdown",
         "interception", "fumble_lost", "sack", "qb_hit",
         "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
@@ -620,14 +620,25 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
             td["receiver_player_name"].notna()
             & (td["pass_attempt"].fillna(0) == 1)
             & (td["qb_spike"].fillna(0) == 0)
-        ]
+        ].copy()
         if recv_td.empty:
             return pd.DataFrame()
+        recv_td["_exp"] = (
+            (recv_td["complete_pass"].fillna(0) == 1)
+            & (recv_td["receiving_yards"].fillna(0) >= 20)
+        ).astype(int)
         g = recv_td.groupby("receiver_player_name", as_index=False).agg(
             Tgt=("pass_attempt", "sum"),
-            Yds=("receiving_yards", "sum"), TD=("pass_touchdown", "sum"),
+            Rec=("complete_pass", "sum"),
+            Yds=("receiving_yards", "sum"),
+            YAC=("yards_after_catch", "sum"),
+            aDOT=("air_yards", "mean"),
+            TD=("pass_touchdown", "sum"),
+            Exp=("_exp", "sum"),
             _epa=("epa", "sum"), _plays=("epa", "count"))
         g["Yds"] = g["Yds"].fillna(0)
+        g["YAC"] = g["YAC"].fillna(0)
+        g["aDOT"] = g["aDOT"].round(1)
         g = g.rename(columns={"receiver_player_name": "Player"})
     g = g.dropna(subset=["Player"])
     int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
@@ -1302,7 +1313,11 @@ if not hide_leaders:
             _recv_df = top_players(revealed, team, "receiving",8)
             st.caption("Receiving")
             if not _recv_df.empty:
-                st.dataframe(_recv_df, hide_index=True, width='stretch')
+                st.dataframe(_recv_df, hide_index=True, width='stretch',
+                             column_config={
+                                 "aDOT": st.column_config.NumberColumn(format="%.1f"),
+                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
+                             })
             else:
                 st.caption("No data yet")
             _def_df = top_defenders(revealed, team,10)
