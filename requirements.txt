@@ -1,6 +1,6 @@
 setuptools>=68.0.0
 streamlit
-nfl_data_py
+nfl_data_py>=0.3.3
 pandas
 numpy
 plotly
