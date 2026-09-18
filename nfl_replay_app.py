@@ -27,7 +27,10 @@ st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="ð
 @st.cache_data(ttl=3600)
 def load_team_colors() -> dict[str, str]:
     """Map team abbreviation â†’ primary hex color."""
-    df = nfl.import_team_desc()
+    try:
+        df = nfl.import_team_desc()
+    except Exception:  # network error / upstream file moved: fall back to defaults
+        return {}
     return dict(zip(df["team_abbr"], df["team_color"]))
 
 
@@ -63,7 +66,17 @@ def load_pbp(season: int) -> pd.DataFrame:
         "pass_defense_1_player_name", "pass_defense_2_player_name",
         "forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name",
     ]
-    df = nfl.import_pbp_data([season], columns=cols, downcast=True)
+    # nfl_data_py swallows download errors (e.g. a 404 because nflverse hasn't
+    # published this season's file yet) and returns an empty, column-less frame.
+    # Participation data is not used by this app and is not published for every
+    # season, so it must not be requested (older nfl_data_py raised a 404 on it).
+    df = nfl.import_pbp_data([season], columns=cols, downcast=True,
+                             include_participation=False)
+    if df.empty or "game_id" not in df.columns:
+        raise ValueError(
+            f"No play-by-play data is available for the {season} season yet. "
+            "nflverse publishes it once games have been played."
+        )
     return df
 
 
@@ -288,7 +301,8 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         "drive", "qtr", "game_seconds_remaining",
     ]
     try:
-        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
+        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True,
+                                  include_participation=False)
     except Exception:  # network error, missing season data, etc.
         return {}
 
@@ -418,7 +432,8 @@ def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
         return {}
     cols = ["game_id", "posteam", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa", "down", "ydstogo"]
     try:
-        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True)
+        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True,
+                                  include_participation=False)
     except Exception:
         return {}
 
