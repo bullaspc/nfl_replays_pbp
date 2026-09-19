@@ -19,7 +19,6 @@ import numpy as np
 import nfl_data_py as nfl
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime, timedelta, time
 
 st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="🏈")
 
@@ -99,16 +98,10 @@ def list_games(pbp: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------- Replay logic ----------
-def elapsed_game_seconds(viewing_minutes: float) -> float:
-    """
-    Convert viewing-elapsed minutes into elapsed *game* seconds.
-    A real NFL broadcast is ~3h10m for 60 minutes of game clock.
-    We treat viewing time as a linear stretch of game clock.
-    """
-    BROADCAST_MINUTES = 190.0   # ~3h10m for a full game
-    GAME_SECONDS = 3600.0
-    frac = min(max(viewing_minutes / BROADCAST_MINUTES, 0.0), 1.0)
-    return frac * GAME_SECONDS
+# A real NFL broadcast runs ~3h10m for 60 minutes of game clock. Used only to
+# show an approximate broadcast position alongside the game clock.
+BROADCAST_MINUTES = 190.0
+GAME_SECONDS = 3600.0
 
 
 def play_timeline(pbp_game: pd.DataFrame) -> pd.Series:
@@ -1056,11 +1049,6 @@ def _time_bar_html(frac: float, fill: str, in_ot: bool) -> str:
 
 
 # ---------- UI ----------
-CLOCK_MODE = "Jump to a specific game clock"
-WALL_CLOCK_MODE = "I started the broadcast at..."
-MINUTES_MODE = "I'm X minutes into the broadcast"
-KICKOFF_MODE = "Start at kickoff (drive it with the bar)"
-
 st.title("🏈 NFL Tape-Delay Replay")
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
@@ -1090,73 +1078,32 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Your viewing")
-    mode = st.radio(
-        "How do you want to set your position?",
-        [CLOCK_MODE, WALL_CLOCK_MODE, MINUTES_MODE, KICKOFF_MODE],
-    )
+    st.caption("Set roughly where you are with the game clock, then sync exactly "
+               "with the time bar.")
 
-    # Every mode does exactly one job: produce a baseline position in elapsed game
-    # seconds, plus a reset_key identifying the inputs that produced it. The cursor
-    # re-seeds from the baseline whenever that key changes.
-    if mode == WALL_CLOCK_MODE:
-        start_date = st.date_input("Start date", value=datetime.now().date())
-        start_time = st.time_input("Start time (your local clock)", value=time(20, 0))
-        start_dt = datetime.combine(start_date, start_time)
-        viewing_minutes = max((datetime.now() - start_dt).total_seconds() / 60.0, 0.0)
-        baseline_elapsed = elapsed_game_seconds(viewing_minutes)
-        reset_key = None  # wall-clock ratchets instead of re-seeding; see below
-        auto = st.checkbox("Auto-refresh", value=False,
-                           help="Recalculates your position from the clock automatically.")
-        if auto:
-            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
-                                            format_func=lambda x: f"{x}s", key="refresh_interval_wall")
-            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
+    # The game clock counts DOWN within each quarter from 15:00 to 0:00.
+    qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT"], index=0)
+    clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
+                              help="Time left on the in-quarter clock, e.g. 7:32")
+    try:
+        mm, ss = clock_str.strip().split(":")
+        remaining_in_qtr = int(mm) * 60 + int(ss)
+        assert 0 <= remaining_in_qtr <= 15 * 60
+    except Exception:
+        st.warning("Use MM:SS format, e.g. 7:32. Defaulting to 15:00.")
+        remaining_in_qtr = 15 * 60
 
-    elif mode == MINUTES_MODE:
-        viewing_minutes = st.number_input("Minutes into broadcast",
-                                          min_value=0.0, max_value=240.0,
-                                          value=30.0, step=1.0)
-        baseline_elapsed = elapsed_game_seconds(viewing_minutes)
-        reset_key = round(baseline_elapsed)
-        auto = st.checkbox("Auto-advance play by play", value=False)
-        if auto:
-            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
-                                            format_func=lambda x: f"{x}s", key="refresh_interval_min")
-            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
-
-    elif mode == KICKOFF_MODE:
-        st.caption("Nothing is revealed until you step forward with the time bar.")
-        baseline_elapsed = 0.0
-        reset_key = "kickoff"
-        auto = st.checkbox("Auto-advance play by play", value=False)
-        if auto:
-            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
-                                            format_func=lambda x: f"{x}s", key="refresh_interval_kick")
-            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
-
-    else:  # CLOCK_MODE — game clock counts DOWN within each quarter from 15:00
-        qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT"], index=0)
-        clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
-                                  help="Time left on the in-quarter clock, e.g. 7:32")
-        try:
-            mm, ss = clock_str.strip().split(":")
-            remaining_in_qtr = int(mm) * 60 + int(ss)
-            assert 0 <= remaining_in_qtr <= 15 * 60
-        except Exception:
-            st.warning("Use MM:SS format, e.g. 7:32. Defaulting to 15:00.")
-            remaining_in_qtr = 15 * 60
-
-        qtr_idx = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "OT": 5}[qtr_pick]
-        # Game seconds elapsed = full quarters completed * 900 + (900 - remaining)
-        # OT in pbp is qtr=5; treat it as starting after Q4 ends.
-        completed_qtrs = qtr_idx - 1
-        baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-        reset_key = (qtr_pick, clock_str)
-        auto = st.checkbox("Auto-advance play by play", value=False)
-        if auto:
-            refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
-                                            format_func=lambda x: f"{x}s", key="refresh_interval_clock")
-            st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
+    qtr_idx = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "OT": 5}[qtr_pick]
+    # Game seconds elapsed = full quarters completed * 900 + (900 - remaining)
+    # OT in pbp is qtr=5; treat it as starting after Q4 ends.
+    completed_qtrs = qtr_idx - 1
+    baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
+    auto = st.checkbox("Auto-advance play by play", value=False)
+    if auto:
+        refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
+                                        format_func=lambda x: f"{x}s",
+                                        key="refresh_interval_clock")
+        st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
@@ -1181,28 +1128,16 @@ with st.sidebar:
 # and overtime steps one play at a time. OT is the worst case for a clock filter,
 # because its clock restarts inside the regulation range — every OT play looks
 # *earlier* than the end of Q4, so a game-seconds threshold unlocks the entire
-# overtime period at once. Each sidebar mode only seeds the cursor.
+# overtime period at once. The clock inputs only seed the cursor.
 #   _cursor_idx  the play you're currently on
 #   _cursor_max  furthest play unlocked; this is the spoiler gate
-#   _cursor_key  when this changes, re-seed both from the mode's baseline
+#   _cursor_key  when the clock inputs change, re-seed both from the baseline
 baseline_cursor = cursor_from_elapsed(timeline, max(float(baseline_elapsed) - float(safety_margin), 0.0))
 baseline_cursor = min(baseline_cursor, last_idx)
 
-if mode == WALL_CLOCK_MODE:
-    # Wall-clock recomputes its baseline on every rerun, so re-seeding would fight
-    # the clock. It ratchets instead: real time only ever raises the ceiling, and
-    # the cursor rides that leading edge unless you've deliberately scrubbed back.
-    if st.session_state.get("_cursor_key") != (game_id, mode):
-        st.session_state["_cursor_key"] = (game_id, mode)
-        st.session_state["_cursor_max"] = baseline_cursor
-        st.session_state["_cursor_idx"] = baseline_cursor
-    _prev_max = int(st.session_state["_cursor_max"])
-    if baseline_cursor > _prev_max:
-        if int(st.session_state["_cursor_idx"]) >= _prev_max:
-            st.session_state["_cursor_idx"] = baseline_cursor
-        st.session_state["_cursor_max"] = baseline_cursor
-elif st.session_state.get("_cursor_key") != (game_id, mode, reset_key, safety_margin):
-    st.session_state["_cursor_key"] = (game_id, mode, reset_key, safety_margin)
+_seed_key = (game_id, qtr_pick, clock_str, safety_margin)
+if st.session_state.get("_cursor_key") != _seed_key:
+    st.session_state["_cursor_key"] = _seed_key
     st.session_state["_cursor_max"] = baseline_cursor
     st.session_state["_cursor_idx"] = baseline_cursor
 
@@ -1317,7 +1252,7 @@ if cursor_idx >= 0:
     # whether the game ran long.
     _bits.append(f"play {cursor_idx + 1} of {cursor_max + 1} unlocked")
     _bits.append(f"⏱ {elapsed_s / 60:.1f} game min "
-                 f"(≈ {elapsed_s / 3600.0 * 190.0:.0f} broadcast min)")
+                 f"(≈ {elapsed_s / GAME_SECONDS * BROADCAST_MINUTES:.0f} broadcast min)")
     st.caption(" · ".join(_bits))
 else:
     st.caption("Kickoff — nothing revealed yet. Press **▶ Next play** to begin.")
@@ -1687,10 +1622,8 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
-# One play per refresh tick. Wall-clock mode is excluded because its advancement
-# already comes from the ratchet above — real time raises the ceiling there, and
-# stepping as well would run ahead of the broadcast the mode exists to track.
-if auto and mode != WALL_CLOCK_MODE and cursor_max < last_idx:
+# One play per refresh tick.
+if auto and cursor_max < last_idx:
     _at_edge = cursor_idx >= cursor_max
     st.session_state["_cursor_max"] = cursor_max + 1
     if _at_edge:
