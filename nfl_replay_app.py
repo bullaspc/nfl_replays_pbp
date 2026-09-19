@@ -1251,7 +1251,9 @@ if not revealed.empty:
         _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
 
     if _cur_drive is not None:
-        _drive_raw = revealed[revealed["drive"] == _cur_drive].copy()
+        _drive_raw = revealed[
+            (revealed["drive"] == _cur_drive) & (revealed["play_type"] != "kickoff")
+        ].copy()
 
         # Drive summary stats (scrimmage plays only)
         _scrimmage = _drive_raw[
