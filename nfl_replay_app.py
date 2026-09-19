@@ -55,6 +55,7 @@ def load_pbp(season: int) -> pd.DataFrame:
         "third_down_converted", "third_down_failed",
         "fourth_down_converted", "fourth_down_failed",
         "goal_to_go", "yardline_100", "drive",
+        "penalty", "penalty_team", "penalty_yards",
         # defensive player columns
         "solo_tackle_1_player_name", "solo_tackle_2_player_name",
         "assist_tackle_1_player_name", "assist_tackle_2_player_name",
@@ -151,7 +152,7 @@ def _rate(num: float, den: float) -> float:
     return num / den if den > 0 else float("nan")
 
 
-_LOWER_IS_BETTER = {"Turnovers"}
+_LOWER_IS_BETTER = {"Turnovers", "Penalties", "Penalty Yds"}
 
 
 def _top_seconds(td: pd.DataFrame) -> float:
@@ -249,6 +250,13 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
         comp_rush = int(cmp) + rush_plays
         top = _top_seconds(td)
 
+        # Penalties are charged against the team penalized (penalty_team),
+        # which may differ from possession — so this is computed on the
+        # full revealed slice, not the posteam-filtered `td`.
+        pen_mask = revealed["penalty_team"] == team
+        penalties = int(pen_mask.sum())
+        penalty_yds = int(revealed.loc[pen_mask, "penalty_yards"].fillna(0).sum())
+
         col = [
             total_plays,
             pass_plays,
@@ -268,6 +276,8 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
             _rate(third_conv, third_conv + third_fail),
             _rate(rz_td, rz_plays),
             tos,
+            penalties,
+            penalty_yds,
             top,
         ]
         stats[team] = col
@@ -279,7 +289,7 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
         "Pass EPA/play", "Rush EPA/play", "EPA/play",
         "Pass SR", "Rush SR",
         "1st Down %", "3rd Down %", "RZ TD%",
-        "Turnovers", "TOP",
+        "Turnovers", "Penalties", "Penalty Yds", "TOP",
     ]
     return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
@@ -299,14 +309,15 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         "third_down_converted", "third_down_failed",
         "yardline_100", "touchdown",
         "drive", "qtr", "game_seconds_remaining",
+        "penalty", "penalty_team", "penalty_yards",
     ]
     try:
-        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True,
-                                  include_participation=False)
+        raw_all = nfl.import_pbp_data(prior, columns=cols, downcast=True,
+                                      include_participation=False)
     except Exception:  # network error, missing season data, etc.
         return {}
 
-    raw = raw[raw["posteam"].notna()]
+    raw = raw_all[raw_all["posteam"].notna()]
 
     def _game_stats(td):
         pass_mask = (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
@@ -361,6 +372,23 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         )
     except TypeError:
         per_game = raw.groupby(["game_id", "posteam"]).apply(_game_stats)
+
+    # Penalties are charged against penalty_team, which can differ from
+    # posteam (e.g. a defensive penalty), so they're aggregated from the
+    # full unfiltered play set and joined in by (game_id, penalty_team).
+    pen = raw_all[
+        (raw_all["penalty"].fillna(0) == 1) & raw_all["penalty_team"].notna()
+    ]
+    pen_stats = pen.groupby(["game_id", "penalty_team"]).agg(
+        **{
+            "Penalties": ("penalty", "size"),
+            "Penalty Yds": ("penalty_yards", lambda s: s.fillna(0).sum()),
+        }
+    )
+    pen_stats.index = pen_stats.index.set_names(["game_id", "posteam"])
+    per_game = per_game.join(pen_stats, how="left")
+    per_game[["Penalties", "Penalty Yds"]] = per_game[["Penalties", "Penalty Yds"]].fillna(0)
+
     return {
         stat: np.sort(per_game[stat].dropna().values)
         for stat in per_game.columns
