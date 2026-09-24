@@ -44,6 +44,8 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Auto-advance:** When `auto=True`, `st_autorefresh` fires and the block at the bottom of the file bumps `_cursor_max` by one, carrying `_cursor_idx` with it only if it was already at the edge — so an auto-advancing replay doesn't yank you forward while you're scrubbing back through a drive.
 
+**Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
+
 **UI sections (top to bottom):** header metrics → boxscore → recent plays (paginated, 15/page) → current drive → team stats → player leaders → win probability chart.
 
 **Stat tables:**
