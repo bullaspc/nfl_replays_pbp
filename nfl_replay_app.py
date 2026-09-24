@@ -13,12 +13,19 @@ Run with:
     streamlit run nfl_replay_app.py
 """
 
+import time
+from datetime import date, datetime
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import nfl_data_py as nfl
 import plotly.express as px
+import requests
 from streamlit_autorefresh import st_autorefresh
+
+import live_feed
+import nflfastr_models
 
 st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="🏈")
 
@@ -33,44 +40,63 @@ def load_team_colors() -> dict[str, str]:
     return dict(zip(df["team_abbr"], df["team_color"]))
 
 
-@st.cache_data(ttl=120)  # refresh every 2 minutes; pbp updates aren't instant anyway
-def load_pbp(season: int) -> pd.DataFrame:
-    """Load play-by-play for a given season."""
-    cols = [
-        "game_id", "season", "week", "game_date", "home_team", "away_team",
-        "posteam", "defteam", "qtr", "time", "game_seconds_remaining",
-        "play_id", "desc", "play_type", "down", "ydstogo", "yards_gained",
-        "touchdown", "field_goal_result", "extra_point_result",
-        "two_point_conv_result", "safety", "sp",
-        "total_home_score", "total_away_score",
-        "home_wp", "away_wp", "epa",
-        "passer_player_name", "rusher_player_name", "receiver_player_name",
-        "passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
-        "pass_touchdown", "rush_touchdown",
-        "interception", "fumble_lost", "sack", "qb_hit",
-        "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
-        "first_down",
-        "air_yards",
-        "third_down_converted", "third_down_failed",
-        "fourth_down_converted", "fourth_down_failed",
-        "goal_to_go", "yardline_100", "drive",
-        "penalty", "penalty_team", "penalty_yards",
-        # defensive player columns
-        "solo_tackle_1_player_name", "solo_tackle_2_player_name",
-        "assist_tackle_1_player_name", "assist_tackle_2_player_name",
-        "assist_tackle_3_player_name", "assist_tackle_4_player_name",
-        "sack_player_name", "half_sack_1_player_name", "half_sack_2_player_name",
-        "qb_hit_1_player_name", "qb_hit_2_player_name",
-        "tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name",
-        "interception_player_name",
-        "pass_defense_1_player_name", "pass_defense_2_player_name",
-        "forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name",
-    ]
+NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
+
+# Every column the app reads. The live feed is built to the same layout.
+PBP_COLS = [
+    "game_id", "season", "week", "game_date", "home_team", "away_team",
+    "posteam", "defteam", "qtr", "time", "game_seconds_remaining",
+    "play_id", "desc", "play_type", "down", "ydstogo", "yards_gained",
+    "touchdown", "field_goal_result", "extra_point_result",
+    "two_point_conv_result", "safety", "sp",
+    "total_home_score", "total_away_score",
+    "home_wp", "away_wp", "epa",
+    "passer_player_name", "rusher_player_name", "receiver_player_name",
+    "passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
+    "pass_touchdown", "rush_touchdown",
+    "interception", "fumble_lost", "sack", "qb_hit",
+    "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
+    "first_down",
+    "air_yards",
+    "third_down_converted", "third_down_failed",
+    "fourth_down_converted", "fourth_down_failed",
+    "goal_to_go", "yardline_100", "drive",
+    "penalty", "penalty_team", "penalty_yards",
+    # defensive player columns
+    "solo_tackle_1_player_name", "solo_tackle_2_player_name",
+    "assist_tackle_1_player_name", "assist_tackle_2_player_name",
+    "assist_tackle_3_player_name", "assist_tackle_4_player_name",
+    "sack_player_name", "half_sack_1_player_name", "half_sack_2_player_name",
+    "qb_hit_1_player_name", "qb_hit_2_player_name",
+    "tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name",
+    "interception_player_name",
+    "pass_defense_1_player_name", "pass_defense_2_player_name",
+    "forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name",
+]
+
+
+@st.cache_data(ttl=60)
+def nflverse_stamp() -> str:
+    """When nflverse last rebuilt its pbp files. Checked every minute, so a
+    newly published game shows up right away instead of on a fixed timer."""
+    try:
+        r = requests.get(f"{NFLVERSE_RELEASE}/pbp/timestamp.json", timeout=10)
+        r.raise_for_status()
+        return str(r.json().get("last_updated", ""))
+    except Exception:
+        # Unknown: fall back to refreshing every 10 minutes.
+        return f"unknown-{int(time.time() // 600)}"
+
+
+@st.cache_data(max_entries=4)
+def load_pbp(season: int, stamp: str) -> pd.DataFrame:
+    """Load nflverse play-by-play for a season. `stamp` is only a cache key:
+    the file is downloaded again when nflverse republishes it."""
     # nfl_data_py swallows download errors (e.g. a 404 because nflverse hasn't
     # published this season's file yet) and returns an empty, column-less frame.
     # Participation data is not used by this app and is not published for every
     # season, so it must not be requested (older nfl_data_py raised a 404 on it).
-    df = nfl.import_pbp_data([season], columns=cols, downcast=True,
+    df = nfl.import_pbp_data([season], columns=PBP_COLS, downcast=True,
                              include_participation=False)
     if df.empty or "game_id" not in df.columns:
         raise ValueError(
@@ -80,21 +106,72 @@ def load_pbp(season: int) -> pd.DataFrame:
     return df
 
 
-def list_games(pbp: pd.DataFrame) -> pd.DataFrame:
-    """One row per game with date, teams, and game_id."""
-    g = (
-        pbp.groupby("game_id", as_index=False)
-        .agg(week=("week", "first"),
-             game_date=("game_date", "first"),
-             home_team=("home_team", "first"),
-             away_team=("away_team", "first"))
-        .sort_values(["week", "game_date"])
-    )
+@st.cache_data(ttl=3600)
+def load_schedule(season: int) -> pd.DataFrame:
+    """nflverse's schedule: ESPN event id, spread line, roof, kickoff time."""
+    try:
+        sched = pd.read_parquet(f"{NFLVERSE_RELEASE}/schedules/games.parquet")
+    except Exception:
+        try:
+            sched = nfl.import_schedules([season])
+        except Exception:
+            return pd.DataFrame()
+    return sched[sched["season"] == season].reset_index(drop=True)
+
+
+def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
+    """One row per game with date, teams, game_id and data source.
+
+    source is "nflfastR" once nflverse has published the game's pbp, and
+    "live" for a game that has kicked off (or is about to) but isn't
+    published yet — those are read from ESPN's play feed.
+    """
+    published = set(pbp["game_id"].unique()) if not pbp.empty else set()
+    if not sched.empty:
+        g = sched.copy()
+        g["game_date"] = g["gameday"]
+        today = date.today().isoformat()
+        g = g[(g["game_id"].isin(published)) | ((g["gameday"] <= today) & g["espn"].notna())]
+        g["source"] = np.where(g["game_id"].isin(published), "nflfastR", "live")
+        g = g.sort_values(["week", "gameday", "gametime"])
+    elif not pbp.empty:
+        g = (
+            pbp.groupby("game_id", as_index=False)
+            .agg(week=("week", "first"),
+                 game_date=("game_date", "first"),
+                 home_team=("home_team", "first"),
+                 away_team=("away_team", "first"))
+            .sort_values(["week", "game_date"])
+        )
+        g["source"] = "nflfastR"
+    else:
+        return pd.DataFrame(columns=["game_id", "label", "source"])
     g["label"] = g.apply(
-        lambda r: f"Wk {int(r['week'])} — {r['away_team']} @ {r['home_team']} ({r['game_date']})",
+        lambda r: f"Wk {int(r['week'])} — {r['away_team']} @ {r['home_team']} ({r['game_date']})"
+                  + (" 🔴 live" if r["source"] == "live" else ""),
         axis=1,
     )
-    return g
+    return g.reset_index(drop=True)
+
+
+@st.cache_resource
+def load_nflfastr_models():
+    """nflfastR's EP/WP boosters + FG table, or the error that stopped them."""
+    try:
+        return nflfastr_models.load_models(), nflfastr_models.load_fg_table(), None
+    except Exception as e:  # no network to fastrmodels, xgboost missing, ...
+        return None, None, str(e)
+
+
+@st.cache_data(ttl=20)
+def load_live_game(sched_row: dict) -> tuple[pd.DataFrame, str, str, str | None]:
+    """A not-yet-published game from ESPN's play feed, in nflfastR's layout,
+    with EP/EPA/WP from nflfastR's models. Returns (pbp, espn state,
+    fetched-at clock, model error). Cached 20s, so reruns don't hammer ESPN."""
+    summary = live_feed.fetch_summary(int(sched_row["espn"]))
+    models, fg_table, model_err = load_nflfastr_models()
+    df = live_feed.build_live_pbp(summary, sched_row, models, fg_table, PBP_COLS)
+    return df, live_feed.game_state(summary), datetime.now().strftime("%H:%M:%S"), model_err
 
 
 # ---------- Replay logic ----------
@@ -124,6 +201,33 @@ def play_timeline(pbp_game: pd.DataFrame) -> pd.Series:
 def cursor_from_elapsed(timeline: pd.Series, elapsed_game_s: float) -> int:
     """Index of the last play at or before `elapsed_game_s`; -1 if none."""
     return int(np.searchsorted(timeline.values, float(elapsed_game_s), side="right")) - 1
+
+
+def cursor_anchor(timeline: pd.Series, idx: int) -> tuple[float, int]:
+    """A frame-independent handle on play `idx`: its elapsed game seconds and
+    its rank among the plays sharing that second (1 = first)."""
+    if idx < 0:
+        return (-1.0, 0)
+    e = float(timeline.iloc[idx])
+    return (e, idx - int(np.searchsorted(timeline.values, e, side="left")) + 1)
+
+
+def cursor_from_anchor(timeline: pd.Series, anchor: tuple[float, int]) -> int:
+    """The play in another frame of the same game that `anchor` points to.
+
+    Used when the frame under the cursor changes: the live feed gains plays,
+    or the game switches from the live feed to official nflfastR pbp (whose
+    indices differ — it has extra admin rows). Never lands past the anchor's
+    second, and within that second never past the same rank, so a switch
+    can't unlock anything."""
+    e, rank = anchor
+    if e < 0:
+        return -1
+    lo = int(np.searchsorted(timeline.values, e, side="left"))
+    hi = int(np.searchsorted(timeline.values, e, side="right"))
+    if hi > lo:
+        return min(lo + rank - 1, hi - 1)
+    return lo - 1
 
 
 # ---------- Stat builders ----------
@@ -1056,21 +1160,53 @@ with st.sidebar:
     st.header("Setup")
     season = st.number_input("Season", min_value=1999, max_value=2026, value=2026, step=1)
 
+    stamp = nflverse_stamp()
     with st.spinner("Loading play-by-play..."):
         try:
-            pbp = load_pbp(int(season))
+            pbp = load_pbp(int(season), stamp)
         except Exception as e:
-            st.error(f"Could not load pbp: {e}")
-            st.stop()
+            # Nothing published for this season yet: live games can still load.
+            pbp = pd.DataFrame(columns=PBP_COLS)
+            pbp_error = str(e)
+        else:
+            pbp_error = None
 
-    games = list_games(pbp)
+    games = list_games(pbp, load_schedule(int(season)))
     if games.empty:
-        st.warning(f"No games found for the {int(season)} season yet.")
+        if pbp_error:
+            st.error(f"Could not load pbp: {pbp_error}")
+        else:
+            st.warning(f"No games found for the {int(season)} season yet.")
         st.stop()
     game_label = st.selectbox("Game", games["label"].tolist())
-    game_id = games.loc[games["label"] == game_label, "game_id"].iloc[0]
+    game_row = games.loc[games["label"] == game_label].iloc[0]
+    game_id = game_row["game_id"]
+    source = game_row["source"]
 
-    pbp_game = pbp[pbp["game_id"] == game_id].sort_values("play_id").reset_index(drop=True)
+    if source == "nflfastR":
+        pbp_game = pbp[pbp["game_id"] == game_id].sort_values("play_id").reset_index(drop=True)
+        st.caption(f"📊 Official nflfastR play-by-play · nflverse data as of {stamp}")
+        live_state = "post"
+    else:
+        # Not published by nflverse yet: ESPN's live play feed, run through
+        # nflfastR's own EP/WP models. Switches to the official data by
+        # itself once nflverse publishes the game.
+        _sched_row = {k: (None if pd.isna(v) else v) for k, v in game_row.items()
+                      if k in ("game_id", "season", "game_type", "week", "gameday", "home_team",
+                               "away_team", "espn", "spread_line", "roof", "location")}
+        try:
+            pbp_game, live_state, fetched_at, model_err = load_live_game(_sched_row)
+        except Exception as e:
+            st.error(f"Could not load the live play feed: {e}")
+            st.stop()
+        st.caption(f"🔴 Live · ESPN play feed + nflfastR models · updated {fetched_at}. "
+                   "Switches to official nflfastR data once nflverse publishes it.")
+        if model_err:
+            st.warning(f"nflfastR's models couldn't load ({model_err}); "
+                       "EPA and win probability are blank until they do.")
+    if pbp_game.empty:
+        st.info("This game hasn't started yet — no plays to show.")
+        st.stop()
     home = pbp_game["home_team"].iloc[0]
     away = pbp_game["away_team"].iloc[0]
     timeline = play_timeline(pbp_game)
@@ -1104,6 +1240,10 @@ with st.sidebar:
                                         format_func=lambda x: f"{x}s",
                                         key="refresh_interval_clock")
         st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
+    elif source == "live" and live_state != "post":
+        # Keep pulling new plays in. This only makes them available to the
+        # ▶ buttons — it never moves the cursor or unlocks anything.
+        st_autorefresh(interval=30_000, key="live_refresh")
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
@@ -1132,6 +1272,9 @@ with st.sidebar:
 #   _cursor_idx  the play you're currently on
 #   _cursor_max  furthest play unlocked; this is the spoiler gate
 #   _cursor_key  when the clock inputs change, re-seed both from the baseline
+#   _cursor_frame / _cursor_anchor  when the frame under the cursor changes
+#                (live plays arrive, or live → official switch), carry the
+#                position over by game time instead of by index
 baseline_cursor = cursor_from_elapsed(timeline, max(float(baseline_elapsed) - float(safety_margin), 0.0))
 baseline_cursor = min(baseline_cursor, last_idx)
 
@@ -1140,11 +1283,20 @@ if st.session_state.get("_cursor_key") != _seed_key:
     st.session_state["_cursor_key"] = _seed_key
     st.session_state["_cursor_max"] = baseline_cursor
     st.session_state["_cursor_idx"] = baseline_cursor
+elif (st.session_state.get("_cursor_frame") != (game_id, source, len(pbp_game))
+        and "_cursor_anchor" in st.session_state):
+    _a_idx, _a_max = st.session_state["_cursor_anchor"]
+    st.session_state["_cursor_max"] = cursor_from_anchor(timeline, _a_max)
+    st.session_state["_cursor_idx"] = min(cursor_from_anchor(timeline, _a_idx),
+                                          st.session_state["_cursor_max"])
+st.session_state["_cursor_frame"] = (game_id, source, len(pbp_game))
 
 cursor_max = max(min(int(st.session_state["_cursor_max"]), last_idx), -1)
 cursor_idx = max(min(int(st.session_state["_cursor_idx"]), cursor_max), -1)
 st.session_state["_cursor_max"] = cursor_max
 st.session_state["_cursor_idx"] = cursor_idx
+st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),
+                                      cursor_anchor(timeline, cursor_max))
 
 revealed = pbp_game.iloc[: cursor_idx + 1].copy()
 # elapsed_s is still derived because the win probability chart caps its x-axis
@@ -1196,6 +1348,9 @@ def _move_cursor(idx: int, unlock: bool = False) -> None:
     st.session_state["_cursor_idx"] = idx
     if unlock:
         st.session_state["_cursor_max"] = max(int(st.session_state["_cursor_max"]), idx)
+    st.session_state["_cursor_anchor"] = (
+        cursor_anchor(timeline, idx),
+        cursor_anchor(timeline, int(st.session_state["_cursor_max"])))
     st.rerun()
 
 
@@ -1628,4 +1783,7 @@ if auto and cursor_max < last_idx:
     st.session_state["_cursor_max"] = cursor_max + 1
     if _at_edge:
         st.session_state["_cursor_idx"] = cursor_max + 1
+    st.session_state["_cursor_anchor"] = (
+        cursor_anchor(timeline, int(st.session_state["_cursor_idx"])),
+        cursor_anchor(timeline, cursor_max + 1))
 

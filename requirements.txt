@@ -5,3 +5,5 @@ pandas
 numpy
 plotly
 streamlit-autorefresh
+requests
+xgboost>=2.0

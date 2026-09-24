@@ -40,6 +40,8 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | `numpy` | Numeric helpers |
 | `plotly` | Win probability chart |
 | `streamlit-autorefresh` | Auto-advance timer |
+| `requests` | nflverse timestamp + ESPN live feed |
+| `xgboost` | nflfastR's EP/WP models for live games |
 
 ## Architecture
 
@@ -56,4 +58,21 @@ Single-file app: [nfl_replay_app.py](nfl_replay_app.py)
 
 ## Data Source
 
-Play-by-play data comes from [nfl_data_py](https://github.com/nflverse/nfl_data_py), which pulls from the [nflverse](https://nflverse.com/) data infrastructure. Data refreshes every 2 minutes during live games.
+Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, loaded through [nfl_data_py](https://github.com/nflverse/nfl_data_py). nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
+
+## Live games
+
+Games that have kicked off but aren't in nflverse yet show up in the game list with 🔴 live:
+
+- **Plays** come from ESPN's public play-by-play feed, refreshed every 30 s. The NFL gamebook text is parsed the way nflfastR parses it, into play type, players, yards, results and defensive credits (tackles, sacks, INTs, pass breakups, QB hits, forced fumbles).
+- **EP, EPA and win probability** come from nflfastR's own trained models, taken from [`nflverse/fastrmodels`](https://github.com/nflverse/fastrmodels) and run in Python with xgboost. No R is needed.
+- **Switch to official data:** once nflverse publishes the game, the app moves to the official nflfastR pbp and keeps your viewing position.
+- New plays arriving never reveal anything. They only become reachable with **▶ Next play** or auto-advance.
+
+**Accuracy against published 2025 nflverse data:**
+
+- **Model port:** reproduces nflfastR's `ep`/`epa` on 99.9% of plays and `wp` on 99.99%.
+- **Live pipeline:** starting only from what the live feed provides (clock, down and distance, field position, score, play text), it matches official EPA on 99.8% of plays and `home_wp` on 99.6%.
+- **Player credits:** 97–100% per column.
+
+See `tools/validate_*.py`.
