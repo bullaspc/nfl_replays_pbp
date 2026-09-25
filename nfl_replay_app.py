@@ -22,6 +22,7 @@ import numpy as np
 import nfl_data_py as nfl
 import plotly.express as px
 import requests
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 import live_feed
@@ -1152,6 +1153,39 @@ def _time_bar_html(frac: float, fill: str, in_ot: bool) -> str:
 """
 
 
+def keep_screen_awake(enabled: bool) -> None:
+    """Hold (or release) a Screen Wake Lock so a phone doesn't dim or lock mid-game.
+
+    components.html runs in a same-origin iframe, so the script requests the lock on
+    the parent (top-level) document -- iframes need a permissions-policy grant that
+    Streamlit doesn't give. The sentinel lives on the parent window so reruns reuse
+    it, and it's re-acquired on visibilitychange because the browser drops the lock
+    whenever the tab is hidden. Needs HTTPS (or localhost); iOS Safari 16.4+.
+    """
+    components.html(f"""
+<script>
+(function () {{
+  const w = window.parent, nav = w.navigator, doc = w.document;
+  const want = {str(enabled).lower()};
+  w.__nflWakeWanted = want;
+  if (!("wakeLock" in nav)) return;
+  async function acquire() {{
+    if (!w.__nflWakeWanted || doc.visibilityState !== "visible") return;
+    if (w.__nflWakeLock && !w.__nflWakeLock.released) return;
+    try {{ w.__nflWakeLock = await nav.wakeLock.request("screen"); }}
+    catch (e) {{ console.warn("Wake lock not granted:", e); }}
+  }}
+  if (!w.__nflWakeListener) {{
+    w.__nflWakeListener = true;
+    doc.addEventListener("visibilitychange", acquire);
+  }}
+  if (want) acquire();
+  else if (w.__nflWakeLock) {{ w.__nflWakeLock.release(); w.__nflWakeLock = null; }}
+}})();
+</script>
+""", height=0)
+
+
 # ---------- UI ----------
 st.title("🏈 NFL Tape-Delay Replay")
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
@@ -1244,6 +1278,11 @@ with st.sidebar:
         # Keep pulling new plays in. This only makes them available to the
         # ▶ buttons — it never moves the cursor or unlocks anything.
         st_autorefresh(interval=30_000, key="live_refresh")
+    awake = st.checkbox("Keep screen awake", value=True,
+                        help="Stops your phone from dimming or locking while this "
+                             "page is open. Needs HTTPS and a recent browser "
+                             "(iOS 16.4+, Android Chrome).")
+    keep_screen_awake(awake)
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
