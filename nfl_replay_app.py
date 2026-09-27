@@ -148,7 +148,7 @@ def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame(columns=["game_id", "label", "source"])
     g["label"] = g.apply(
-        lambda r: f"Wk {int(r['week'])} — {r['away_team']} @ {r['home_team']} ({r['game_date']})"
+        lambda r: f"{r['away_team']} @ {r['home_team']} ({r['game_date']})"
                   + (" 🔴 live" if r["source"] == "live" else ""),
         axis=1,
     )
@@ -1212,6 +1212,9 @@ with st.sidebar:
         else:
             st.warning(f"No games found for the {int(season)} season yet.")
         st.stop()
+    weeks = sorted(games["week"].dropna().astype(int).unique())
+    week = st.selectbox("Week", weeks, index=len(weeks) - 1)
+    games = games[games["week"] == week]
     game_label = st.selectbox("Game", games["label"].tolist())
     game_row = games.loc[games["label"] == game_label].iloc[0]
     game_id = game_row["game_id"]
