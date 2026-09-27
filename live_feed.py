@@ -288,6 +288,11 @@ def _clock_seconds(t) -> float:
         return np.nan
 
 
+# parse_play_text fields that add_derived_columns reads.
+_DERIVE_INPUTS = ("play_type", "yards_gained", "touchdown", "safety", "fumble", "_recovered_by",
+                  "penalty_team", "penalty_type", "penalty_yards")
+
+
 def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.DataFrame:
     """From one game's play rows (clock, down/distance, field position, teams,
     running score and gamebook text) derive every other column the app and
@@ -301,6 +306,11 @@ def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.Data
     parsed = pd.DataFrame([parse_play_text(d) for d in df["desc"]], index=df.index)
     for c in parsed.columns:
         df[c] = parsed[c]
+    # The parser leaves out fields no play has produced yet (e.g. no accepted
+    # penalty in the first minutes of a live game), but the steps below read them.
+    for c in _DERIVE_INPUTS:
+        if c not in df.columns:
+            df[c] = np.nan
     home, away = df["home_team"].iloc[0], df["away_team"].iloc[0]
 
     # Clock.
@@ -356,7 +366,7 @@ def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.Data
     # Conversions, turnovers.
     scrimmage = df["play_type"].isin(["pass", "run"])
     by_play = scrimmage & ((df["yards_gained"] >= df["ydstogo"]) | (df["touchdown"] == 1))
-    ptype = df["penalty_type"] if "penalty_type" in df else pd.Series(np.nan, index=df.index)
+    ptype = df["penalty_type"]
     by_penalty = (df["down"].notna() & df["penalty_team"].notna() & (df["penalty_team"] == df["defteam"])
                   & ((df["penalty_yards"] >= df["ydstogo"]) | ptype.isin(AUTO_FIRST_DOWN_FOULS)))
     df["first_down"] = (by_play | by_penalty).astype(float)
