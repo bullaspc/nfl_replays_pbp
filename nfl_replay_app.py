@@ -148,7 +148,7 @@ def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame(columns=["game_id", "label", "source"])
     g["label"] = g.apply(
-        lambda r: f"Wk {int(r['week'])} — {r['away_team']} @ {r['home_team']} ({r['game_date']})"
+        lambda r: f"{r['away_team']} @ {r['home_team']} ({r['game_date']})"
                   + (" 🔴 live" if r["source"] == "live" else ""),
         axis=1,
     )
