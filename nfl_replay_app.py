@@ -1100,9 +1100,7 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
 
 def _style_plays(row):
     t = row["Type"]
-    if t.startswith("4th"):
-        row_bg = "#f5c6cb"
-    elif t.startswith("3rd"):
+    if t.startswith("3rd"):
         row_bg = "#ffeeba"
     else:
         row_bg = "#ffffff"
@@ -1504,7 +1502,6 @@ else:
 # ---------- Recent plays (with pagination) ----------
 st.subheader("Recent plays")
 st.markdown(
-    '<span style="background:#f5c6cb;padding:2px 8px;border-radius:3px;margin-right:6px">4th down</span>'
     '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
     '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
     '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
