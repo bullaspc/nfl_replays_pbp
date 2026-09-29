@@ -1117,6 +1117,15 @@ def _style_plays(row):
     return styles
 
 _EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
+_PLAYS_COL_CFG = {
+    **_EPA_COL_CFG, "_rz": None,
+    "Description": st.column_config.TextColumn(width="large"),
+}
+
+def _plays_row_height(hide_desc: bool) -> int | None:
+    """Row height for play tables: st.dataframe only wraps cell text when
+    row_height is above 4rem (64px), so give descriptions room for ~3 lines."""
+    return None if hide_desc else 84
 
 
 # ---------- Time bar ----------
@@ -1516,7 +1525,8 @@ if not revealed.empty:
     st.dataframe(
         recent_df.style.apply(_style_plays, axis=1),
         hide_index=True, width = 'stretch',
-        column_config={**_EPA_COL_CFG, "_rz": None},
+        column_config=_PLAYS_COL_CFG,
+        row_height=_plays_row_height(hide_descriptions),
     )
     col_prev, col_info, col_next = st.columns([1, 4, 1])
     with col_prev:
@@ -1577,15 +1587,11 @@ if not revealed.empty:
         )
 
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
-        # st.dataframe only wraps cell text when row_height is above 4rem (64px).
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
             hide_index=True, width='stretch',
-            column_config={
-                **_EPA_COL_CFG, "_rz": None,
-                "Description": st.column_config.TextColumn(width="large"),
-            },
-            row_height=None if hide_descriptions else 84,
+            column_config=_PLAYS_COL_CFG,
+            row_height=_plays_row_height(hide_descriptions),
         )
     else:
         st.caption("No drive data available.")
@@ -1603,7 +1609,8 @@ if not revealed.empty:
                 exp_display.style.apply(_style_plays, axis=1),
                 hide_index=True,
                 width='stretch',
-                column_config={**_EPA_COL_CFG, "_rz": None},
+                column_config=_PLAYS_COL_CFG,
+                row_height=_plays_row_height(hide_descriptions),
             )
         else:
             st.caption("No explosive plays yet.")
