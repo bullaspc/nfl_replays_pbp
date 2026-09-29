@@ -1100,9 +1100,7 @@ def _build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) ->
 
 def _style_plays(row):
     t = row["Type"]
-    if t.startswith("4th"):
-        row_bg = "#f5c6cb"
-    elif t.startswith("3rd"):
+    if t.startswith("3rd"):
         row_bg = "#ffeeba"
     else:
         row_bg = "#ffffff"
@@ -1117,6 +1115,15 @@ def _style_plays(row):
     return styles
 
 _EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
+_PLAYS_COL_CFG = {
+    **_EPA_COL_CFG, "_rz": None,
+    "Description": st.column_config.TextColumn(width="large"),
+}
+
+def _plays_row_height(hide_desc: bool) -> int | None:
+    """Row height for play tables: st.dataframe only wraps cell text when
+    row_height is above 4rem (64px), so give descriptions room for ~3 lines."""
+    return None if hide_desc else 84
 
 
 # ---------- Time bar ----------
@@ -1495,7 +1502,6 @@ else:
 # ---------- Recent plays (with pagination) ----------
 st.subheader("Recent plays")
 st.markdown(
-    '<span style="background:#f5c6cb;padding:2px 8px;border-radius:3px;margin-right:6px">4th down</span>'
     '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
     '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
     '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
@@ -1516,7 +1522,8 @@ if not revealed.empty:
     st.dataframe(
         recent_df.style.apply(_style_plays, axis=1),
         hide_index=True, width = 'stretch',
-        column_config={**_EPA_COL_CFG, "_rz": None},
+        column_config=_PLAYS_COL_CFG,
+        row_height=_plays_row_height(hide_descriptions),
     )
     col_prev, col_info, col_next = st.columns([1, 4, 1])
     with col_prev:
@@ -1580,7 +1587,8 @@ if not revealed.empty:
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
             hide_index=True, width='stretch',
-            column_config={**_EPA_COL_CFG, "_rz": None},
+            column_config=_PLAYS_COL_CFG,
+            row_height=_plays_row_height(hide_descriptions),
         )
     else:
         st.caption("No drive data available.")
@@ -1598,7 +1606,8 @@ if not revealed.empty:
                 exp_display.style.apply(_style_plays, axis=1),
                 hide_index=True,
                 width='stretch',
-                column_config={**_EPA_COL_CFG, "_rz": None},
+                column_config=_PLAYS_COL_CFG,
+                row_height=_plays_row_height(hide_descriptions),
             )
         else:
             st.caption("No explosive plays yet.")
