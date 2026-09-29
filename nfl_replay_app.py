@@ -1577,10 +1577,15 @@ if not revealed.empty:
         )
 
         drive_df = _build_plays_df(_drive_raw, hide_descriptions)
+        # st.dataframe only wraps cell text when row_height is above 4rem (64px).
         st.dataframe(
             drive_df.style.apply(_style_plays, axis=1),
             hide_index=True, width='stretch',
-            column_config={**_EPA_COL_CFG, "_rz": None},
+            column_config={
+                **_EPA_COL_CFG, "_rz": None,
+                "Description": st.column_config.TextColumn(width="large"),
+            },
+            row_height=None if hide_descriptions else 84,
         )
     else:
         st.caption("No drive data available.")
