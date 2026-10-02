@@ -29,7 +29,7 @@ python tools/build_fg_table.py 2018 2025     # rebuild models/fg_make_prob.csv
 
 The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helper modules feed it games that nflverse hasn't published yet. Python 3.11.
 
-- `live_feed.py`: ESPN summary JSON → the same nflfastR column layout (`PBP_COLS`). `parse_play_text()` reads the NFL gamebook text the way nflfastR does: play type, players, yards, results, tacklers, sacks, INTs, pass defenses, QB hits and forced fumbles. `add_derived_columns()` derives the rest: clock seconds, pre-play score differential, timeouts left (challenge timeouts included), first downs, `td_team`.
+- `live_feed.py`: ESPN summary JSON → the same nflfastR column layout (`PBP_COLS`). `parse_play_text()` reads the NFL gamebook text the way nflfastR does: play type, players, yards, results, tacklers, sacks, INTs, pass defenses, QB hits and forced fumbles. Drive numbers come from possession changes (`_possession_drives()`, nflfastR's fixed_drive rules), not ESPN's drive grouping, which lags after turnovers mid-game. `add_derived_columns()` derives the rest: clock seconds, pre-play score differential, timeouts left (challenge timeouts included), first downs, `td_team`.
 - `nflfastr_models.py`: nflfastR's own EP and WP xgboost models. They are extracted from `nflverse/fastrmodels` `.rda` files, downloaded once to `~/.cache/nfl_replays_pbp`. The module also ports nflfastR's EP/EPA/WP feature prep. The field-goal GAM can't run in Python, so its output is read from `models/fg_make_prob.csv`, which `tools/build_fg_table.py` recovers exactly from published pbp.
 
 **Data sources:** nflverse pbp isn't live; it's rebuilt about once a day after games end.
