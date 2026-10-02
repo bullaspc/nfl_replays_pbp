@@ -449,6 +449,34 @@ def _espn_rows(summary: dict) -> list[dict]:
     return rows
 
 
+def _possession_drives(df: pd.DataFrame) -> pd.Series:
+    """Drive numbers from changes of possession, as nflfastR's fixed_drive counts
+    them: a new drive whenever `posteam` changes, and at the start of the second
+    half and of overtime. ESPN's own drive grouping can't be trusted mid-game:
+    after a turnover it often leaves the turnover, or the next team's first
+    plays, inside the old drive until it catches up. Admin rows (no posteam)
+    join the drive in progress. Falls back to ESPN's numbers without posteams."""
+    desc = df["desc"].fillna("")
+    # The try belongs to the touchdown's drive, even after a pick-six where the
+    # scoring team isn't the offense; every kickoff opens a drive.
+    is_try = desc.str.contains(r"extra point|TWO-POINT CONVERSION", regex=True)
+    kick = desc.str.contains(" kicks ", regex=False)
+    has = df["posteam"].notna() & ~is_try
+    if not has.any():
+        return df["drive"]
+    p = df.loc[has, ["posteam", "qtr"]]
+    k = kick[has]
+    # A re-kick or an onside recovery stays in the kickoff's drive (but a kickoff
+    # after a return touchdown's try opens its own).
+    tagged = df["posteam"].notna()
+    after_kick = kick[tagged].shift(fill_value=False)[has]
+    new = (((p["posteam"] != p["posteam"].shift()) | k) & ~after_kick) \
+        | (p["qtr"].isin([3, 5]) & (p["qtr"] != p["qtr"].shift()))
+    drive = pd.Series(np.nan, index=df.index)
+    drive[has] = new.cumsum().astype(float)
+    return drive.ffill().bfill()
+
+
 def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
     """ESPN summary → one row per play with the columns `add_derived_columns`
     starts from, in nflfastR's conventions (receiving team on kickoffs, a
@@ -521,6 +549,9 @@ def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
                 if kicker in (home, away):
                     row["posteam"] = away if kicker == home else home
                     row["yardline_100"] = float(m.group(2))
+                elif start_team in (home, away):
+                    # 'from 50': ESPN starts a kickoff with the kicking team.
+                    row["posteam"] = away if start_team == home else home
                 row["down"] = row["ydstogo"] = np.nan
 
         # A touchdown row that also carries the try becomes two rows.
@@ -544,6 +575,7 @@ def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
     df = pd.DataFrame(out)
     if df.empty:
         return df
+    df["drive"] = _possession_drives(df)
     df["defteam"] = np.where(df["posteam"] == home, away, np.where(df["posteam"] == away, home, None))
     df.loc[df["posteam"].isna(), "defteam"] = None
     df["game_id"] = sched["game_id"]
