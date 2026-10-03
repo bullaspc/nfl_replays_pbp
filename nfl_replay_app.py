@@ -1762,8 +1762,8 @@ if not hide_wp:
                 _mom_x_cap = max(elapsed_s / 60.0, 1.0)
                 fig_mom.update_xaxes(range=[0, _mom_x_cap])
                 fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                # 50% of the game (halftime); hidden until the x-axis cap reaches it.
-                fig_mom.add_vline(x=30, line_dash="dash", line_color="gray", opacity=0.5)
+                for _x in wp_crossings(revealed):
+                    fig_mom.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
                 _mom_score_mask = (
                     (revealed["touchdown"].fillna(0) == 1) |
                     (revealed["field_goal_result"] == "made") |
@@ -1816,7 +1816,8 @@ if not hide_wp:
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
         fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
-        fig.add_vline(x=30, line_dash="dash", line_color="gray", opacity=0.5)
+        for _x in wp_crossings(revealed):
+            fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
         st.plotly_chart(fig, width='stretch')
 
 # ---------- Top plays by win probability added ----------
