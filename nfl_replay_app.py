@@ -41,6 +41,35 @@ def load_team_colors() -> dict[str, str]:
     return dict(zip(df["team_abbr"], df["team_color"]))
 
 
+@st.cache_data(ttl=3600)
+def load_team_logos() -> dict[str, str]:
+    """Map team abbreviation → ESPN logo URL."""
+    try:
+        df = nfl.import_team_desc()
+    except Exception:
+        return {}
+    col = "team_logo_espn" if "team_logo_espn" in df.columns else "team_logo_wikipedia"
+    if col not in df.columns:
+        return {}
+    return {a: u for a, u in zip(df["team_abbr"], df[col]) if isinstance(u, str)}
+
+
+def wp_crossings(revealed: pd.DataFrame) -> list[float]:
+    """Elapsed minutes at which the revealed home win probability crosses 50%."""
+    d = revealed[["game_seconds_remaining", "home_wp"]].dropna()
+    if len(d) < 2:
+        return []
+    t = ((3600 - d["game_seconds_remaining"]) / 60.0).to_numpy()
+    w = d["home_wp"].to_numpy() - 0.5
+    out = []
+    for i in range(1, len(w)):
+        if w[i - 1] * w[i] < 0:
+            out.append(float(t[i - 1] + (t[i] - t[i - 1]) * w[i - 1] / (w[i - 1] - w[i])))
+        elif w[i] == 0 and w[i - 1] != 0:
+            out.append(float(t[i]))
+    return out
+
+
 NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
 # Every column the app reads. The live feed is built to the same layout.
@@ -1365,6 +1394,15 @@ if not revealed.empty:
 else:
     home_score = away_score = 0
 
+_logos = load_team_logos()
+_lg_away, _lg_score, _lg_home = st.columns([1, 2, 1], vertical_alignment="center")
+for _col, _tm in ((_lg_away, away), (_lg_home, home)):
+    if _tm in _logos:
+        _col.image(_logos[_tm], width=90, caption=_tm)
+_lg_score.markdown(
+    f"<h1 style='text-align:center;margin:0'>{away} {away_score} — {home_score} {home}</h1>",
+    unsafe_allow_html=True)
+
 c1, c2, c3 = st.columns(3)
 c1.metric("Quarter", f"Q{qtr_now}" if qtr_now <= 4 else "OT")
 c2.metric("Game clock (last play)", game_clock)
@@ -1791,6 +1829,9 @@ if not hide_wp:
         # game went to OT, an axis ending at 75+ minutes is itself a spoiler.
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
+        fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
+        for _x in wp_crossings(revealed):
+            fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
         st.plotly_chart(fig, width='stretch')
 
 # ---------- Top plays by win probability added ----------
