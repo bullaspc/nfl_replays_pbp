@@ -1395,18 +1395,28 @@ else:
     home_score = away_score = 0
 
 _logos = load_team_logos()
-_lg_away, _lg_score, _lg_home = st.columns([1, 2, 1], vertical_alignment="center")
-for _col, _tm in ((_lg_away, away), (_lg_home, home)):
-    if _tm in _logos:
-        _col.image(_logos[_tm], width=90, caption=_tm)
-_lg_score.markdown(
-    f"<h1 style='text-align:center;margin:0'>{away} {away_score} — {home_score} {home}</h1>",
+
+
+def _logo_img(team: str) -> str:
+    url = _logos.get(team)
+    return f"<img src='{url}' alt='{team}' style='height:clamp(36px,9vw,64px);width:auto'>" if url else ""
+
+
+# One flex row that never wraps, so the scoreboard stays a single compact line
+# on phones (st.columns would stack the logos and score vertically there).
+st.markdown(
+    "<div style='display:flex;align-items:center;justify-content:center;"
+    "gap:clamp(8px,3vw,24px);margin:0.25rem 0 0.5rem'>"
+    f"{_logo_img(away)}"
+    f"<div style='font-size:clamp(1.3rem,6vw,2.4rem);font-weight:700;white-space:nowrap'>"
+    f"{away} {away_score} — {home_score} {home}</div>"
+    f"{_logo_img(home)}</div>",
     unsafe_allow_html=True)
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Quarter", f"Q{qtr_now}" if qtr_now <= 4 else "OT")
-c2.metric("Game clock (last play)", game_clock)
-c3.metric("Score", f"{away} {away_score}  —  {home_score} {home}")
+st.markdown(
+    f"<div style='text-align:center;font-size:1.1rem;opacity:0.8;margin-bottom:0.5rem'>"
+    f"{'Q' + str(qtr_now) if qtr_now <= 4 else 'OT'} · {game_clock}</div>",
+    unsafe_allow_html=True)
 
 # ---------- Play-by-play time bar ----------
 _team_colors = load_team_colors()
@@ -1806,6 +1816,7 @@ if not hide_wp:
                         annotation_position="top",
                         annotation_font_size=10,
                     )
+                fig_mom.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
                 st.plotly_chart(fig_mom, width='stretch')
         else:
             st.caption("Not enough plays for momentum chart.")
@@ -1832,6 +1843,7 @@ if not hide_wp:
         fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
         for _x in wp_crossings(revealed):
             fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
         st.plotly_chart(fig, width='stretch')
 
 # ---------- Top plays by win probability added ----------
