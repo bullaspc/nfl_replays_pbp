@@ -41,7 +41,20 @@ def load_team_colors() -> dict[str, str]:
     return dict(zip(df["team_abbr"], df["team_color"]))
 
 
-NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
+@st.cache_data(ttl=3600)
+def load_team_logos() -> dict[str, str]:
+    """Map team abbreviation → ESPN logo URL."""
+    try:
+        df = nfl.import_team_desc()
+    except Exception:
+        return {}
+    col = "team_logo_espn" if "team_logo_espn" in df.columns else "team_logo_wikipedia"
+    if col not in df.columns:
+        return {}
+    return {a: u for a, u in zip(df["team_abbr"], df[col]) if isinstance(u, str)}
+
+
+NFLVERSE_RELEASE ="https://github.com/nflverse/nflverse-data/releases/download"
 
 # Every column the app reads. The live feed is built to the same layout.
 PBP_COLS = [
@@ -1365,6 +1378,15 @@ if not revealed.empty:
 else:
     home_score = away_score = 0
 
+_logos = load_team_logos()
+_lg_away, _lg_score, _lg_home = st.columns([1, 2, 1], vertical_alignment="center")
+for _col, _tm in ((_lg_away, away), (_lg_home, home)):
+    if _tm in _logos:
+        _col.image(_logos[_tm], width=90, caption=_tm)
+_lg_score.markdown(
+    f"<h1 style='text-align:center;margin:0'>{away} {away_score} — {home_score} {home}</h1>",
+    unsafe_allow_html=True)
+
 c1, c2, c3 = st.columns(3)
 c1.metric("Quarter", f"Q{qtr_now}" if qtr_now <= 4 else "OT")
 c2.metric("Game clock (last play)", game_clock)
@@ -1740,6 +1762,8 @@ if not hide_wp:
                 _mom_x_cap = max(elapsed_s / 60.0, 1.0)
                 fig_mom.update_xaxes(range=[0, _mom_x_cap])
                 fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                # 50% of the game (halftime); hidden until the x-axis cap reaches it.
+                fig_mom.add_vline(x=30, line_dash="dash", line_color="gray", opacity=0.5)
                 _mom_score_mask = (
                     (revealed["touchdown"].fillna(0) == 1) |
                     (revealed["field_goal_result"] == "made") |
@@ -1791,6 +1815,8 @@ if not hide_wp:
         # game went to OT, an axis ending at 75+ minutes is itself a spoiler.
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
+        fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.add_vline(x=30, line_dash="dash", line_color="gray", opacity=0.5)
         st.plotly_chart(fig, width='stretch')
 
 # ---------- Top plays by win probability added ----------
