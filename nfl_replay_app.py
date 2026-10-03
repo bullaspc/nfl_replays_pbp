@@ -1762,8 +1762,6 @@ if not hide_wp:
                 _mom_x_cap = max(elapsed_s / 60.0, 1.0)
                 fig_mom.update_xaxes(range=[0, _mom_x_cap])
                 fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                for _x in wp_crossings(revealed):
-                    fig_mom.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
                 _mom_score_mask = (
                     (revealed["touchdown"].fillna(0) == 1) |
                     (revealed["field_goal_result"] == "made") |
