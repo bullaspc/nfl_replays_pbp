@@ -54,7 +54,23 @@ def load_team_logos() -> dict[str, str]:
     return {a: u for a, u in zip(df["team_abbr"], df[col]) if isinstance(u, str)}
 
 
-NFLVERSE_RELEASE ="https://github.com/nflverse/nflverse-data/releases/download"
+def wp_crossings(revealed: pd.DataFrame) -> list[float]:
+    """Elapsed minutes at which the revealed home win probability crosses 50%."""
+    d = revealed[["game_seconds_remaining", "home_wp"]].dropna()
+    if len(d) < 2:
+        return []
+    t = ((3600 - d["game_seconds_remaining"]) / 60.0).to_numpy()
+    w = d["home_wp"].to_numpy() - 0.5
+    out = []
+    for i in range(1, len(w)):
+        if w[i - 1] * w[i] < 0:
+            out.append(float(t[i - 1] + (t[i] - t[i - 1]) * w[i - 1] / (w[i - 1] - w[i])))
+        elif w[i] == 0 and w[i - 1] != 0:
+            out.append(float(t[i]))
+    return out
+
+
+NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
 # Every column the app reads. The live feed is built to the same layout.
 PBP_COLS = [
