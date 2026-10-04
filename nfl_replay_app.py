@@ -1850,26 +1850,29 @@ if not revealed.empty:
             st.caption("No explosive plays yet.")
 
 # ---------- Drive chart ----------
+st.subheader("Drive chart")
 if not revealed.empty:
     _dc = drive_chart(revealed)
     _spots = drive_field_spots(revealed)
-    with st.expander(f"Drive chart ({len(_dc)})", expanded=False):
-        if not _spots.empty:
-            st.plotly_chart(
-                drive_field_figure(_spots, home, away, load_team_colors(),
-                                   load_team_logos(), load_team_nicknames()),
-                width='stretch', config={"displayModeBar": False},
-            )
-            st.caption(f"{home} drives left → right · {away} drives right → left · "
-                       "● start · ▶ end · latest drive on top")
-        if not _dc.empty:
+    if not _spots.empty:
+        st.plotly_chart(
+            drive_field_figure(_spots, home, away, load_team_colors(),
+                               load_team_logos(), load_team_nicknames()),
+            width='stretch', config={"displayModeBar": False},
+        )
+        st.caption(f"{home} drives left → right · {away} drives right → left · "
+                   "● start · ▶ end · latest drive on top")
+    if not _dc.empty:
+        with st.expander(f"Drive table ({len(_dc)})", expanded=False):
             st.dataframe(
                 _style_drive_chart(_dc),
                 hide_index=True,
                 width='stretch',
             )
-        else:
-            st.caption("No drive data available.")
+    else:
+        st.caption("No drive data available.")
+else:
+    st.caption("No plays revealed yet.")
 
 # ---------- Team stats ----------
 st.subheader("Team stats")
