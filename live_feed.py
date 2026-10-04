@@ -477,6 +477,16 @@ def _possession_drives(df: pd.DataFrame) -> pd.Series:
     return drive.ffill().bfill()
 
 
+def _spot(start: dict) -> tuple[str, int] | None:
+    """(side, yard line) of the ball from ESPN's printed spot, e.g. "PHI 35"
+    in possessionText or "4th & 10 at PHI 35" in downDistanceText."""
+    for key in ("possessionText", "downDistanceText"):
+        m = re.search(r"(?:^|\bat )([A-Za-z]{2,3})?\s*(\d{1,2})\s*$", str(start.get(key) or ""))
+        if m and 1 <= int(m.group(2)) <= 50 and (m.group(1) or int(m.group(2)) == 50):
+            return (m.group(1) or "", int(m.group(2)))
+    return None
+
+
 def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
     """ESPN summary → one row per play with the columns `add_derived_columns`
     starts from, in nflfastR's conventions (receiving team on kickoffs, a
@@ -542,6 +552,17 @@ def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
             ytg = start.get("yardsToEndzone")
             if ytg is not None and 0 < float(ytg) < 100:
                 row["yardline_100"] = float(ytg)
+            # ESPN's yardsToEndzone is sometimes measured for the other team
+            # (seen on a punt nullified by penalty: PHI 35 came through as 35,
+            # not 65). The spot it prints, "PHI 35", is unambiguous.
+            spot = _spot(start)
+            if spot and row["posteam"] in (home, away):
+                side, yd = spot
+                side = norm(side)
+                if yd == 50:
+                    row["yardline_100"] = 50.0
+                elif side in (home, away):
+                    row["yardline_100"] = float(100 - yd if side == row["posteam"] else yd)
             if re.search(r" kicks ", text):
                 # nflfastR: the receiving team has the ball on a kickoff.
                 m = re.search(r" from ([A-Z]{2,3}) (\d+)", text)
