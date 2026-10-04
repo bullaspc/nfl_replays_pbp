@@ -981,8 +981,25 @@ def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
     after the last play otherwise (including the drive in progress)."""
     if revealed.empty or "drive" not in revealed.columns:
         return pd.DataFrame()
+    # Time of possession runs until the next drive starts, since the final
+    # punt, kick or scoring play takes clock too. That only holds within a
+    # half: the clock resets at halftime and again in overtime.
+    groups = list(revealed.groupby("drive", sort=True))
+    nxt_start = {}
+    for (d, grp), (_, nxt) in zip(groups, groups[1:]):
+        a = grp[["game_seconds_remaining", "qtr"]].dropna()
+        b = nxt[["game_seconds_remaining", "qtr"]].dropna()
+        if a.empty or b.empty:
+            continue
+        qa, qb = int(a["qtr"].iloc[-1]), int(b["qtr"].iloc[0])
+        if qa < 5 and qb < 5 and (qa <= 2) == (qb <= 2):
+            nxt_start[d] = float(b["game_seconds_remaining"].iloc[0])
     rows = []
-    for drive_num, grp in revealed.groupby("drive", sort=True):
+    for drive_num, grp in groups:
+        gsr = grp["game_seconds_remaining"].dropna()
+        top = None
+        if not gsr.empty:
+            top = max(0.0, float(gsr.max()) - nxt_start.get(drive_num, float(gsr.min())))
         off = grp[grp["posteam"].notna()]
         plays = off[
             off["play_type"].isin(_FIELD_PLAYS)
@@ -1021,6 +1038,7 @@ def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
             "end": end,
             "plays": len(sc),
             "yards": int(sc["yards_gained"].fillna(0).sum()),
+            "top": top,
             "outcome": _drive_outcome(grp),
         })
     df = pd.DataFrame(rows)
@@ -1088,7 +1106,8 @@ def drive_field_figure(spots: pd.DataFrame, home: str, away: str,
         hover = (f"<b>Drive {d.drive} · {d.team}</b>"
                  + (f" · Q{d.qtr}" if d.qtr else "")
                  + f"<br>{_yl_label(d.start)} → {_yl_label(d.end)}"
-                 + f"<br>{d.plays} plays, {d.yards} yds<br>{d.outcome}")
+                 + f"<br>{d.plays} plays, {d.yards} yds, {_fmt_top(d.top)}"
+                 + f"<br>{d.outcome}")
         # White underlay so team colors that are close to the turf still read.
         fig.add_trace(go.Scatter(x=[x0, x1], y=[i, i], mode="lines",
                                  line=dict(color="white", width=7),
@@ -1831,28 +1850,26 @@ if not revealed.empty:
             st.caption("No explosive plays yet.")
 
 # ---------- Drive chart ----------
-st.subheader("Drive chart")
 if not revealed.empty:
     _dc = drive_chart(revealed)
     _spots = drive_field_spots(revealed)
-    if not _spots.empty:
-        st.plotly_chart(
-            drive_field_figure(_spots, home, away, load_team_colors(),
-                               load_team_logos(), load_team_nicknames()),
-            width='stretch', config={"displayModeBar": False},
-        )
-        st.caption(f"{home} drives left → right · {away} drives right → left · "
-                   "● start · ▶ end · latest drive on top")
-    if not _dc.empty:
-        st.dataframe(
-            _style_drive_chart(_dc),
-            hide_index=True,
-            width='stretch',
-        )
-    else:
-        st.caption("No drive data available.")
-else:
-    st.caption("No plays revealed yet.")
+    with st.expander(f"Drive chart ({len(_dc)})", expanded=False):
+        if not _spots.empty:
+            st.plotly_chart(
+                drive_field_figure(_spots, home, away, load_team_colors(),
+                                   load_team_logos(), load_team_nicknames()),
+                width='stretch', config={"displayModeBar": False},
+            )
+            st.caption(f"{home} drives left → right · {away} drives right → left · "
+                       "● start · ▶ end · latest drive on top")
+        if not _dc.empty:
+            st.dataframe(
+                _style_drive_chart(_dc),
+                hide_index=True,
+                width='stretch',
+            )
+        else:
+            st.caption("No drive data available.")
 
 # ---------- Team stats ----------
 st.subheader("Team stats")
