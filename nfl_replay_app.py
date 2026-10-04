@@ -21,6 +21,7 @@ import pandas as pd
 import numpy as np
 import nfl_data_py as nfl
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
@@ -52,6 +53,18 @@ def load_team_logos() -> dict[str, str]:
     if col not in df.columns:
         return {}
     return {a: u for a, u in zip(df["team_abbr"], df[col]) if isinstance(u, str)}
+
+
+@st.cache_data(ttl=3600)
+def load_team_nicknames() -> dict[str, str]:
+    """Map team abbreviation → nickname (e.g. KC → Chiefs)."""
+    try:
+        df = nfl.import_team_desc()
+    except Exception:
+        return {}
+    if "team_nick" not in df.columns:
+        return {}
+    return {a: n for a, n in zip(df["team_abbr"], df["team_nick"]) if isinstance(n, str)}
 
 
 def wp_crossings(revealed: pd.DataFrame) -> list[float]:
@@ -951,6 +964,182 @@ def drive_chart(revealed: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("Drive", ascending=False).reset_index(drop=True)
 
 
+_FIELD_PLAYS = {"pass", "run", "punt", "field_goal", "qb_kneel", "qb_spike", "no_play"}
+
+
+def _yl_label(y: float) -> str:
+    """yardline_100 → 'OWN 25' / '50' / 'OPP 3'."""
+    y = int(round(y))
+    return f"OWN {100 - y}" if y > 50 else ("50" if y == 50 else f"OPP {y}")
+
+
+def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
+    """Start and end spot (yardline_100 of the offense) for every revealed drive.
+
+    The end spot is where the ball was when the drive ended: the goal line for
+    a TD, the line of scrimmage for a punt, FG or interception, and the spot
+    after the last play otherwise (including the drive in progress)."""
+    if revealed.empty or "drive" not in revealed.columns:
+        return pd.DataFrame()
+    # Time of possession runs until the next drive starts, since the final
+    # punt, kick or scoring play takes clock too. That only holds within a
+    # half: the clock resets at halftime and again in overtime.
+    groups = list(revealed.groupby("drive", sort=True))
+    nxt_start = {}
+    for (d, grp), (_, nxt) in zip(groups, groups[1:]):
+        a = grp[["game_seconds_remaining", "qtr"]].dropna()
+        b = nxt[["game_seconds_remaining", "qtr"]].dropna()
+        if a.empty or b.empty:
+            continue
+        qa, qb = int(a["qtr"].iloc[-1]), int(b["qtr"].iloc[0])
+        if qa < 5 and qb < 5 and (qa <= 2) == (qb <= 2):
+            nxt_start[d] = float(b["game_seconds_remaining"].iloc[0])
+    rows = []
+    for drive_num, grp in groups:
+        gsr = grp["game_seconds_remaining"].dropna()
+        top = None
+        if not gsr.empty:
+            top = max(0.0, float(gsr.max()) - nxt_start.get(drive_num, float(gsr.min())))
+        off = grp[grp["posteam"].notna()]
+        plays = off[
+            off["play_type"].isin(_FIELD_PLAYS)
+            & off["two_point_conv_result"].isna()
+            & off["yardline_100"].notna()
+        ]
+        if plays.empty:
+            continue  # e.g. only the kickoff is revealed so far
+        posteam = plays["posteam"].iloc[0]
+        start = float(plays["yardline_100"].iloc[0])
+        last = plays.iloc[-1]
+        los = float(last["yardline_100"])
+        turnover = bool(
+            plays["interception"].fillna(0).astype(bool).any()
+            or plays["fumble_lost"].fillna(0).astype(bool).any()
+        )
+        if last["play_type"] in ("punt", "field_goal") or last.get("interception") == 1:
+            end = los
+        elif last.get("safety") == 1:
+            end = 100.0
+        elif last.get("touchdown") == 1 and not turnover:
+            end = 0.0
+        else:
+            gained = 0.0 if pd.isna(last["yards_gained"]) else float(last["yards_gained"])
+            if last["play_type"] == "no_play" and last.get("penalty") == 1:
+                pen = 0.0 if pd.isna(last["penalty_yards"]) else float(last["penalty_yards"])
+                gained = -pen if last["penalty_team"] == posteam else pen
+            end = los - gained
+        end = min(max(end, 0.0), 100.0)
+        sc = off[(off["pass_attempt"].fillna(0) == 1) | (off["rush_attempt"].fillna(0) == 1)]
+        rows.append({
+            "drive": int(drive_num),
+            "team": posteam,
+            "qtr": int(off["qtr"].dropna().iloc[0]) if off["qtr"].notna().any() else None,
+            "start": start,
+            "end": end,
+            "plays": len(sc),
+            "yards": int(sc["yards_gained"].fillna(0).sum()),
+            "top": top,
+            "outcome": _drive_outcome(grp),
+        })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    # The last revealed drive hasn't necessarily ended: label it as in progress
+    # unless the last revealed row is itself an end-of-quarter/half/game marker.
+    last_desc = str(revealed["desc"].iloc[-1] or "")
+    if df["outcome"].iloc[-1] == "EOH/EOG" and not last_desc.upper().startswith("END "):
+        df.loc[df.index[-1], "outcome"] = "In progress"
+    return df
+
+
+_FIELD_GREEN = "#2f7a3b"
+_FIELD_GREEN_ALT = "#2a6f35"
+
+
+def drive_field_figure(spots: pd.DataFrame, home: str, away: str,
+                       colors: dict[str, str], logos: dict[str, str],
+                       nicknames: dict[str, str]) -> go.Figure:
+    """Football field with one arrow per drive, latest drive on top.
+
+    x is measured from the home team's goal line: the home team defends the
+    left end zone and drives left → right; the away team drives right → left."""
+    n = len(spots)
+    fig = go.Figure()
+
+    # Field: alternating 5-yard stripes, yard lines, end zones in team colors.
+    shapes = []
+    for i, x0 in enumerate(range(0, 100, 5)):
+        shapes.append(dict(type="rect", x0=x0, x1=x0 + 5, y0=0, y1=1, yref="paper",
+                           fillcolor=_FIELD_GREEN if i % 2 == 0 else _FIELD_GREEN_ALT,
+                           line_width=0, layer="below"))
+    for team, x0, x1 in [(home, -10, 0), (away, 100, 110)]:
+        shapes.append(dict(type="rect", x0=x0, x1=x1, y0=0, y1=1, yref="paper",
+                           fillcolor=colors.get(team, "#555555"),
+                           line=dict(color="white", width=2), layer="below"))
+    for x in range(5, 100, 5):
+        shapes.append(dict(type="line", x0=x, x1=x, y0=0, y1=1, yref="paper",
+                           line=dict(color="rgba(255,255,255,%s)" % (0.7 if x % 10 == 0 else 0.3),
+                                     width=2 if x == 50 else 1),
+                           layer="below"))
+    shapes.append(dict(type="rect", x0=-10, x1=110, y0=0, y1=1, yref="paper",
+                       line=dict(color="white", width=2), layer="below"))
+
+    # End zone branding: logo top and bottom, nickname written along the zone.
+    images, annotations = [], []
+    for team, xc, angle in [(home, -5, -90), (away, 105, 90)]:
+        logo = logos.get(team)
+        if logo:
+            for yc in (0.86, 0.14):
+                images.append(dict(source=logo, xref="x", yref="paper", x=xc, y=yc,
+                                   sizex=8, sizey=0.2, xanchor="center", yanchor="middle",
+                                   sizing="contain", layer="above"))
+        annotations.append(dict(
+            x=xc, y=0.5, xref="x", yref="paper", showarrow=False, textangle=angle,
+            text=f"<b>{nicknames.get(team, team).upper()}</b>",
+            font=dict(color="white", size=12), xanchor="center", yanchor="middle"))
+
+    for i, d in enumerate(spots.itertuples(index=False)):
+        is_home = d.team == home
+        x0 = 100 - d.start if is_home else d.start
+        x1 = 100 - d.end if is_home else d.end
+        color = colors.get(d.team, "#1f77b4" if is_home else "#ff7f0e")
+        hover = (f"<b>Drive {d.drive} · {d.team}</b>"
+                 + (f" · Q{d.qtr}" if d.qtr else "")
+                 + f"<br>{_yl_label(d.start)} → {_yl_label(d.end)}"
+                 + f"<br>{d.plays} plays, {d.yards} yds, {_fmt_top(d.top)}"
+                 + f"<br>{d.outcome}")
+        # White underlay so team colors that are close to the turf still read.
+        fig.add_trace(go.Scatter(x=[x0, x1], y=[i, i], mode="lines",
+                                 line=dict(color="white", width=7),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[i, i], mode="lines+markers",
+            line=dict(color=color, width=4),
+            marker=dict(symbol=["circle", "triangle-right" if x1 >= x0 else "triangle-left"],
+                        size=[9, 13], color=color, line=dict(color="white", width=1.5)),
+            hovertemplate=hover + "<extra></extra>", showlegend=False))
+        annotations.append(dict(
+            x=1.0, y=i, xref="paper", yref="y", xanchor="left", showarrow=False,
+            text=f" {d.outcome}", font=dict(size=11)))
+
+    tick = list(range(10, 100, 10))
+    fig.update_layout(
+        shapes=shapes, images=images, annotations=annotations,
+        height=max(300, 70 + 26 * n),
+        margin=dict(l=10, r=85, t=30, b=10),
+        plot_bgcolor=_FIELD_GREEN,
+        hoverlabel=dict(align="left"),
+        xaxis=dict(range=[-10, 110], tickvals=tick,
+                   ticktext=[str(50 - abs(50 - t)) for t in tick],
+                   side="top", showgrid=False, zeroline=False, fixedrange=True),
+        yaxis=dict(range=[-0.7, n - 0.3], tickvals=list(range(n)),
+                   ticktext=[f"Q{d.qtr} {d.team}" if d.qtr else d.team
+                             for d in spots.itertuples(index=False)],
+                   showgrid=False, zeroline=False, fixedrange=True),
+    )
+    return fig
+
+
 def _style_drive_chart(df: pd.DataFrame):
     def _outcome_color(val):
         if val == "TD":
@@ -1661,19 +1850,26 @@ if not revealed.empty:
             st.caption("No explosive plays yet.")
 
 # ---------- Drive chart ----------
-st.subheader("Drive chart")
 if not revealed.empty:
     _dc = drive_chart(revealed)
-    if not _dc.empty:
-        st.dataframe(
-            _style_drive_chart(_dc),
-            hide_index=True,
-            width='stretch',
-        )
-    else:
-        st.caption("No drive data available.")
-else:
-    st.caption("No plays revealed yet.")
+    _spots = drive_field_spots(revealed)
+    with st.expander(f"Drive chart ({len(_dc)})", expanded=False):
+        if not _spots.empty:
+            st.plotly_chart(
+                drive_field_figure(_spots, home, away, load_team_colors(),
+                                   load_team_logos(), load_team_nicknames()),
+                width='stretch', config={"displayModeBar": False},
+            )
+            st.caption(f"{home} drives left → right · {away} drives right → left · "
+                       "● start · ▶ end · latest drive on top")
+        if not _dc.empty:
+            st.dataframe(
+                _style_drive_chart(_dc),
+                hide_index=True,
+                width='stretch',
+            )
+        else:
+            st.caption("No drive data available.")
 
 # ---------- Team stats ----------
 st.subheader("Team stats")
