@@ -973,6 +973,31 @@ def _yl_label(y: float) -> str:
     return f"OWN {100 - y}" if y > 50 else ("50" if y == 50 else f"OPP {y}")
 
 
+# Play categories that colour the drive bars: (legend label, colour), in legend order.
+_PLAY_CATS = {
+    "pass_early": ("Pass · 1st/2nd down", "#2a78d6"),
+    "pass_late": ("Pass · 3rd/4th down", "#4a3aa7"),
+    "run_early": ("Run · 1st/2nd down", "#e34948"),
+    "run_late": ("Run · 3rd/4th down", "#a8327a"),
+    "penalty": ("Penalty", "#eda100"),
+}
+
+
+def _play_category(r) -> str | None:
+    """Drive-bar category of a play; None for plays that don't get a segment
+    (punts, field goals, timeouts and other no_play rows without a penalty).
+    Scrambles count as runs and sacks as passes, as in nflfastR's play_type."""
+    pt = r["play_type"]
+    if pt == "no_play":
+        return "penalty" if r.get("penalty") == 1 else None
+    late = pd.notna(r["down"]) and r["down"] >= 3
+    if pt in ("pass", "qb_spike"):
+        return "pass_late" if late else "pass_early"
+    if pt in ("run", "qb_kneel"):
+        return "run_late" if late else "run_early"
+    return None
+
+
 def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
     """Start and end spot (yardline_100 of the offense) for every revealed drive.
 
@@ -1029,6 +1054,23 @@ def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
                 gained = -pen if last["penalty_team"] == posteam else pen
             end = los - gained
         end = min(max(end, 0.0), 100.0)
+        # One segment per play, from its line of scrimmage to the next play's
+        # (the drive's end spot for the last one).
+        nxt_spot = plays["yardline_100"].astype(float).tolist()[1:] + [end]
+        segments = []
+        for (_, p), to in zip(plays.iterrows(), nxt_spot):
+            cat = _play_category(p)
+            if cat is None:
+                continue
+            frm = float(p["yardline_100"])
+            desc = str(p["desc"] or "")
+            dd = _down_distance(p)
+            segments.append({
+                "cat": cat, "from": frm, "to": to,
+                "hover": (f"<b>{_PLAY_CATS[cat][0]}</b>"
+                          + f"<br>{dd + ' · ' if dd else ''}{_yl_label(frm)} · {frm - to:+.0f} yds"
+                          + f"<br>{desc[:90] + '…' if len(desc) > 90 else desc}"),
+            })
         sc = off[(off["pass_attempt"].fillna(0) == 1) | (off["rush_attempt"].fillna(0) == 1)]
         rows.append({
             "drive": int(drive_num),
@@ -1040,6 +1082,7 @@ def drive_field_spots(revealed: pd.DataFrame) -> pd.DataFrame:
             "yards": int(sc["yards_gained"].fillna(0).sum()),
             "top": top,
             "outcome": _drive_outcome(grp),
+            "segments": segments,
         })
     df = pd.DataFrame(rows)
     if df.empty:
@@ -1098,23 +1141,51 @@ def drive_field_figure(spots: pd.DataFrame, home: str, away: str,
             text=f"<b>{nicknames.get(team, team).upper()}</b>",
             font=dict(color="white", size=12), xanchor="center", yanchor="middle"))
 
+    # Each drive is a bar of per-play segments coloured by play category, with
+    # a tick at every snap so plays that gained nothing still show. Traces are
+    # batched per category (None breaks the line between segments).
+    seg_xy = {c: ([], []) for c in _PLAY_CATS}
+    snaps = {c: ([], [], []) for c in _PLAY_CATS}
+    ends = []
     for i, d in enumerate(spots.itertuples(index=False)):
         is_home = d.team == home
-        x0 = 100 - d.start if is_home else d.start
-        x1 = 100 - d.end if is_home else d.end
-        color = colors.get(d.team, "#1f77b4" if is_home else "#ff7f0e")
+        to_x = (lambda y: 100 - y) if is_home else (lambda y: y)
+        x0, x1 = to_x(d.start), to_x(d.end)
+        # White underlay so the bar reads against the turf. It spans every
+        # segment, since a loss can carry the ball behind the drive's start.
+        span = [x0, x1] + [to_x(sg[k]) for sg in d.segments for k in ("from", "to")]
+        fig.add_trace(go.Scatter(x=[min(span), max(span)], y=[i, i], mode="lines",
+                                 line=dict(color="white", width=8),
+                                 hoverinfo="skip", showlegend=False))
+        for sgm in d.segments:
+            xs, ys = seg_xy[sgm["cat"]]
+            xs += [to_x(sgm["from"]), to_x(sgm["to"]), None]
+            ys += [i, i, None]
+            sx, sy, tx = snaps[sgm["cat"]]
+            sx.append(to_x(sgm["from"]))
+            sy.append(i)
+            tx.append(sgm["hover"])
+        ends.append((i, d, x0, x1, colors.get(d.team, "#1f77b4" if is_home else "#ff7f0e")))
+
+    for cat, (label, color) in _PLAY_CATS.items():
+        xs, ys = seg_xy[cat]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=label, legendgroup=cat,
+                                 line=dict(color=color, width=5), hoverinfo="skip"))
+    for cat, (label, color) in _PLAY_CATS.items():
+        sx, sy, tx = snaps[cat]
+        fig.add_trace(go.Scatter(
+            x=sx, y=sy, mode="markers", name=label, legendgroup=cat, showlegend=False,
+            marker=dict(symbol="line-ns", size=13, line=dict(color=color, width=3)),
+            hovertext=tx, hovertemplate="%{hovertext}<extra></extra>"))
+
+    for i, d, x0, x1, color in ends:
         hover = (f"<b>Drive {d.drive} · {d.team}</b>"
                  + (f" · Q{d.qtr}" if d.qtr else "")
                  + f"<br>{_yl_label(d.start)} → {_yl_label(d.end)}"
                  + f"<br>{d.plays} plays, {d.yards} yds, {_fmt_top(d.top)}"
                  + f"<br>{d.outcome}")
-        # White underlay so team colors that are close to the turf still read.
-        fig.add_trace(go.Scatter(x=[x0, x1], y=[i, i], mode="lines",
-                                 line=dict(color="white", width=7),
-                                 hoverinfo="skip", showlegend=False))
         fig.add_trace(go.Scatter(
-            x=[x0, x1], y=[i, i], mode="lines+markers",
-            line=dict(color=color, width=4),
+            x=[x0, x1], y=[i, i], mode="markers",
             marker=dict(symbol=["circle", "triangle-right" if x1 >= x0 else "triangle-left"],
                         size=[9, 13], color=color, line=dict(color="white", width=1.5)),
             hovertemplate=hover + "<extra></extra>", showlegend=False))
@@ -1125,8 +1196,10 @@ def drive_field_figure(spots: pd.DataFrame, home: str, away: str,
     tick = list(range(10, 100, 10))
     fig.update_layout(
         shapes=shapes, images=images, annotations=annotations,
-        height=max(300, 70 + 26 * n),
-        margin=dict(l=10, r=85, t=30, b=10),
+        height=max(330, 100 + 26 * n),
+        margin=dict(l=10, r=85, t=30, b=40),
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=0, yanchor="top",
+                    itemclick="toggle", itemdoubleclick="toggleothers"),
         plot_bgcolor=_FIELD_GREEN,
         hoverlabel=dict(align="left"),
         xaxis=dict(range=[-10, 110], tickvals=tick,
@@ -1915,7 +1988,8 @@ if not revealed.empty:
             width='stretch', config={"displayModeBar": False},
         )
         st.caption(f"{home} drives left → right · {away} drives right → left · "
-                   "● start · ▶ end · latest drive on top")
+                   "● start · ▶ end · one segment per play, ticks mark each snap · "
+                   "latest drive on top")
     if not _dc.empty:
         with st.expander(f"Drive table ({len(_dc)})", expanded=False):
             st.dataframe(
