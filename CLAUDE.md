@@ -75,3 +75,4 @@ An index is used because a clock value cannot address plays individually: plays 
 - `boxscore()` — quarter-by-quarter score via cumulative score diffs
 - `team_stats()` — advanced EPA-based stats, returned as a transposed DataFrame (stat names as index, team abbrs as columns); styled by `style_stat_table()`
 - `top_players()` — per-team passing/rushing/receiving leaders sorted by yards
+- `drive_chart()` — one row per drive; above it, `drive_field_figure()` draws each drive from `drive_field_spots()` as an arrow on a field (home drives left → right from its own end zone on the left, away right → left; end zones carry team colors, logo and nickname). The last revealed drive is labelled "In progress" unless the last revealed row is an END marker.
