@@ -1254,9 +1254,10 @@ def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> 
     plays["Score"] = plays.apply(
         lambda r: f"{away} {int(r['total_away_score'] or 0)}–{int(r['total_home_score'] or 0)} {home}", axis=1
     )
+    plays["D&D"] = plays.apply(_down_distance, axis=1)
     plays["WPA"] = plays["_wpa"].round(3)
     plays["For"] = plays["_wpa"].apply(lambda x: home if x > 0 else away)
-    return plays[["Q", "time", "posteam", "Score", "For", "desc", "WPA", "_abs_wpa"]].rename(
+    return plays[["Q", "time", "posteam", "D&D", "Score", "For", "desc", "WPA", "_abs_wpa"]].rename(
         columns={"time": "Clock", "posteam": "Off", "desc": "Description"}
     ).reset_index(drop=True)
 
@@ -2050,9 +2051,9 @@ st.subheader("Top plays by win probability added")
 if not revealed.empty:
     _top_wpa = top_plays_wpa(revealed, home, away)
     if not _top_wpa.empty:
-        display_cols = ["Q", "Clock", "Off", "Score", "For", "WPA"]
+        display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "WPA"]
         if not hide_descriptions:
-            display_cols = ["Q", "Clock", "Off", "Score", "For", "Description", "WPA"]
+            display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "Description", "WPA"]
         _top_display = _top_wpa[display_cols].copy()
         _top_display.index = range(1, len(_top_display) + 1)
 
