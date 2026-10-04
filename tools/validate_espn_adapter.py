@@ -24,6 +24,14 @@ PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_
 TO_ESPN = {v: k for k, v in lf.ESPN_TEAM_FIX.items() if k != "JAC"}
 
 
+def _espn_spot(yrdln) -> str | None:
+    """nflverse's "PHI 35" spot, written with ESPN's team abbreviations."""
+    if not isinstance(yrdln, str) or not yrdln.strip():
+        return None
+    side, _, yd = yrdln.strip().rpartition(" ")
+    return f"{TO_ESPN.get(side, side)} {yd}".strip()
+
+
 def fake_summary(g: pd.DataFrame, fold_pat: bool) -> dict:
     home, away = g["home_team"].iloc[0], g["away_team"].iloc[0]
     ids = {home: "1", away: "2"}
@@ -64,7 +72,8 @@ def fake_summary(g: pd.DataFrame, fold_pat: bool) -> dict:
             "start": {"down": int(r["down"]) if pd.notna(r["down"]) else 0,
                       "distance": int(r["ydstogo"]) if pd.notna(r["ydstogo"]) else 0,
                       "yardsToEndzone": int(r["yardline_100"]) if pd.notna(r["yardline_100"]) else None,
-                      "team": {"id": ids.get(team)} if team in ids else {}},
+                      "team": {"id": ids.get(team)} if team in ids else {},
+                      "possessionText": _espn_spot(r.get("yrdln"))},
         })
         i += 1
     comps = [{"homeAway": "home", "team": {"id": "1", "abbreviation": TO_ESPN.get(home, home)}},
