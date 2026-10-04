@@ -1477,13 +1477,36 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Your viewing")
-    st.caption("Set roughly where you are with the game clock, then sync exactly "
-               "with the time bar.")
 
-    # The game clock counts DOWN within each quarter from 15:00 to 0:00.
-    qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT"], index=0)
-    clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
-                              help="Time left on the in-quarter clock, e.g. 7:32")
+    # Watching the game as it airs: follow the feed instead of a typed clock.
+    # Plays are revealed only once they've sat in the feed for `live_delay`
+    # seconds, so a stream that runs behind ESPN never shows a play first.
+    follow_live = False
+    live_delay = 0
+    if source == "live" and live_state != "post":
+        follow_live = st.toggle(
+            "🔴 Follow live", value=False,
+            help="Keep up with the game as it airs. New plays appear on their own, "
+                 "each held back by the delay below so the feed can't run ahead "
+                 "of your TV or stream.")
+        if follow_live:
+            live_delay = st.slider(
+                "Hold each new play back (seconds)", min_value=0, max_value=180,
+                value=45, step=5,
+                help="How far your broadcast runs behind ESPN's play feed. Cable is "
+                     "usually close to live; streaming apps often run 30–90s behind.")
+
+    if follow_live:
+        st.caption("Following the live feed. Scrub back any time — you'll stay "
+                   "where you are until you catch up.")
+        qtr_pick, clock_str = "Q1", "15:00"
+    else:
+        st.caption("Set roughly where you are with the game clock, then sync exactly "
+                   "with the time bar.")
+        # The game clock counts DOWN within each quarter from 15:00 to 0:00.
+        qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT"], index=0)
+        clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
+                                  help="Time left on the in-quarter clock, e.g. 7:32")
     try:
         mm, ss = clock_str.strip().split(":")
         remaining_in_qtr = int(mm) * 60 + int(ss)
@@ -1497,8 +1520,11 @@ with st.sidebar:
     # OT in pbp is qtr=5; treat it as starting after Q4 ends.
     completed_qtrs = qtr_idx - 1
     baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-    auto = st.checkbox("Auto-advance play by play", value=False)
-    if auto:
+    auto = False if follow_live else st.checkbox("Auto-advance play by play", value=False)
+    if follow_live:
+        # Fast enough that the delay above is honoured to within ~10s.
+        st_autorefresh(interval=10_000, key="live_follow")
+    elif auto:
         refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
                                         format_func=lambda x: f"{x}s",
                                         key="refresh_interval_clock")
@@ -1561,6 +1587,33 @@ st.session_state["_cursor_frame"] = (game_id, source, len(pbp_game))
 
 cursor_max = max(min(int(st.session_state["_cursor_max"]), last_idx), -1)
 cursor_idx = max(min(int(st.session_state["_cursor_idx"]), cursor_max), -1)
+
+# Follow live: unlock every play that has been in the feed for `live_delay`
+# seconds. `_live_seen[game_id]` is the wall time each play position first
+# showed up. Plays already there when you start following count as aired, all
+# but the newest, which waits out the delay like any play arriving later.
+_just_followed = follow_live and st.session_state.get("_live_follow_on") != game_id
+st.session_state["_live_follow_on"] = game_id if follow_live else None
+if follow_live:
+    _now = time.time()
+    _seen = st.session_state.setdefault("_live_seen", {})
+    _ts = _seen.get(game_id)
+    if _ts is None:
+        _ts = [0.0] * last_idx + [_now]
+    else:
+        # ESPN can drop a play on revision; positions past the end are forgotten.
+        _ts = _ts[: last_idx + 1] + [_now] * (last_idx + 1 - len(_ts))
+    _seen[game_id] = _ts
+    _aired = [i for i, t in enumerate(_ts) if t <= _now - live_delay]
+    _live_target = _aired[-1] if _aired else -1
+    if _live_target > cursor_max:
+        # Carry the view along only if it was already at the edge, as auto-advance
+        # does, so a replayed drive isn't yanked away mid-scrub.
+        if cursor_idx >= cursor_max:
+            cursor_idx = _live_target
+        cursor_max = _live_target
+    if _just_followed:
+        cursor_idx = cursor_max
 st.session_state["_cursor_max"] = cursor_max
 st.session_state["_cursor_idx"] = cursor_idx
 st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),

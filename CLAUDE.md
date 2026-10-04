@@ -65,6 +65,8 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Live refresh:** a live game that isn't over reruns every 30s (`live_refresh`) to pull in new plays. That only makes them reachable by the ▶ buttons; it never moves the cursor.
 
+**Follow live:** for a live game that isn't over, a sidebar `🔴 Follow live` toggle replaces the quarter/clock inputs and auto-advance. `_live_seen[game_id]` records the wall time each play position first appeared in the feed; a play is unlocked only once it has been there `live_delay` seconds (slider, default 45s), so a stream running behind ESPN can't be spoiled. Plays already in the feed when you switch it on count as aired, except the newest. It reruns every 10s and, like auto-advance, carries `_cursor_idx` along only when it was at the edge.
+
 **Auto-advance:** When `auto=True`, `st_autorefresh` fires and the block at the bottom of the file bumps `_cursor_max` by one, carrying `_cursor_idx` with it only if it was already at the edge — so an auto-advancing replay doesn't yank you forward while you're scrubbing back through a drive.
 
 **Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
