@@ -479,8 +479,9 @@ else:
                    for t in (away, home)},
             },
         )
+        _future, _progress = game_summary.submit(_ctx, _providers[_prov])
         st.session_state["_summary_job"] = {
-            "future": game_summary.submit(_ctx, _providers[_prov]),
+            "future": _future, "progress": _progress,
             "game_id": game_id, "started": time.time(),
             "anchor": cursor_anchor(timeline, cursor_idx),
             "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
@@ -508,8 +509,13 @@ def _summary_result() -> None:
         del st.session_state["_summary_job"]
         st.rerun()  # a full run: the button frees up, and polling stops
     if job and job["game_id"] == game_id:
-        st.info(f"Reading the stats and key plays… ({time.time() - job['started']:.0f}s). "
-                "The summary shows up here when it's ready; you can keep watching meanwhile.")
+        # What the agent is doing right now, and the lookups it has done.
+        p = job["progress"]
+        with st.status(f"🧠 {p.status}… ({time.time() - job['started']:.0f}s)",
+                       state="running", expanded=True):
+            for step in p.steps:
+                st.markdown(f"✓ {step}")
+            st.caption("The summary shows up here when it's ready; you can keep watching meanwhile.")
     err = st.session_state.get("_summary_error")
     if err and err["game_id"] == game_id:
         st.error(err["text"])
