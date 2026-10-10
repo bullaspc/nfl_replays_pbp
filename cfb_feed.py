@@ -153,14 +153,18 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str | None = None)
     """One row per game: game_id, week label, date, teams, label, conferences
     and source. Ranks are the AP rank going into the game.
 
-    source is "published" for a game in the release and "live" for one that
-    kicks off by `today` (US Eastern, YYYY-MM-DD) with an FBS team in it but
-    isn't published yet: those are read from ESPN's feed."""
-    g = (raw.assign(kickoff=_utc(raw["wallclock"]))
+    source is "published" for a finished game in the release and "live" for
+    one that kicks off by `today` (US Eastern, YYYY-MM-DD) with an FBS team in
+    it but isn't published yet: those are read from ESPN's feed. The release
+    is rebuilt during game days too, so it can hold a game still in progress,
+    frozen at build time (status_type_completed False): that one is "live"
+    as well, until a build has it finished."""
+    g = (raw.assign(kickoff=_utc(raw["wallclock"]),
+                    unfinished=raw["status_type_completed"].eq(False))
          .groupby("game_id", as_index=False)
          .agg(season_type=("seasonType", "first"), week=("week", "first"),
               home_team=("homeTeamAbbrev", "first"), away_team=("awayTeamAbbrev", "first"),
-              kickoff=("kickoff", "min")))
+              kickoff=("kickoff", "min"), unfinished=("unfinished", "all")))
     g["home_conf"] = g["away_conf"] = ""
     g["home_rank"] = g["away_rank"] = np.nan
     if not sched.empty and "game_id" in sched.columns:
@@ -174,7 +178,7 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str | None = None)
             if src in s.columns:
                 v = g["game_id"].map(s[src])
                 g[col] = v.where(v.notna(), g[col])
-    g["source"] = "published"
+    g["source"] = np.where(g.pop("unfinished"), "live", "published")
     g["game_id"] = g["game_id"].astype(str)
     if today and not sched.empty and "start_date" in sched.columns:
         g = pd.concat([g, _live_games(sched, set(g["game_id"]), team_ids(raw, sched), today)],
