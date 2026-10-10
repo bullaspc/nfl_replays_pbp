@@ -1,10 +1,11 @@
 setuptools>=68.0.0
 streamlit
-nfl_data_py>=0.3.3
-pandas
+pandas>=2.2,<3
 numpy
+pyarrow
 plotly
 streamlit-autorefresh
 requests
 xgboost>=2.0
 anthropic>=1.13
+sportsdataverse==0.1.4

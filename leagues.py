@@ -8,17 +8,19 @@ with the sidebar's League radio and otherwise never branches on the league.
 
 - NFL: nflverse's published nflfastR pbp, and for games it hasn't published
   yet ESPN's live feed (live_feed.py) with nflfastR's models (nflfastr_models.py).
-- College football: sportsdataverse's published pbp (cfb_feed.py). No live
-  games yet.
+- College football: sportsdataverse's published pbp (cfb_feed.py), and for
+  games it hasn't published yet ESPN's live feed run through sportsdataverse's
+  own processing (cfb_feed.live_raw).
 
 The loaders here are cached with Streamlit; the modules they call aren't.
 """
 
+import io
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
-import nfl_data_py as nfl
 import numpy as np
 import pandas as pd
 import requests
@@ -80,11 +82,46 @@ class League:
 
 
 # ---------- NFL ----------
+NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
+# The schedule as CSV, if the release's parquet can't be read.
+NFLVERSE_GAMES_CSV = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
+
+
+def _get(url: str, timeout: float = 60) -> bytes:
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.content
+
+
+def nflverse_teams() -> pd.DataFrame:
+    """nflverse's team table: abbreviation, colors, logos, nickname."""
+    return pd.read_csv(io.BytesIO(_get(f"{NFLVERSE_RELEASE}/teams/teams_colors_logos.csv")))
+
+
+def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
+    """nflverse play-by-play for `seasons`, `columns` only, with float64 columns
+    stored as float32 to save memory. A season that isn't published (404) is
+    skipped; an empty frame means none was."""
+    frames = []
+    for season in seasons:
+        r = requests.get(f"{NFLVERSE_RELEASE}/pbp/play_by_play_{season}.parquet", timeout=120)
+        if r.status_code == 404:
+            continue
+        r.raise_for_status()
+        frames.append(pd.read_parquet(io.BytesIO(r.content), columns=columns))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    floats = df.select_dtypes("float64").columns
+    df[floats] = df[floats].astype("float32")
+    return df
+
+
 @st.cache_data(ttl=3600)
 def load_team_colors() -> dict[str, str]:
     """Map team abbreviation → primary hex color."""
     try:
-        df = nfl.import_team_desc()
+        df = nflverse_teams()
     except Exception:  # network error / upstream file moved: fall back to defaults
         return {}
     return dict(zip(df["team_abbr"], df["team_color"]))
@@ -94,7 +131,7 @@ def load_team_colors() -> dict[str, str]:
 def load_team_logos() -> dict[str, str]:
     """Map team abbreviation → ESPN logo URL."""
     try:
-        df = nfl.import_team_desc()
+        df = nflverse_teams()
     except Exception:
         return {}
     col = "team_logo_espn" if "team_logo_espn" in df.columns else "team_logo_wikipedia"
@@ -107,15 +144,12 @@ def load_team_logos() -> dict[str, str]:
 def load_team_nicknames() -> dict[str, str]:
     """Map team abbreviation → nickname (e.g. KC → Chiefs)."""
     try:
-        df = nfl.import_team_desc()
+        df = nflverse_teams()
     except Exception:
         return {}
     if "team_nick" not in df.columns:
         return {}
     return {a: n for a, n in zip(df["team_abbr"], df["team_nick"]) if isinstance(n, str)}
-
-
-NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
 
 @st.cache_data(ttl=60)
@@ -135,13 +169,8 @@ def nflverse_stamp() -> str:
 def load_pbp(season: int, stamp: str) -> pd.DataFrame:
     """Load nflverse play-by-play for a season. `stamp` is only a cache key:
     the file is downloaded again when nflverse republishes it."""
-    # nfl_data_py swallows download errors (e.g. a 404 because nflverse hasn't
-    # published this season's file yet) and returns an empty, column-less frame.
-    # Participation data is not used by this app and is not published for every
-    # season, so it must not be requested (older nfl_data_py raised a 404 on it).
-    df = nfl.import_pbp_data([season], columns=core.PBP_COLS, downcast=True,
-                             include_participation=False)
-    if df.empty or "game_id" not in df.columns:
+    df = nflverse_pbp([season], core.PBP_COLS)
+    if df.empty:
         raise ValueError(
             f"No play-by-play data is available for the {season} season yet. "
             "nflverse publishes it once games have been played."
@@ -153,10 +182,10 @@ def load_pbp(season: int, stamp: str) -> pd.DataFrame:
 def load_schedule(season: int) -> pd.DataFrame:
     """nflverse's schedule: ESPN event id, spread line, roof, kickoff time."""
     try:
-        sched = pd.read_parquet(f"{NFLVERSE_RELEASE}/schedules/games.parquet")
+        sched = pd.read_parquet(io.BytesIO(_get(f"{NFLVERSE_RELEASE}/schedules/games.parquet")))
     except Exception:
         try:
-            sched = nfl.import_schedules([season])
+            sched = pd.read_csv(io.BytesIO(_get(NFLVERSE_GAMES_CSV)))
         except Exception:
             return pd.DataFrame()
     return sched[sched["season"] == season].reset_index(drop=True)
@@ -242,8 +271,8 @@ def _nfl_baseline_pbp(season: int) -> pd.DataFrame | None:
     prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
     if not prior:
         return None
-    return nfl.import_pbp_data(prior, columns=core.BASELINE_COLS, downcast=True,
-                               include_participation=False)
+    df = nflverse_pbp(prior, core.BASELINE_COLS)
+    return None if df.empty else df
 
 
 class NFLLeague(League):
@@ -307,9 +336,21 @@ def load_cfb_schedule(season: int) -> pd.DataFrame:
     return cfb_feed.read_schedule(season)
 
 
+def _cfb_season_or_empty(season: int, stamp: str) -> tuple[pd.DataFrame, str | None]:
+    """The published season, or an empty one (and why) if it isn't out yet:
+    its live games can still be listed from the schedule."""
+    try:
+        return load_cfb_season(season, stamp), None
+    except Exception as e:
+        return pd.DataFrame(columns=cfb_feed.RAW_COLS), str(e)
+
+
 @st.cache_data(max_entries=4)
-def list_cfb_games(season: int, stamp: str) -> pd.DataFrame:
-    return cfb_feed.list_games(load_cfb_season(season, stamp), load_cfb_schedule(season))
+def list_cfb_games(season: int, stamp: str, today: str) -> tuple[pd.DataFrame, str | None]:
+    """The game list and, if the season's pbp didn't load, why. `today` (US
+    Eastern) is a cache key: live games are listed from their kickoff date."""
+    raw, err = _cfb_season_or_empty(season, stamp)
+    return cfb_feed.list_games(raw, load_cfb_schedule(season), today), err
 
 
 @st.cache_data(max_entries=8)
@@ -318,10 +359,21 @@ def load_cfb_game(season: int, stamp: str, game_id: str) -> pd.DataFrame:
     return cfb_feed.to_pbp(raw[raw["game_id"].astype(str) == game_id], core.PBP_COLS)
 
 
+@st.cache_data(ttl=20)
+def load_cfb_live_game(game_id: str) -> tuple[pd.DataFrame, str, str]:
+    """A not-yet-published college game from ESPN's feed, through
+    sportsdataverse's processing, in the app's layout. Returns (pbp, ESPN
+    state, fetched-at clock). Cached 20s, so reruns don't hammer ESPN."""
+    summary = cfb_feed.fetch_summary(game_id)
+    pbp = cfb_feed.to_pbp(cfb_feed.live_raw(summary, game_id), core.PBP_COLS)
+    return pbp, cfb_feed.game_state(summary), datetime.now().strftime("%H:%M:%S")
+
+
 @st.cache_data(ttl=3600)
 def load_cfb_team_meta(season: int, stamp: str) -> tuple[dict, dict, dict]:
     """(colors, logos, nicknames) keyed by team abbreviation."""
-    return cfb_feed.team_meta(load_cfb_season(season, stamp), cfb_feed.read_team_info(season))
+    return cfb_feed.team_meta(_cfb_season_or_empty(season, stamp)[0],
+                              cfb_feed.read_team_info(season), load_cfb_schedule(season))
 
 
 @st.cache_data(ttl=86400, max_entries=1)
@@ -343,19 +395,29 @@ class CollegeLeague(League):
         return cfb_stamp()
 
     def games(self, season: int, stamp: str) -> pd.DataFrame:
-        try:
-            g = list_cfb_games(season, stamp)
-        except Exception as e:
-            raise GameLoadError(f"No college play-by-play for the {season} season yet ({e}).") from e
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        g, err = list_cfb_games(season, stamp, today)
+        if g.empty and err:
+            raise GameLoadError(f"No college play-by-play for the {season} season yet ({err}).")
         return g.assign(groups=list(zip(g["home_conf"], g["away_conf"])))
 
     def load_game(self, row: pd.Series, season: int, stamp: str) -> LoadedGame:
-        return LoadedGame(load_cfb_game(season, stamp, row["game_id"]), "post", [
-            f"📊 College play-by-play from ESPN, with sportsdataverse's EPA and "
-            f"win probability models · data as of {stamp}",
-            "A game shows up here once sportsdataverse publishes it, usually "
-            "the morning after. Live college games aren't supported yet.",
-        ])
+        if row["source"] == "published":
+            return LoadedGame(load_cfb_game(season, stamp, row["game_id"]), "post", [
+                f"📊 College play-by-play from ESPN, with sportsdataverse's EPA and "
+                f"win probability models · data as of {stamp}"])
+        # Not published yet: ESPN's live feed through sportsdataverse's own
+        # processing. Switches to the published data by itself once it's out.
+        try:
+            pbp, state, fetched_at = load_cfb_live_game(row["game_id"])
+        except ImportError as e:
+            raise GameLoadError("Live college games need the sportsdataverse package "
+                                "(pip install -r requirements.txt).") from e
+        except Exception as e:
+            raise GameLoadError(f"Could not load the live play feed: {e}") from e
+        return LoadedGame(pbp, state, [
+            f"🔴 Live · ESPN play feed + sportsdataverse's college models · updated {fetched_at}. "
+            "Switches to the published data once sportsdataverse publishes it."])
 
     def team_meta(self, season: int, stamp: str) -> tuple[dict, dict, dict]:
         return load_cfb_team_meta(season, stamp)

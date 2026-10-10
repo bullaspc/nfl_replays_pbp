@@ -35,12 +35,12 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | Package | Purpose |
 |---|---|
 | `streamlit` | Web UI framework |
-| `nfl_data_py` | NFL play-by-play data |
-| `pandas` | Data manipulation |
+| `pandas`, `pyarrow` | Data manipulation, reading nflverse and sportsdataverse parquet files |
 | `numpy` | Numeric helpers |
 | `plotly` | Win probability chart |
 | `streamlit-autorefresh` | Auto-advance timer |
-| `requests` | nflverse timestamp + ESPN live feed |
+| `requests` | nflverse and sportsdataverse downloads, ESPN live feeds |
+| `sportsdataverse` | Processes live college games (ESPN's feed with sportsdataverse's college EPA and win probability models) |
 | `xgboost` | nflfastR's EP/WP models for live games |
 | `anthropic` | AI game summary (Kimi or Claude through the Messages API) |
 
@@ -66,13 +66,14 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## Data Source
 
-Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, loaded through [nfl_data_py](https://github.com/nflverse/nfl_data_py). nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
+Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, read straight from nflverse's release files. nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
 
 ## College football
 
 Pick **College football** under **League** in the sidebar. Everything works the same way as for the NFL, with a few differences:
 
-- **Data:** [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data)'s published college play-by-play (2004 onward). It is ESPN's play feed with sportsdataverse's own college EPA and win probability models. It's rebuilt about once a day, so a game shows up the morning after it's played. **Live college games aren't supported yet.**
+- **Data:** [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data)'s published college play-by-play (2004 onward). It is ESPN's play feed with sportsdataverse's own college EPA and win probability models, rebuilt about once a day.
+- **Live games:** games with an FBS team that have kicked off today but aren't published yet show up with 🔴 live. They're read from ESPN's play feed and run through [sportsdataverse-py](https://github.com/sportsdataverse/sportsdataverse-py)'s own processing, the same that builds the published data, so EPA and win probability come from the same college models. Follow live and the play-by-play buttons work as for the NFL, and the game switches to the published data by itself once it's out. Player names come from the play text (e.g. "J.Smith") until then. `tools/validate_cfb_live.py` runs the live path on published games rebuilt as ESPN feeds. On 2026 games it gets down, distance and possession right on every matched play, play types on 99.5%, and every final score. Its win probability is within 0.005 of the published value on a typical play (EPA within 0.02). A game cut off mid-way never shows a later play or score.
 - **Game picker:** week, then an optional conference filter (there are 50+ games on a Saturday). AP ranks going into the game are shown.
 - **Overtime** is untimed in college, so picking OT starts you at the end of regulation and you step through it with ▶ Next play. Every overtime period adds into one OT column in the boxscore.
 - **Percentile colors** compare against last season's FBS-vs-FBS games.
@@ -100,7 +101,7 @@ CLAUDE_EFFORT = "medium"      # Claude only
 
 With both keys set, a selector picks the model per summary. Claude requests also get prompt caching and, on Claude Sonnet 5.5 and newer, the server-side refusal fallback (`fallbacks: "default"`).
 
-## Live games
+## Live NFL games
 
 Games that have kicked off but aren't in nflverse yet show up in the game list with 🔴 live:
 

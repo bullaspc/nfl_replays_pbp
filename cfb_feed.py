@@ -15,7 +15,13 @@ columns in `RAW_COLS` are ever read, and none of those look ahead.
 `to_pbp()` maps the raw rows to `PBP_COLS` the way `live_feed` builds the NFL
 layout from ESPN: the receiving team has the ball on kickoffs, the try after a
 touchdown is its own row, END QUARTER / END GAME rows close each period, and
-drives are numbered from changes of possession. No Streamlit calls here.
+drives are numbered from changes of possession.
+
+Live games: `fetch_summary()` reads ESPN's college summary for a game and
+`live_raw()` runs it through sportsdataverse-py's own processing, the pipeline
+that builds the release. Its rows have the release's columns, so `to_pbp()`
+maps a live game exactly like a published one, and a game moving from live to
+published keeps the same layout. No Streamlit calls here.
 """
 
 import io
@@ -26,6 +32,7 @@ import pandas as pd
 import requests
 
 RELEASE = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
+SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary"
 FIRST_SEASON = 2004
 ESPN_LOGO = "https://a.espncdn.com/i/teamlogos/ncaa/500/{}.png"
 
@@ -114,9 +121,31 @@ def week_label(season_type, week) -> str:
     return "Postseason" if season_type == 3 else f"Week {int(week)}"
 
 
-def list_games(raw: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
-    """One row per published game: game_id, week label, date, teams, label,
-    conferences. Ranks are the AP rank going into the game."""
+def team_ids(raw: pd.DataFrame, sched: pd.DataFrame, info: pd.DataFrame | None = None) -> pd.DataFrame:
+    """(abbr, id) for every team: ESPN's abbreviations from the published plays,
+    then from the schedule (it leaves them blank for games not played yet),
+    then team info's as a last resort."""
+    pairs = [
+        raw[["homeTeamAbbrev", "homeTeamId"]].set_axis(["abbr", "id"], axis=1),
+        raw[["awayTeamAbbrev", "awayTeamId"]].set_axis(["abbr", "id"], axis=1),
+    ]
+    if not sched.empty and {"home_abbreviation", "home_id"} <= set(sched.columns):
+        pairs += [sched[[f"{s}_abbreviation", f"{s}_id"]].set_axis(["abbr", "id"], axis=1)
+                  for s in ("home", "away")]
+    if info is not None and not info.empty and {"abbreviation", "team_id"} <= set(info.columns):
+        pairs.append(info[["abbreviation", "team_id"]].set_axis(["abbr", "id"], axis=1))
+    ids = pd.concat(pairs).dropna()
+    ids["id"] = ids["id"].astype(int)
+    return ids.drop_duplicates("id").drop_duplicates("abbr").reset_index(drop=True)
+
+
+def list_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str | None = None) -> pd.DataFrame:
+    """One row per game: game_id, week label, date, teams, label, conferences
+    and source. Ranks are the AP rank going into the game.
+
+    source is "published" for a game in the release and "live" for one that
+    kicks off by `today` (US Eastern, YYYY-MM-DD) with an FBS team in it but
+    isn't published yet: those are read from ESPN's feed."""
     g = (raw.assign(kickoff=_utc(raw["wallclock"]))
          .groupby("game_id", as_index=False)
          .agg(season_type=("seasonType", "first"), week=("week", "first"),
@@ -135,6 +164,11 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
             if src in s.columns:
                 v = g["game_id"].map(s[src])
                 g[col] = v.where(v.notna(), g[col])
+    g["source"] = "published"
+    g["game_id"] = g["game_id"].astype(str)
+    if today and not sched.empty and "start_date" in sched.columns:
+        g = pd.concat([g, _live_games(sched, set(g["game_id"]), team_ids(raw, sched), today)],
+                      ignore_index=True)
     g["game_date"] = _local_date(g["kickoff"])
     g["week_label"] = [week_label(t, w) for t, w in zip(g["season_type"], g["week"])]
     g["week_order"] = np.where(g["season_type"] == 3, 100, g["week"])
@@ -142,20 +176,39 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     def team(abbr, rank):
         return f"#{int(rank)} {abbr}" if pd.notna(rank) and rank <= 25 else abbr
 
-    g["label"] = [f"{team(a, ar)} @ {team(h, hr)} ({d})"
-                  for a, ar, h, hr, d in zip(g["away_team"], g["away_rank"], g["home_team"],
-                                             g["home_rank"], g["game_date"])]
-    g["source"] = "published"
-    g["game_id"] = g["game_id"].astype(str)
+    g["label"] = [f"{team(a, ar)} @ {team(h, hr)} ({d})" + (" 🔴 live" if src == "live" else "")
+                  for a, ar, h, hr, d, src in zip(g["away_team"], g["away_rank"], g["home_team"],
+                                                  g["home_rank"], g["game_date"], g["source"])]
     return g.sort_values(["week_order", "kickoff", "game_id"]).reset_index(drop=True)
 
 
-def team_meta(raw: pd.DataFrame, info: pd.DataFrame) -> tuple[dict, dict, dict]:
+def _live_games(sched: pd.DataFrame, published: set[str], ids: pd.DataFrame, today: str) -> pd.DataFrame:
+    """Schedule rows for games that kick off by `today`, have an FBS team (the
+    release covers those) and aren't published yet."""
+    s = sched.assign(game_id=sched["game_id"].astype(str), kickoff=_utc(sched["start_date"]))
+    fbs = s["fbs_participant"].fillna(False).astype(bool) if "fbs_participant" in s.columns else True
+    s = s[fbs & ~s["game_id"].isin(published) & (_local_date(s["kickoff"]).fillna("9999") <= today)]
+    abbr = dict(zip(ids["id"], ids["abbr"]))
+
+    def name(side):
+        known = s[f"{side}_id"].map(lambda i: abbr.get(int(i)) if pd.notna(i) else None)
+        return s[f"{side}_abbreviation"].fillna(known).fillna(s[f"{side}_team"])
+
+    return pd.DataFrame({
+        "game_id": s["game_id"],
+        "season_type": np.where(s["season_type"].astype(str).str.startswith("post"), 3, 2),
+        "week": s["week"], "home_team": name("home"), "away_team": name("away"),
+        "kickoff": s["kickoff"],
+        "home_conf": s.get("home_conference", ""), "away_conf": s.get("away_conference", ""),
+        "home_rank": s.get("home_rank", np.nan), "away_rank": s.get("away_rank", np.nan),
+        "source": "live",
+    })
+
+
+def team_meta(raw: pd.DataFrame, info: pd.DataFrame,
+              sched: pd.DataFrame | None = None) -> tuple[dict, dict, dict]:
     """(colors, logos, nicknames) keyed by the abbreviation the pbp uses."""
-    ids = pd.concat([
-        raw[["homeTeamAbbrev", "homeTeamId"]].set_axis(["abbr", "id"], axis=1),
-        raw[["awayTeamAbbrev", "awayTeamId"]].set_axis(["abbr", "id"], axis=1),
-    ]).drop_duplicates("abbr")
+    ids = team_ids(raw, sched if sched is not None else pd.DataFrame(), info)
     by_id = info.set_index("team_id") if not info.empty and "team_id" in info.columns else pd.DataFrame()
     colors, logos, nicks = {}, {}, {}
     for abbr, tid in zip(ids["abbr"], ids["id"]):
@@ -171,6 +224,61 @@ def team_meta(raw: pd.DataFrame, info: pd.DataFrame) -> tuple[dict, dict, dict]:
         if isinstance(nick, str) and nick:
             nicks[abbr] = nick
     return colors, logos, nicks
+
+
+# ---------- live games ----------
+# What sportsdataverse's own fetch (CFBPlayProcess.espn_cfb_pbp) puts in place
+# of a key ESPN's summary leaves out, e.g. "drives" before kickoff.
+_SUMMARY_DICTS = ("boxscore", "format", "gameInfo", "drives", "predictor", "header", "standings")
+_SUMMARY_LISTS = ("leaders", "broadcasts", "pickcenter", "againstTheSpread", "odds",
+                  "winprobability", "scoringPlays", "videos", "injuries", "gameNotes")
+
+
+def fetch_summary(event_id, timeout: float = 15) -> dict:
+    """ESPN's public college summary for one game: header, drives and plays."""
+    r = requests.get(SUMMARY_URL, params={"event": str(event_id)}, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def game_state(summary: dict) -> str:
+    """ESPN's "pre" / "in" / "post"."""
+    comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]
+    return ((comp.get("status") or {}).get("type") or {}).get("state") or "pre"
+
+
+def live_raw(summary: dict, game_id, odds: dict | None = None) -> pd.DataFrame:
+    """ESPN's summary for one game → rows with the release's `RAW_COLS`.
+
+    Runs sportsdataverse-py's processing, the same that builds the release:
+    EP/EPA and win probability from its college models. Skips its player-id
+    lookups (names come from the play text) and its 4th-down and two-point
+    models, so nothing but the spread needs the network: when the summary has
+    no pickcenter, it asks ESPN's odds endpoint. `odds` (gameSpread,
+    overUnder, homeFavorite, gameSpreadAvailable) skips that too."""
+    from sportsdataverse.cfb import CFBPlayProcess  # heavy (polars, models): live games only
+
+    payload = {"timeouts": {}}
+    payload.update({k: summary.get(k) or {} for k in _SUMMARY_DICTS})
+    payload.update({k: summary.get(k) or [] for k in _SUMMARY_LISTS})
+    proc = CFBPlayProcess(gameId=int(game_id), join_participants=False, odds_override=odds)
+    proc.json = payload
+    out = proc.run_processing_pipeline(fourth_down_probs=False, two_pt_probs=False)
+    plays = pd.DataFrame(out.get("plays") or [])
+    if plays.empty:
+        return pd.DataFrame(columns=RAW_COLS)
+    if "EPA" not in plays.columns:
+        # sportsdataverse skips a feed it judges corrupt (e.g. a finished game
+        # with under 50 plays) and hands back the plays unprocessed.
+        raise ValueError("sportsdataverse couldn't process this game's ESPN feed")
+    # The release keeps the possession team's id as pos_team_id (and its name
+    # in pos_team); the pipeline's own output has the id in pos_team.
+    if "pos_team_id" not in plays.columns:
+        plays["pos_team_id"] = plays["pos_team"]
+    for c in RAW_COLS:
+        if c not in plays.columns:
+            plays[c] = np.nan
+    return plays[RAW_COLS]
 
 
 def fbs_games(sched: pd.DataFrame) -> set[str]:
