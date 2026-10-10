@@ -487,6 +487,42 @@ class SummaryError(Exception):
     pass
 
 
+@dataclass
+class Progress:
+    """What the agent is doing, for the page to show while it works. The
+    worker thread writes it and the page reads it: single attribute writes
+    and list appends, so no lock is needed."""
+    status: str = "Reading the dashboard"
+    calls: int = 0                                   # model calls made so far
+    steps: list[str] = field(default_factory=list)   # lookups done, in order
+
+
+_KIND_LABELS = {
+    "win_probability": "biggest win-probability swings", "explosive": "explosive plays",
+    "turnovers": "turnovers", "sacks": "sacks", "fourth_downs": "4th-down tries",
+    "red_zone": "red-zone snaps", "penalties": "penalties",
+}
+
+
+def describe_lookup(name: str, args: dict) -> str:
+    """A tool call as a short progress line, e.g. "Looking at ALA turnovers"."""
+    team = args.get("team")
+    whose = "" if team in (None, "both") else f"{team} "
+    if name == "get_key_plays":
+        return f"Looking at {whose}{_KIND_LABELS.get(args.get('kind'), 'key plays')}"
+    if name == "get_drives":
+        return f"Going through {whose}drives"
+    if name == "get_drive_plays":
+        return f"Replaying drive {args.get('drive')}"
+    if name == "get_splits":
+        return f"Splitting {team}'s offense by {str(args.get('by', '')).replace('_', ' ')}"
+    if name == "get_situational_success":
+        return "Checking success rates by down and distance"
+    if name == "get_player_leaders":
+        return f"Checking {team}'s {args.get('unit')} leaders"
+    return f"Looking up {name}"
+
+
 # Summaries are written on these threads, not on Streamlit's script thread. A
 # rerun (a live game's auto-refresh every 10-30 s, or any click) stops the
 # running script and starts a new one straight away (runner.fastReruns), which
@@ -495,15 +531,17 @@ class SummaryError(Exception):
 _POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="game-summary")
 
 
-def submit(ctx: GameContext, provider: Provider) -> Future:
+def submit(ctx: GameContext, provider: Provider) -> tuple[Future, Progress]:
     """Start summarize() on a worker thread. The Future's result is the
-    Summary, or it raises the SummaryError."""
-    return _POOL.submit(summarize, ctx, provider)
+    Summary, or it raises the SummaryError; Progress says what it's doing."""
+    progress = Progress()
+    return _POOL.submit(summarize, ctx, provider, progress), progress
 
 
-def summarize(ctx: GameContext, provider: Provider) -> Summary:
-    """Run the agent to its final answer. Makes no Streamlit calls, so an
-    auto-refresh rerun requested meanwhile waits rather than cutting it off."""
+def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = None) -> Summary:
+    """Run the agent to its final answer, reporting each step to `progress`.
+    Makes no Streamlit calls, so it can run on a worker thread (submit())."""
+    progress = progress or Progress()
     client = _client(provider)
     tools = _tools(ctx, strict=provider.is_claude)
     messages: list[dict] = [{"role": "user", "content": (
@@ -511,6 +549,10 @@ def summarize(ctx: GameContext, provider: Provider) -> Summary:
         f"defense, for {ctx.away} and {ctx.home}. Away team first.")}]
     used: list[str] = []
     for turn in range(MAX_TURNS):
+        progress.calls = turn + 1
+        progress.status = ("Reading the dashboard" if turn == 0
+                           else "Writing the summary" if turn == MAX_TURNS - 1
+                           else "Thinking it over")
         try:
             resp = _create(client, provider, max_tokens=16000, system=system_prompt(ctx.league),
                            tools=tools, messages=messages)
@@ -542,6 +584,8 @@ def summarize(ctx: GameContext, provider: Provider) -> Summary:
         results = []
         for c in calls:
             used.append(c.name)
+            step = describe_lookup(c.name, dict(c.input or {}))
+            progress.status = step
             try:
                 out, err = _run_tool(ctx, c.name, dict(c.input or {})), False
             except KeyError as e:  # bad arguments: tell the model, let it retry
@@ -550,6 +594,7 @@ def summarize(ctx: GameContext, provider: Provider) -> Summary:
                 out, err = f"Error: {e}", True
             results.append({"type": "tool_result", "tool_use_id": c.id,
                             "content": out, "is_error": err})
+            progress.steps.append(step)
         if turn == MAX_TURNS - 2:
             results.append({"type": "text", "text": "That's all the lookups available. "
                             "Write the summary now from what you have."})
