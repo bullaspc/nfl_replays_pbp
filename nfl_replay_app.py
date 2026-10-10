@@ -409,15 +409,35 @@ st.dataframe(boxscore(revealed, home, away), hide_index=True, width='stretch')
 # An agent reads the same stats as the sections below, built from `revealed`
 # only, and explains the score so far. It runs only when asked, and the result
 # is kept until the next request.
+#
+# A full rerun stops the running script and starts a new one at once
+# (Streamlit's runner.fastReruns), and a live game reruns every 10-30 s while
+# a summary takes a minute or more. So nothing here waits on one run:
+# - the click is recorded by the button's on_click callback, which runs at the
+#   start of the click's run, in `_summary_requested` (game id). The first run
+#   to get this far with it set starts the job, so a click whose run is cut
+#   short still counts;
+# - the summary is written on a worker thread (game_summary.submit), kept in
+#   `_summary_job` with where the viewer was;
+# - the result is shown by a fragment that, while a job is out, reruns on its
+#   own every few seconds to collect it. Fragment reruns never cancel a full
+#   run (they queue behind it), so they can't starve the page the way polling
+#   with full reruns can when runs are slow, and they work on replays, where
+#   nothing else reruns the page.
+# The button stays outside the fragment: a fragment click queued behind a slow
+# full run is dropped when the next full rerun replaces it.
+# State is written before what it replaces is cleared, so a run cut off in
+# between leaves work to redo, never a lost click or result.
+_SUMMARY_POLL_SECS = 3
+
 st.subheader("🧠 Why the score is what it is")
 _providers = game_summary.configured_providers(_setting)
-_summary = st.session_state.get("_summary")
-# Show a summary only for this game and only up to the unlocked edge. Moving the
-# clock inputs back lowers that edge and hides it until you get there again.
-if _summary and (_summary["game_id"] != game_id
-                 or _summary["anchor"] > cursor_anchor(timeline, cursor_max)):
-    _summary = None
-
+_job = st.session_state.get("_summary_job")
+# A request made on another game (the viewer switched since) or while a job
+# is already out is dropped.
+if st.session_state.get("_summary_requested") not in (None, game_id) or (
+        _job is not None and "_summary_requested" in st.session_state):
+    del st.session_state["_summary_requested"]
 if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to get an AI summary of "
@@ -431,8 +451,13 @@ else:
         _prov = _sum_pick.selectbox(
             "Model", list(_providers), label_visibility="collapsed",
             format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
-    if _sum_btn.button("Update summary" if _summary else "Explain the score so far",
-                       help="Only the plays you've unlocked are sent to the model."):
+    _has_summary = (st.session_state.get("_summary") or {}).get("game_id") == game_id
+    _sum_btn.button("Writing the summary…" if _job is not None and _job["game_id"] == game_id
+                    else ("Update summary" if _has_summary else "Explain the score so far"),
+                    disabled=_job is not None,
+                    on_click=lambda gid=game_id: st.session_state.update(_summary_requested=gid),
+                    help="Only the plays you've unlocked are sent to the model.")
+    if st.session_state.get("_summary_requested") == game_id:
         _season_baselines = leagues.stat_baselines(league, season)
         _stats = team_stats(revealed, home, away)
         _sit, _sit_n = situational_success_rate(revealed, home, away)
@@ -447,33 +472,60 @@ else:
             top_wpa=top_plays_wpa(revealed, home, away),
             explosive=explosive_plays(revealed),
             leaders={
-                **{(t, k): top_players(revealed, t, k, n, drop=league.missing_stats) for t in (away, home)
+                **{(t, k): top_players(revealed, t, k, n, drop=league.missing_stats)
+                   for t in (away, home)
                    for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
                 **{(t, "defense"): top_defenders(revealed, t, 10, drop=league.missing_stats)
                    for t in (away, home)},
             },
         )
-        # No Streamlit calls inside summarize(), so an auto-refresh rerun
-        # requested while it runs waits for it instead of cutting it off.
-        with st.spinner("Reading the stats and key plays…"):
-            try:
-                _res = game_summary.summarize(_ctx, _providers[_prov])
-            except game_summary.SummaryError as e:
-                st.error(str(e))
-            else:
-                _summary = {
-                    "game_id": game_id, "text": _res.text, "model": _res.model,
-                    "anchor": cursor_anchor(timeline, cursor_idx),
-                    "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
-                }
-                st.session_state["_summary"] = _summary
-    if _summary:
+        st.session_state["_summary_job"] = {
+            "future": game_summary.submit(_ctx, _providers[_prov]),
+            "game_id": game_id, "started": time.time(),
+            "anchor": cursor_anchor(timeline, cursor_idx),
+            "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
+        }
+        st.session_state.pop("_summary_error", None)
+        del st.session_state["_summary_requested"]
+        st.rerun()  # redraw the button as busy, and start the fragment polling
+
+
+@st.fragment(run_every=_SUMMARY_POLL_SECS if "_summary_job" in st.session_state else None)
+def _summary_result() -> None:
+    """The summary, or that it's being written, or why it failed."""
+    job = st.session_state.get("_summary_job")
+    if job and job["future"].done():
+        try:
+            res = job["future"].result()
+        except Exception as e:  # SummaryError, or anything the worker didn't expect
+            st.session_state["_summary_error"] = {
+                "game_id": job["game_id"],
+                "text": str(e) if isinstance(e, game_summary.SummaryError) else f"The summary failed: {e}"}
+        else:
+            st.session_state["_summary"] = {
+                "game_id": job["game_id"], "text": res.text, "model": res.model,
+                "anchor": job["anchor"], "as_of": job["as_of"]}
+        del st.session_state["_summary_job"]
+        st.rerun()  # a full run: the button frees up, and polling stops
+    if job and job["game_id"] == game_id:
+        st.info(f"Reading the stats and key plays… ({time.time() - job['started']:.0f}s). "
+                "The summary shows up here when it's ready; you can keep watching meanwhile.")
+    err = st.session_state.get("_summary_error")
+    if err and err["game_id"] == game_id:
+        st.error(err["text"])
+    summary = st.session_state.get("_summary")
+    # Show a summary only for this game and only up to the unlocked edge. Moving the
+    # clock inputs back lowers that edge and hides it until you get there again.
+    if summary and summary["game_id"] == game_id and summary["anchor"] <= cursor_anchor(timeline, cursor_max):
         with st.container(border=True):
-            st.markdown(_summary["text"])
-            _note = f"As of {_summary['as_of']} · {_summary['model']}"
-            if _summary["anchor"] != cursor_anchor(timeline, cursor_idx):
-                _note += " · you've moved since, press Update summary to catch it up"
-            st.caption(_note)
+            st.markdown(summary["text"])
+            note = f"As of {summary['as_of']} · {summary['model']}"
+            if summary["anchor"] != cursor_anchor(timeline, cursor_idx):
+                note += " · you've moved since, press Update summary to catch it up"
+            st.caption(note)
+
+
+_summary_result()
 
 # ---------- Scoring timeline ----------
 st.subheader("Scoring timeline")

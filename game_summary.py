@@ -14,6 +14,7 @@ the app passes everything in.
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -484,6 +485,20 @@ class Summary:
 
 class SummaryError(Exception):
     pass
+
+
+# Summaries are written on these threads, not on Streamlit's script thread. A
+# rerun (a live game's auto-refresh every 10-30 s, or any click) stops the
+# running script and starts a new one straight away (runner.fastReruns), which
+# would drop a summary still being written. Module-level, so the pool outlives
+# reruns; shared by every session.
+_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="game-summary")
+
+
+def submit(ctx: GameContext, provider: Provider) -> Future:
+    """Start summarize() on a worker thread. The Future's result is the
+    Summary, or it raises the SummaryError."""
+    return _POOL.submit(summarize, ctx, provider)
 
 
 def summarize(ctx: GameContext, provider: Provider) -> Summary:
