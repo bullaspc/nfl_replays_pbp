@@ -266,10 +266,11 @@ def live_raw(summary: dict, game_id, odds: dict | None = None) -> pd.DataFrame:
 
     Runs sportsdataverse-py's processing, the same that builds the release:
     EP/EPA and win probability from its college models. Skips its player-id
-    lookups (names come from the play text) and its 4th-down and two-point
-    models, so nothing but the spread needs the network: when the summary has
-    no pickcenter, it asks ESPN's odds endpoint. `odds` (gameSpread,
-    overUnder, homeFavorite, gameSpreadAvailable) skips that too."""
+    lookups (names come from the play text; see _text_offense_names) and its
+    4th-down and two-point models, so nothing but the spread needs the
+    network: when the summary has no pickcenter, it asks ESPN's odds
+    endpoint. `odds` (gameSpread, overUnder, homeFavorite,
+    gameSpreadAvailable) skips that too."""
     from sportsdataverse.cfb import CFBPlayProcess  # heavy (polars, models): live games only
 
     payload = {"timeouts": {}}
@@ -292,7 +293,7 @@ def live_raw(summary: dict, game_id, odds: dict | None = None) -> pd.DataFrame:
     for c in RAW_COLS:
         if c not in plays.columns:
             plays[c] = np.nan
-    return plays[RAW_COLS]
+    return _text_offense_names(plays[RAW_COLS].copy())
 
 
 def fbs_games(sched: pd.DataFrame) -> set[str]:
@@ -323,8 +324,11 @@ def _split_try(text: str, fallback: str) -> tuple[str, str]:
 # middle for 2 yards gain to the NDSU09 (#51 G.Sell; #9 K.Ford Jr)'. The
 # parentheses after the ball carrier's spot hold whoever made the tackle: one
 # player alone, two sharing it (';', or ',' on a sack). The older text
-# ('Quinton Jackson run for 4 yds to the RICE 38') names no tacklers.
-_CREW = re.compile(r"^\(\d{1,2}:\d{2}\) ")
+# ('Quinton Jackson run for 4 yds to the RICE 38') names no tacklers. Stat-crew
+# rows are told apart by their jersey numbers, which the older text never has;
+# the leading clock is missing from some of them ('No Huddle-Shotgun #9
+# L.Avant rush ...'), more often in a game still being played.
+_CREW = re.compile(r"#\d+ [A-Za-z]")
 # A name: 'G.Sell', 'M.Abou Jaoude', 'H.Dyson III', 'D.Simon, Jr.'. Later
 # words start with a capital and a lowercase letter, so 'QB', 'PENALTY' and
 # 'TURNOVER' end it.
@@ -368,6 +372,39 @@ def _crew_defenders(text: str) -> dict[str, list[str]]:
     }
 
 
+_PASSER = re.compile(rf"#\d+ ({_NAME}) (?:pass|sacked)\b")
+_RUSHER = re.compile(rf"#\d+ ({_NAME}) rush\b|Kneel down by #\d+ ({_NAME})")
+_RECEIVER = re.compile(rf"pass (?:complete|incomplete)[^#]*?\bto #\d+ ({_NAME})")
+
+
+def _text_offense_names(raw: pd.DataFrame) -> pd.DataFrame:
+    """Passer, rusher and receiver names for a live game, from stat-crew
+    text. Without the player-id lookups, sportsdataverse's own text parsing
+    credits most touchdown passes in that text to "TEAM", and the odd row in
+    the older style ("John Rogers 2 Yd pass from Beau Pribula") comes out
+    under the full name. Here crew rows take the text's names and every other
+    row its crew_spelling(), so each player has one spelling ("B.Pribula").
+    Published games keep the release's names, which come from ESPN's player
+    ids."""
+    text = raw["text"].fillna("").str.strip()
+    crew = text.str.contains(_CREW)
+    if not crew.any():
+        return raw
+    body = text.str.split(_REVIEW.pattern, n=1, regex=True).str[0]
+
+    def found(pattern: re.Pattern) -> pd.Series:
+        hits = body.str.extract(pattern)
+        return hits.bfill(axis=1).iloc[:, 0].where(crew).map(_crew_name, na_action="ignore")
+
+    is_pass, is_rush = _b(raw["pass"]), _b(raw["rush"])
+    for col, pattern, role in (("passer_player_name", _PASSER, is_pass),
+                               ("rusher_player_name", _RUSHER, is_rush),
+                               ("receiver_player_name", _RECEIVER, is_pass)):
+        named = found(pattern).where(role)
+        raw[col] = named.where(named.notna(), raw[col].map(crew_spelling))
+    return raw
+
+
 def _crew_columns(out: pd.DataFrame, text: pd.Series, scrimmage: pd.Series) -> None:
     """Fill the defender columns of `out` from stat-crew text, in place, on
     the rows that have it. They replace the feed's own sacker, interceptor,
@@ -377,7 +414,7 @@ def _crew_columns(out: pd.DataFrame, text: pd.Series, scrimmage: pd.Series) -> N
     match. College credit rules: a shared tackle is an assist for each, and a
     shared sack or tackle for loss is half of one each; the sacker also makes
     the tackle."""
-    crew = text.str.match(_CREW)
+    crew = text.str.contains(_CREW)
     if not crew.any():
         return
     other = ~crew & crew.groupby(out["game_id"]).transform("any")
@@ -532,8 +569,11 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["penalty_team"] = pd.Series(pen_team, index=df.index).where(penalty, None)
     out["penalty_yards"] = _num(df["yds_penalty"]).abs().where(penalty)
 
+    # The feed names a team play's player "TEAM" (a spike, a pass with no
+    # passer in the text); nflfastR leaves those blank, so no "TEAM" row
+    # shows up in the player leaders.
     for c in ("passer_player_name", "rusher_player_name", "receiver_player_name"):
-        out[c] = df[c]
+        out[c] = df[c].where(df[c] != "TEAM")
     two_sackers = df["sack_player_name2"].notna()
     sacked = out["sack"] == 1
     out["sack_player_name"] = df["sack_player_name"].where(sacked & ~two_sackers)
