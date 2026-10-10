@@ -59,9 +59,19 @@ RAW_COLS = [
     "pointAfterAttempt.text", "status_type_completed",
 ]
 
-# The college feed has no tackles, QB hits or tackles for loss: these
-# Player-leader columns would only ever show zeros, so the app drops them.
-MISSING_LEADER_STATS = frozenset({"Tackles", "QB Hits", "TFL", "Hits"})
+# Player-leader columns the college feed doesn't have: it has no QB hits (it
+# has hurries), and only stat-crew text names tacklers (see _crew_columns).
+NO_QB_HITS = frozenset({"QB Hits", "Hits"})
+TACKLE_STATS = frozenset({"Tackles", "TFL", "Hurries"})
+_TACKLE_COLS = ["solo_tackle_1_player_name", "assist_tackle_1_player_name"]
+
+
+def missing_leader_stats(pbp: pd.DataFrame) -> frozenset:
+    """The Player-leader columns `pbp` can't fill: QB hits always, and
+    tackles, TFLs and hurries when its text names no tacklers (games before
+    late 2025, mostly), rather than a column of zeros."""
+    named = any(c in pbp.columns and pbp[c].notna().any() for c in _TACKLE_COLS)
+    return NO_QB_HITS if named else NO_QB_HITS | TACKLE_STATS
 
 # A clock reading this far after both neighbours is a feed glitch (a stray
 # 0:00 mid-quarter, say), not a play that happened later.
@@ -304,6 +314,103 @@ def _split_try(text: str, fallback: str) -> tuple[str, str]:
     return text, fallback
 
 
+# Stat-crew play text, which ESPN's college feed has carried for most games
+# since late 2025, names the defenders: '(08:47) Shotgun #7 A.Powell rush
+# middle for 2 yards gain to the NDSU09 (#51 G.Sell; #9 K.Ford Jr)'. The
+# parentheses after the ball carrier's spot hold whoever made the tackle: one
+# player alone, two sharing it (';', or ',' on a sack). The older text
+# ('Quinton Jackson run for 4 yds to the RICE 38') names no tacklers.
+_CREW = re.compile(r"^\(\d{1,2}:\d{2}\) ")
+# A name: 'G.Sell', 'M.Abou Jaoude', 'H.Dyson III', 'D.Simon, Jr.'. Later
+# words start with a capital and a lowercase letter, so 'QB', 'PENALTY' and
+# 'TURNOVER' end it.
+_WORD = r"(?:[A-Z][a-z][^\s;,()#]*|I{2,3}|IV)(?![^\s;,()#])"
+_NAME = rf"[^\s;,()#]+(?: (?!End\b|The\b){_WORD})*(?:, (?:Jr|Sr|I{{2,3}}|IV)\.?(?![^\s;,()#]))?"
+_PLAYER = rf"#\d+ ({_NAME})"
+# Where the ball carrier's own play ends: a turnover, a return, a flag, a
+# review note. A tackle after it is made by the other side.
+_PLAY_END = re.compile(r"\s(?:fumbled? by|intercepted|PENALTY|return|recovered by|lateral)\b", re.I)
+_REVIEW = re.compile(r"\s(?:The previous play is under|\(Original Play)")
+_TACKLED = re.compile(r"\bto the [^()]*?\((#\d+ [^()]*)\)")
+_HURRY = re.compile(rf"QB hurried by (#\d+ {_NAME}(?:(?:,| and|, and) #\d+ {_NAME})*)")
+
+
+def _crew_name(name: str) -> str:
+    """'D.Simon, Jr.' and 'D.Simon Jr.' → 'D.Simon Jr'."""
+    return re.sub(r",\s*", " ", name).strip().rstrip(".")
+
+
+def crew_spelling(name):
+    """A full name as stat-crew text writes it: 'Dylan Lee' → 'D.Lee',
+    'Kenneth Ford Jr.' → 'K.Ford Jr'. Already short names stay as they are."""
+    if not isinstance(name, str):
+        return name
+    first, _, rest = name.strip().partition(" ")
+    return _crew_name(f"{first[:1]}.{rest}") if rest else first
+
+
+def _crew_defenders(text: str) -> dict[str, list[str]]:
+    """The defenders one stat-crew play's text names, in order: tacklers,
+    hurriers, pass breakups, the interceptor, fumble forcers."""
+    body = _REVIEW.split(text, maxsplit=1)[0]
+    m = _TACKLED.search(_PLAY_END.split(body, maxsplit=1)[0])
+    tacklers = re.split(r"[;,]\s*(?=#\d)", m.group(1)) if m else []
+    return {
+        "tacklers": [_crew_name(t.split(" ", 1)[1]) for t in tacklers if " " in t],
+        "hurriers": [_crew_name(n) for h in _HURRY.finditer(body) for n in re.findall(_PLAYER, h.group(1))],
+        "pbu": [_crew_name(n) for n in re.findall(rf"broken up by {_PLAYER}", body)],
+        "int": [_crew_name(n) for n in re.findall(rf"intercepted by {_PLAYER}", body)],
+        "ff": [_crew_name(n) for n in re.findall(rf"forced by {_PLAYER}", body)],
+    }
+
+
+def _crew_columns(out: pd.DataFrame, text: pd.Series, scrimmage: pd.Series) -> None:
+    """Fill the defender columns of `out` from stat-crew text, in place, on
+    the rows that have it. They replace the feed's own sacker, interceptor,
+    pass breakup and forced fumble names there, so each player is spelled one
+    way (the text's) in the leader table; in a game whose text switches
+    style part-way, the feed's full names on its other rows are shortened to
+    match. College credit rules: a shared tackle is an assist for each, and a
+    shared sack or tackle for loss is half of one each; the sacker also makes
+    the tackle."""
+    crew = text.str.match(_CREW)
+    if not crew.any():
+        return
+    other = ~crew & crew.groupby(out["game_id"]).transform("any")
+    for col in ("sack_player_name", "half_sack_1_player_name", "half_sack_2_player_name",
+                "interception_player_name", "pass_defense_1_player_name",
+                "forced_fumble_player_1_player_name"):
+        out.loc[other, col] = out.loc[other, col].map(crew_spelling)
+    c = pd.DataFrame(text[crew].map(_crew_defenders).tolist(), index=text.index[crew])
+    tk = c["tacklers"]
+    on = scrimmage[crew]
+    solo = on & (tk.str.len() == 1)
+    shared = on & (tk.str.len() >= 2)
+    sack = (out["sack"] == 1)[crew]
+    loss = (out["yards_gained"] < 0)[crew]
+    live = (out["play_type"] != "no_play")[crew]
+    cols = {
+        "solo_tackle_1_player_name": tk.str[0].where(solo),
+        "assist_tackle_1_player_name": tk.str[0].where(shared),
+        "assist_tackle_2_player_name": tk.str[1].where(shared),
+        "tackle_for_loss_1_player_name": tk.str[0].where(solo & loss),
+        "half_tfl_1_player_name": tk.str[0].where(shared & loss),
+        "half_tfl_2_player_name": tk.str[1].where(shared & loss),
+        "sack_player_name": tk.str[0].where(solo & sack),
+        "half_sack_1_player_name": tk.str[0].where(shared & sack),
+        "half_sack_2_player_name": tk.str[1].where(shared & sack),
+        "interception_player_name": c["int"].str[0].where((out["interception"] == 1)[crew]),
+        **{f"qb_hurry_{i + 1}_player_name": c["hurriers"].str[i].where(on & (out["pass_attempt"] == 1)[crew])
+           for i in range(3)},
+        **{f"pass_defense_{i + 1}_player_name": c["pbu"].str[i].where(live) for i in range(2)},
+        **{f"forced_fumble_player_{i + 1}_player_name": c["ff"].str[i].where(live) for i in range(2)},
+    }
+    for col, v in cols.items():
+        if col not in out.columns:
+            out[col] = None
+        out.loc[crew, col] = v
+
+
 def _b(s: pd.Series) -> pd.Series:
     return s.fillna(False).astype(bool)
 
@@ -431,6 +538,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["interception_player_name"] = df["interception_player_name"].where(out["interception"] == 1)
     out["pass_defense_1_player_name"] = df["pass_breakup_player_name"].where(live)
     out["forced_fumble_player_1_player_name"] = df["fumble_forced_player_name"].where(live)
+    _crew_columns(out, text, scrimmage)
 
     out["total_home_score"], out["total_away_score"] = _clean_scores(df)
     out["home_wp"] = _num(df["home_wp_before"])

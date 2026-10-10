@@ -265,6 +265,9 @@ st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),
                                       cursor_anchor(timeline, cursor_max))
 
 revealed = pbp_game.iloc[: cursor_idx + 1].copy()
+# Player-leader columns this game's data can't fill (e.g. tackles in older
+# college games), dropped rather than shown as zeros.
+missing_stats = league.missing_stats(revealed)
 # elapsed_s is still derived because the win probability chart caps its x-axis
 # with it; nothing filters on it any more.
 elapsed_s = float(timeline.iloc[cursor_idx]) if cursor_idx >= 0 else 0.0
@@ -472,10 +475,10 @@ else:
             top_wpa=top_plays_wpa(revealed, home, away),
             explosive=explosive_plays(revealed),
             leaders={
-                **{(t, k): top_players(revealed, t, k, n, drop=league.missing_stats)
+                **{(t, k): top_players(revealed, t, k, n, drop=missing_stats)
                    for t in (away, home)
                    for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
-                **{(t, "defense"): top_defenders(revealed, t, 10, drop=league.missing_stats)
+                **{(t, "defense"): top_defenders(revealed, t, 10, drop=missing_stats)
                    for t in (away, home)},
             },
         )
@@ -710,7 +713,7 @@ if not hide_leaders:
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
-            _pass_df = top_players(revealed, team, "passing", drop=league.missing_stats)
+            _pass_df = top_players(revealed, team, "passing", drop=missing_stats)
             st.caption("Passing")
             if not _pass_df.empty:
                 st.dataframe(_pass_df, hide_index=True, width='stretch',
@@ -721,7 +724,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _rush_df = top_players(revealed, team, "rushing", 4, drop=league.missing_stats)
+            _rush_df = top_players(revealed, team, "rushing", 4, drop=missing_stats)
             st.caption("Rushing")
             if not _rush_df.empty:
                 st.dataframe(_rush_df, hide_index=True, width='stretch',
@@ -731,7 +734,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _recv_df = top_players(revealed, team, "receiving", 8, drop=league.missing_stats)
+            _recv_df = top_players(revealed, team, "receiving", 8, drop=missing_stats)
             st.caption("Receiving")
             if not _recv_df.empty:
                 st.dataframe(_recv_df, hide_index=True, width='stretch',
@@ -741,7 +744,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _def_df = top_defenders(revealed, team, 10, drop=league.missing_stats)
+            _def_df = top_defenders(revealed, team, 10, drop=missing_stats)
             st.caption("Defense")
             if not _def_df.empty:
                 st.dataframe(_def_df, hide_index=True, width='stretch',
@@ -749,7 +752,8 @@ if not hide_leaders:
                                  "Tackles": st.column_config.NumberColumn(format="%.1f"),
                                  "Sacks": st.column_config.NumberColumn(format="%.1f"),
                                  "QB Hits": st.column_config.NumberColumn(format="%.0f"),
-                                 "TFL": st.column_config.NumberColumn(format="%.0f"),
+                                 "Hurries": st.column_config.NumberColumn(format="%.0f"),
+                                 "TFL": st.column_config.NumberColumn(format="%.1f"),
                                  "INT": st.column_config.NumberColumn(format="%.0f"),
                                  "PD": st.column_config.NumberColumn(format="%.0f"),
                                  "FF": st.column_config.NumberColumn(format="%.0f"),

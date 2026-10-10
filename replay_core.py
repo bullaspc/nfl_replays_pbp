@@ -539,8 +539,9 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
 
 def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
                   drop: frozenset = frozenset()) -> pd.DataFrame:
-    """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs.
-    `drop` names columns the data source doesn't have."""
+    """Defensive leaders for a team: tackles, sacks, QB hits, hurries, TFLs,
+    INTs, PDs, FFs. `drop` names columns the data source doesn't have (nflfastR
+    has no hurries; the college feed has no QB hits)."""
     _ST_TYPES = {"kickoff", "punt", "field_goal", "extra_point", "no_play"}
     td = revealed[
         (revealed["defteam"] == team)
@@ -572,17 +573,21 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
     ).rename("Sacks")
 
     qb_hits = _count(["qb_hit_1_player_name", "qb_hit_2_player_name"]).rename("QB Hits")
-    tfls    = _count(["tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name"]).rename("TFL")
+    hurries = _count(["qb_hurry_1_player_name", "qb_hurry_2_player_name",
+                      "qb_hurry_3_player_name"]).rename("Hurries")
+    tfls    = _count(["tackle_for_loss_1_player_name", "tackle_for_loss_2_player_name"]).add(
+        _count(["half_tfl_1_player_name", "half_tfl_2_player_name"], 0.5), fill_value=0
+    ).rename("TFL")
     ints    = _count(["interception_player_name"]).rename("INT")
     pds     = _count(["pass_defense_1_player_name", "pass_defense_2_player_name"]).rename("PD")
     ffs     = _count(["forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name"]).rename("FF")
 
-    g = pd.concat([tackles, sacks, qb_hits, tfls, ints, pds, ffs], axis=1).fillna(0)
+    g = pd.concat([tackles, sacks, qb_hits, hurries, tfls, ints, pds, ffs], axis=1).fillna(0)
     g.index.name = "Player"
     g = g.reset_index()
     g = g[g["Player"].notna()]
 
-    for col in ["Tackles", "QB Hits", "TFL", "INT", "PD", "FF"]:
+    for col in ["Tackles", "QB Hits", "Hurries", "TFL", "INT", "PD", "FF"]:
         if col in g.columns:
             g[col] = g[col].round(1)
     if "Sacks" in g.columns:
@@ -592,6 +597,7 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
     g["_sort"] = (
         g.get("Tackles", 0) + g.get("Sacks", 0) * 3
         + g.get("INT", 0) * 2 + g.get("TFL", 0) + g.get("QB Hits", 0) * 0.5
+        + g.get("Hurries", 0) * 0.5
         + g.get("PD", 0) * 0.5 + g.get("FF", 0) * 1.5
     )
     g = g.drop(columns=[c for c in drop if c in g.columns])
