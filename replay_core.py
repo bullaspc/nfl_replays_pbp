@@ -561,11 +561,13 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
         stacked = pd.concat(frames)
         return (stacked.value_counts() * weight).rename("v")
 
+    # Total tackles as the NFL and NCAA count them: solo + assists, each
+    # assist a full tackle for every player in on it.
     solo   = _count(["solo_tackle_1_player_name", "solo_tackle_2_player_name"], 1.0)
     assist = _count([
         "assist_tackle_1_player_name", "assist_tackle_2_player_name",
         "assist_tackle_3_player_name", "assist_tackle_4_player_name",
-    ], 0.5)
+    ], 1.0)
     tackles = solo.add(assist, fill_value=0).rename("Tackles")
 
     sacks = _count(["sack_player_name"], 1.0).add(

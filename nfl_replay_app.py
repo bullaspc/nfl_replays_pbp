@@ -749,7 +749,7 @@ if not hide_leaders:
             if not _def_df.empty:
                 st.dataframe(_def_df, hide_index=True, width='stretch',
                              column_config={
-                                 "Tackles": st.column_config.NumberColumn(format="%.1f"),
+                                 "Tackles": st.column_config.NumberColumn(format="%.0f"),
                                  "Sacks": st.column_config.NumberColumn(format="%.1f"),
                                  "QB Hits": st.column_config.NumberColumn(format="%.0f"),
                                  "Hurries": st.column_config.NumberColumn(format="%.0f"),
