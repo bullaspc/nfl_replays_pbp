@@ -59,8 +59,6 @@ MISSING_LEADER_STATS = frozenset({"Tackles", "QB Hits", "TFL", "Hits"})
 # A clock reading this far after both neighbours is a feed glitch (a stray
 # 0:00 mid-quarter, say), not a play that happened later.
 _SPIKE_SECS = 60
-# College overtime is untimed. play_timeline() spaces its plays this far apart.
-OT_PLAY_SECS = 30
 
 
 def _get(url: str, timeout: float = 60) -> bytes:

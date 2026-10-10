@@ -26,7 +26,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 2. **Choose your viewing mode:**
    - *Started at* — pick the real-world date/time you pressed play; the app computes elapsed game time automatically
    - *X minutes in* — enter how many broadcast minutes you've watched
-   - *Jump to game clock* — pick a quarter and MM:SS timestamp directly
+   - *Jump to game clock* — pick a quarter and MM:SS timestamp directly, or **Full game** to unlock every play of a game you've already watched
 3. Use the **safety margin** slider to subtract extra seconds if you're worried about accidental spoilers
 4. Enable **Auto-advance** to let the app tick forward in real time
 
@@ -46,14 +46,21 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## Architecture
 
-Single-file app: [nfl_replay_app.py](nfl_replay_app.py)
+| File | What it does |
+|---|---|
+| [nfl_replay_app.py](nfl_replay_app.py) | The Streamlit page: sidebar, play cursor, sections |
+| [leagues.py](leagues.py) | Where each league's games come from, behind one `League` interface |
+| [replay_core.py](replay_core.py) | League-neutral logic: play timeline, cursor, every stat (no Streamlit) |
+| [views.py](views.py) | Table styling, the drive field figure, the time bar |
+| [live_feed.py](live_feed.py), [nflfastr_models.py](nflfastr_models.py) | Live NFL games from ESPN with nflfastR's models |
+| [cfb_feed.py](cfb_feed.py) | College play-by-play in the same layout as the NFL's |
+| [game_summary.py](game_summary.py) | The AI game summary agent |
 
 **Data flow:**
-1. `load_pbp(season)` — fetches play-by-play via `nfl_data_py`, cached for 2 minutes
-2. `list_games(pbp)` — builds the game selector from the season data
-3. Sidebar inputs compute `elapsed_s` (game-seconds watched so far)
-4. `filter_revealed(pbp_game, elapsed_s)` — keeps only plays up to that point; `ffill/bfill` handles null-clock rows (timeouts, admin plays)
-5. Every displayed section reads from `revealed` only — never from the full game data
+1. The league picked in the sidebar loads the selected game in nflfastR's column layout
+2. `play_timeline()` gives each play its elapsed game seconds
+3. Your quarter and clock (or **Full game**) set a play cursor; the time bar and ▶ buttons move it
+4. Every displayed section reads from `revealed`, the plays up to the cursor, never from the full game data
 
 **Broadcast-to-game-seconds mapping:** 190 broadcast minutes maps linearly to 3600 game seconds.
 

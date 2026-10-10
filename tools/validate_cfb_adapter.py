@@ -11,7 +11,6 @@ Maps a published season to the app's layout, then reports:
 
     python tools/validate_cfb_adapter.py 2025 [local_pbp.parquet] [local_team_box.parquet]
 """
-import ast
 import sys
 from pathlib import Path
 
@@ -20,16 +19,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import cfb_feed  # noqa: E402
+from replay_core import PBP_COLS  # noqa: E402
 
 PBP_URL = f"{cfb_feed.RELEASE}/espn_cfb_pbp/play_by_play_{{y}}.parquet"
 BOX_URL = f"{cfb_feed.RELEASE}/espn_cfb_team_box/team_box_{{y}}.parquet"
-
-
-def _pbp_cols() -> list[str]:
-    """PBP_COLS from the app, without running the Streamlit script."""
-    tree = ast.parse((ROOT / "nfl_replay_app.py").read_text())
-    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                and getattr(n.targets[0], "id", "") == "PBP_COLS")
 
 
 def _pair(s: pd.Series, sep: str) -> tuple[pd.Series, pd.Series]:
@@ -42,7 +35,7 @@ def main(season: int, pbp_path: str | None = None, box_path: str | None = None) 
     raw = pd.read_parquet(src, columns=cfb_feed.RAW_COLS)
     finals = pd.read_parquet(src, columns=["game_id", "homeFinalScore", "awayFinalScore"])
     finals = finals.drop_duplicates("game_id").assign(game_id=lambda d: d["game_id"].astype(str))
-    pbp = cfb_feed.to_pbp(raw, _pbp_cols())
+    pbp = cfb_feed.to_pbp(raw, PBP_COLS)
     print(f"{season}: {len(raw)} feed rows → {len(pbp)} rows, {pbp['game_id'].nunique()} games")
     print(f"  play_type unset on {pbp['play_type'].isna().mean():.1%} of rows")
 

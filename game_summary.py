@@ -20,6 +20,8 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
+from replay_core import period_label
+
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
 # Each one can be overridden with <NAME>_MODEL, <NAME>_BASE_URL and <NAME>_EFFORT.
@@ -126,12 +128,6 @@ _LEAGUE = {
                   "opponent's 25, and from the third overtime on, teams trade two-point tries."),
     },
 }
-
-
-def period_label(q) -> str:
-    """Q1-Q4, then OT, 2OT, 3OT, ..."""
-    q = int(q)
-    return f"Q{q}" if q <= 4 else ("OT" if q == 5 else f"{q - 4}OT")
 
 
 def _csv(df: pd.DataFrame | None, index: bool = False) -> str:
