@@ -30,6 +30,7 @@ python tools/build_fg_table.py 2018 2025     # rebuild models/fg_make_prob.csv
 The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helper modules feed it games that nflverse hasn't published yet. Python 3.11.
 
 - `live_feed.py`: ESPN summary JSON → the same nflfastR column layout (`PBP_COLS`). `parse_play_text()` reads the NFL gamebook text the way nflfastR does: play type, players, yards, results, tacklers, sacks, INTs, pass defenses, QB hits and forced fumbles. Drive numbers come from possession changes (`_possession_drives()`, nflfastR's fixed_drive rules), not ESPN's drive grouping, which lags after turnovers mid-game. `add_derived_columns()` derives the rest: clock seconds, pre-play score differential, timeouts left (challenge timeouts included), first downs, `td_team`.
+- `game_summary.py`: the AI game summary agent. The app builds a `GameContext` from its own stat functions run on `revealed`: boxscore, scoring timeline, team stats with `stat_percentiles()`, situational success, drive chart, top WPA plays, explosive plays and player leaders. `summarize()` sends a text snapshot (scoreboard, offense table with percentiles, a derived defense-allowed table) and runs a manual tool loop of up to `MAX_TURNS`. The tools are key plays by kind, drives, one drive's plays, offensive splits, situational success and player leaders. It calls any Anthropic-compatible Messages endpoint. `configured_providers()` lists the ones that have a key: Kimi (Moonshot `/anthropic`, Bearer auth, default) and Claude. Only Claude models get `output_config.effort`, `strict` tools, prompt caching and the `fallbacks: "default"` beta. It makes no Streamlit calls, so an auto-refresh rerun waits for it instead of interrupting it.
 - `nflfastr_models.py`: nflfastR's own EP and WP xgboost models. They are extracted from `nflverse/fastrmodels` `.rda` files, downloaded once to `~/.cache/nfl_replays_pbp`. The module also ports nflfastR's EP/EPA/WP feature prep. The field-goal GAM can't run in Python, so its output is read from `models/fg_make_prob.csv`, which `tools/build_fg_table.py` recovers exactly from published pbp.
 
 **Data sources:** nflverse pbp isn't live; it's rebuilt about once a day after games end.
@@ -71,7 +72,9 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
 
-**UI sections (top to bottom):** header metrics → boxscore → recent plays (paginated, 15/page) → current drive → team stats → player leaders → win probability chart.
+**AI summary spoiler gate:** `st.session_state["_summary"]` holds the latest summary with the `cursor_anchor` it was written at. It is shown only for the same game and while that anchor is ≤ the anchor of `_cursor_max`, so re-seeding the clock earlier hides it. Keys come from `_setting()`, which reads `st.secrets` and then the environment.
+
+**UI sections (top to bottom):** header metrics → boxscore → AI summary (on demand) → recent plays (paginated, 15/page) → current drive → team stats → player leaders → win probability chart.
 
 **Stat tables:**
 - `boxscore()` — quarter-by-quarter score via cumulative score diffs

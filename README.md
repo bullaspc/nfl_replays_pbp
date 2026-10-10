@@ -42,6 +42,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | `streamlit-autorefresh` | Auto-advance timer |
 | `requests` | nflverse timestamp + ESPN live feed |
 | `xgboost` | nflfastR's EP/WP models for live games |
+| `anthropic` | AI game summary (Kimi or Claude through the Messages API) |
 
 ## Architecture
 
@@ -59,6 +60,26 @@ Single-file app: [nfl_replay_app.py](nfl_replay_app.py)
 ## Data Source
 
 Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, loaded through [nfl_data_py](https://github.com/nflverse/nfl_data_py). nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
+
+## AI game summary
+
+**🧠 Why the score is what it is** explains the score at your viewing position. It covers the factors and key plays behind it, with offense and defense for both teams. An agent reads the dashboard's own stats: team stats with percentiles, what each defense allowed, drives, situational success rates, player leaders and the plays with the biggest win-probability swings. It looks up what it needs with tools, then writes.
+
+It only sees the plays you've unlocked. It runs only when you press the button. A summary stays hidden if you move back before the point it was written at.
+
+It calls the model through the Anthropic Messages API, so any compatible endpoint works. Add a key to `.streamlit/secrets.toml` or the environment:
+
+```toml
+MOONSHOT_API_KEY = "..."      # Kimi, through Moonshot's Anthropic-compatible endpoint (default)
+ANTHROPIC_API_KEY = "..."     # Claude
+# Optional
+SUMMARY_PROVIDER = "claude"   # which one comes first when both keys are set (default: kimi)
+KIMI_MODEL = "kimi-k3"        # default; KIMI_BASE_URL defaults to https://api.moonshot.ai/anthropic
+CLAUDE_MODEL = "claude-sonnet-5-5"
+CLAUDE_EFFORT = "medium"      # Claude only
+```
+
+With both keys set, a selector picks the model per summary. Claude requests also get prompt caching and, on Claude Sonnet 5.5 and newer, the server-side refusal fallback (`fallbacks: "default"`).
 
 ## Live games
 
