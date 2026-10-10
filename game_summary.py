@@ -104,6 +104,34 @@ class GameContext:
     explosive: pd.DataFrame         # Explosive plays (rows of `revealed`)
     leaders: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict)
     # (team, "passing" | "rushing" | "receiving" | "defense") → the Player leaders table
+    league: str = "NFL"             # "NFL" or "CFB"
+
+
+# What changes between the leagues: who's talking, whose models, and what the
+# percentiles compare against.
+_LEAGUE = {
+    "NFL": {
+        "analyst": "an NFL analyst",
+        "model": "nflfastR model",
+        "baseline": "every team-game of the last 3 seasons",
+        "defense": "tackles, sacks, QB hits, TFLs, INTs, passes defensed and forced fumbles",
+        "notes": "",
+    },
+    "CFB": {
+        "analyst": "a college football analyst",
+        "model": "sportsdataverse's college model",
+        "baseline": "every FBS-vs-FBS team-game of last season",
+        "defense": "sacks, INTs, passes defensed and forced fumbles (the college feed has no tackles or QB hits)",
+        "notes": (" College overtime is untimed: each team gets a possession from the "
+                  "opponent's 25, and from the third overtime on, teams trade two-point tries."),
+    },
+}
+
+
+def period_label(q) -> str:
+    """Q1-Q4, then OT, 2OT, 3OT, ..."""
+    q = int(q)
+    return f"Q{q}" if q <= 4 else ("OT" if q == 5 else f"{q - 4}OT")
 
 
 def _csv(df: pd.DataFrame | None, index: bool = False) -> str:
@@ -117,10 +145,11 @@ def game_status(revealed: pd.DataFrame) -> tuple[str, bool]:
     """('Q3 7:32', False), or ('Final', True) once the END GAME row is revealed."""
     last = revealed.iloc[-1]
     if str(last["desc"] or "").upper().startswith("END GAME"):
-        return ("Final/OT" if pd.notna(last["qtr"]) and last["qtr"] >= 5 else "Final"), True
+        q = last["qtr"]
+        return ("Final" if pd.isna(q) or q <= 4 else f"Final/{period_label(q)}"), True
     q = int(last["qtr"]) if pd.notna(last["qtr"]) else 1
     clock = f" {last['time']}" if pd.notna(last["time"]) else ""
-    return f"{'OT' if q >= 5 else f'Q{q}'}{clock}", False
+    return f"{period_label(q)}{clock}", False
 
 
 _PCT_STATS = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
@@ -188,7 +217,8 @@ def defense_table(ctx: GameContext) -> pd.DataFrame:
             "3rd-down stops": f"{fail} of {conv + fail}",
             "Red-zone plays faced / TDs allowed": f"{len(rz)} / {int(rz['touchdown'].fillna(0).sum())}",
             "Sacks": f"{d['sack'].fillna(0).sum():.0f}",
-            "QB hits": f"{d['qb_hit'].fillna(0).sum():.0f}",
+            # The college feed has no QB hits.
+            **({} if ctx.league == "CFB" else {"QB hits": f"{d['qb_hit'].fillna(0).sum():.0f}"}),
             "Runs stuffed (0 or fewer yds)": str(stuffs),
             "Passes defensed": str(pds),
             "Takeaways": f"{d['interception'].fillna(0).sum() + d['fumble_lost'].fillna(0).sum():.0f}",
@@ -207,7 +237,7 @@ def snapshot(ctx: GameContext) -> str:
     where = (f"{status}: the viewer has watched the whole game." if final else
              f"{status}, as far as the viewer has watched. You can't see anything after it.")
     wp = ctx.revealed["home_wp"].dropna()
-    wp_line = (f"\nHome ({ctx.home}) win probability now: {wp.iloc[-1]:.0%} (nflfastR model)"
+    wp_line = (f"\nHome ({ctx.home}) win probability now: {wp.iloc[-1]:.0%} ({_LEAGUE[ctx.league]['model']})"
                if not final and not wp.empty else "")
     return f"""Game: {ctx.away} (away) at {ctx.home} (home)
 Viewer's position: {where}
@@ -219,7 +249,7 @@ Score by quarter:
 Scoring plays:
 {_csv(ctx.scoring)}
 
-Offense: the dashboard's Team stats. "pct" is the percentile against every team-game of the last 3 seasons (100 = best; for Turnovers and Penalties, fewer is better).
+Offense: the dashboard's Team stats. "pct" is the percentile against {_LEAGUE[ctx.league]['baseline']} (100 = best; for Turnovers and Penalties, fewer is better).
 {_csv(offense_table(ctx))}
 
 Defense: what each defense allowed, and its own pressure, stops and takeaways.
@@ -383,7 +413,7 @@ def _tools(ctx: GameContext, strict: bool) -> list[dict]:
          {}, []),
         ("get_player_leaders",
          "The dashboard's Player leaders for one team and unit. Defense lists "
-         "tackles, sacks, QB hits, TFLs, INTs, passes defensed and forced fumbles.",
+         + _LEAGUE[ctx.league]["defense"] + ".",
          {"team": {"type": "string", "enum": [ctx.away, ctx.home]},
           "unit": {"type": "string", "enum": ["passing", "rushing", "receiving", "defense"]}},
          ["team", "unit"]),
@@ -417,7 +447,7 @@ def _run_tool(ctx: GameContext, name: str, args: dict) -> str:
 
 
 # ---------- The agent ----------
-SYSTEM_PROMPT = """You are an NFL analyst inside a spoiler-free replay app. The fan is watching this game on tape delay. Explain why the score is what it is at their current position: the factors, key plays and events behind it, covering offense and defense for both teams.
+SYSTEM_PROMPT = """You are {analyst} inside a spoiler-free replay app. The fan is watching this game on tape delay. Explain why the score is what it is at their current position: the factors, key plays and events behind it, covering offense and defense for both teams.
 
 Ground rules:
 - Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
@@ -425,7 +455,7 @@ Ground rules:
 - Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
-Terms: EPA is expected points added by a play (nflfastR model). A successful play has positive EPA. WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.
+Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA. WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}
 
 Write the summary in Markdown, about 350 to 500 words, with this structure:
 **Headline**: one or two sentences with the score and the main reason for it.
@@ -442,6 +472,11 @@ Three to five bullets: quarter and clock, what happened, and why it mattered (po
 Write only the summary, without a preamble or notes about the data or tools."""
 
 MAX_TURNS = 8
+
+
+def system_prompt(league: str) -> str:
+    t = _LEAGUE[league]
+    return SYSTEM_PROMPT.format(analyst=t["analyst"], model=t["model"], notes=t["notes"])
 
 
 @dataclass
@@ -466,7 +501,7 @@ def summarize(ctx: GameContext, provider: Provider) -> Summary:
     used: list[str] = []
     for turn in range(MAX_TURNS):
         try:
-            resp = _create(client, provider, max_tokens=16000, system=SYSTEM_PROMPT,
+            resp = _create(client, provider, max_tokens=16000, system=system_prompt(ctx.league),
                            tools=tools, messages=messages)
         except anthropic.AuthenticationError:
             raise SummaryError(f"{provider.label} rejected the API key.") from None

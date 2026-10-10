@@ -1,6 +1,6 @@
 # NFL Tape-Delay Replay Boxscore
 
-A spoiler-free Streamlit app for following NFL games on tape delay. You tell the app when you started watching; it reveals only the plays, score, and stats up to your current viewing position — no accidental spoilers.
+A spoiler-free Streamlit app for following NFL and college football games on tape delay. You tell the app when you started watching; it reveals only the plays, score, and stats up to your current viewing position — no accidental spoilers.
 
 ## Features
 
@@ -60,6 +60,18 @@ Single-file app: [nfl_replay_app.py](nfl_replay_app.py)
 ## Data Source
 
 Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, loaded through [nfl_data_py](https://github.com/nflverse/nfl_data_py). nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
+
+## College football
+
+Pick **College football** under **League** in the sidebar. Everything works the same way as for the NFL, with a few differences:
+
+- **Data:** [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data)'s published college play-by-play (2004 onward). It is ESPN's play feed with sportsdataverse's own college EPA and win probability models. It's rebuilt about once a day, so a game shows up the morning after it's played. **Live college games aren't supported yet.**
+- **Game picker:** week, then an optional conference filter (there are 50+ games on a Saturday). AP ranks going into the game are shown.
+- **Overtime** is untimed in college, so picking OT starts you at the end of regulation and you step through it with ▶ Next play. Every overtime period adds into one OT column in the boxscore.
+- **Percentile colors** compare against last season's FBS-vs-FBS games.
+- **No tackles, QB hits or tackles for loss:** the college feed doesn't have them, so those columns are left out of the player leaders.
+- ESPN's college feed has glitches: plays listed after a later quarter, stale scores, and occasionally a mid-game row carrying the final score. The app repairs these (see `cfb_feed.py`). On 2026 data, 99.75% of games end on the official final score (2025: 99.2%), and team totals match ESPN's box score with a median difference of 0. `tools/validate_cfb_adapter.py` reports this for any season.
+- In under 1% of games the feed adds points that never happened, such as a phantom field goal late in the 4th quarter. The app can't catch those without looking at the final score, and that would be a spoiler.
 
 ## AI game summary
 

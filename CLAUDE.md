@@ -15,7 +15,7 @@ streamlit run nfl_replay_app.py
 streamlit run nfl_replay_app.py --server.enableCORS false --server.enableXsrfProtection false
 ```
 
-There is no test suite or linter. Three scripts check the live path against published nflverse data (each takes a season and an optional local parquet path):
+There is no test suite or linter. These scripts check the data paths against published data (each takes a season and an optional local parquet path):
 
 ```bash
 python tools/validate_models.py 2025         # nflfastr_models.py vs published ep/epa/wp
@@ -23,14 +23,16 @@ python tools/validate_text_parser.py 2025    # gamebook-text parser vs nflverse 
 python tools/validate_live_pipeline.py 2025  # live derivations + models vs official
 python tools/validate_espn_adapter.py 2025   # ESPN-shaped JSON round trip
 python tools/build_fg_table.py 2018 2025     # rebuild models/fg_make_prob.csv
+python tools/validate_cfb_adapter.py 2026     # cfb_feed.to_pbp vs college final scores + ESPN team box
 ```
 
 ## Architecture
 
-The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helper modules feed it games that nflverse hasn't published yet. Python 3.11.
+The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). A sidebar **League** radio switches between NFL and college football (`league`, `is_cfb`). Everything after loading is shared: both leagues produce the same nflfastR column layout (`PBP_COLS`), so the cursor, stats, charts and AI summary don't branch except where noted below. Two helper modules feed it NFL games that nflverse hasn't published yet; `cfb_feed.py` feeds it college games. Python 3.11.
 
 - `live_feed.py`: ESPN summary JSON → the same nflfastR column layout (`PBP_COLS`). `parse_play_text()` reads the NFL gamebook text the way nflfastR does: play type, players, yards, results, tacklers, sacks, INTs, pass defenses, QB hits and forced fumbles. Drive numbers come from possession changes (`_possession_drives()`, nflfastR's fixed_drive rules), not ESPN's drive grouping, which lags after turnovers mid-game. `add_derived_columns()` derives the rest: clock seconds, pre-play score differential, timeouts left (challenge timeouts included), first downs, `td_team`.
 - `game_summary.py`: the AI game summary agent. The app builds a `GameContext` from its own stat functions run on `revealed`: boxscore, scoring timeline, team stats with `stat_percentiles()`, situational success, drive chart, top WPA plays, explosive plays and player leaders. `summarize()` sends a text snapshot (scoreboard, offense table with percentiles, a derived defense-allowed table) and runs a manual tool loop of up to `MAX_TURNS`. The tools are key plays by kind, drives, one drive's plays, offensive splits, situational success and player leaders. It calls any Anthropic-compatible Messages endpoint. `configured_providers()` lists the ones that have a key: Kimi (Moonshot `/anthropic`, Bearer auth, default) and Claude. Only Claude models get `output_config.effort`, `strict` tools, prompt caching and the `fallbacks: "default"` beta. It makes no Streamlit calls, so an auto-refresh rerun waits for it instead of interrupting it.
+- `cfb_feed.py`: college football from sportsdataverse's `espn_cfb_pbp` release (ESPN's feed with sportsdataverse-py's college EP/WP models, rebuilt about daily, 2004 onward), plus its schedules and team info. Only `RAW_COLS` are read: the release also has final scores, drive results, `lead_*` and after-play columns, which would spoil. `to_pbp()` maps to `PBP_COLS` the way `live_feed` builds the NFL layout: receiving team on kickoffs, the try split off the touchdown row (it's on the same row in ESPN's college feed), END QUARTER/END OVERTIME/END GAME rows, drives from possession changes. It also repairs the feed: rows listed after a later period go back into their own (`_relocate_late_rows`), scores keep the longest never-decreasing chain (`_clean_scores`; some rows carry a stale score or even the final score mid-game), and isolated clock spikes are dropped. Overtime rows get no clock (college OT is untimed). There are no tackles, QB hits or TFLs: `MISSING_LEADER_STATS` are dropped from the leader tables. No live college games yet. No Streamlit calls.
 - `nflfastr_models.py`: nflfastR's own EP and WP xgboost models. They are extracted from `nflverse/fastrmodels` `.rda` files, downloaded once to `~/.cache/nfl_replays_pbp`. The module also ports nflfastR's EP/EPA/WP feature prep. The field-goal GAM can't run in Python, so its output is read from `models/fg_make_prob.csv`, which `tools/build_fg_table.py` recovers exactly from published pbp.
 
 **Data sources:** nflverse pbp isn't live; it's rebuilt about once a day after games end.
@@ -42,6 +44,7 @@ The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helpe
 - `load_live_game()` (cached 20s) builds a live game from ESPN plus nflfastR's models.
 - The game moves to the official data by itself once nflverse publishes it.
 - If the models can't load, EPA/WP stay NaN and the sidebar shows a warning.
+- College (`source == "published"`): `cfb_stamp()` reads the release's `timestamp.json` every 60s; `load_cfb_season()` (`cache_resource`, shared, don't mutate) holds the raw season, `list_cfb_games()` lists it with week label, AP ranks and conferences (the sidebar filters by conference), `load_cfb_game()` maps one game. Team colors/logos/nicknames come from `load_cfb_team_meta()`; the UI reads `team_colors`/`team_logos`/`team_nicks`, set once per league after loading.
 
 **Data flow:**
 1. `load_pbp` / `load_live_game` → `pbp_game` for the selected game
@@ -49,7 +52,7 @@ The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helpe
 3. The sidebar's quarter + MM:SS inputs produce `baseline_elapsed`; `cursor_from_elapsed()` turns that into a **play cursor**
 4. `revealed = pbp_game.iloc[: cursor_idx + 1]` drives all displayed sections
 
-**Key invariant — spoiler safety:** Every data-driven section must only use `revealed` (the sliced DataFrame), never `pbp_game` directly. The `safety_margin` slider subtracts seconds from `baseline_elapsed` before it is converted to a cursor. The win probability chart x-axis is capped at `elapsed_s / 60` to prevent the chart shape itself from being a spoiler.
+**Key invariant — spoiler safety:** Every data-driven section must only use `revealed` (the sliced DataFrame), never `pbp_game` directly. The `safety_margin` slider subtracts seconds from `baseline_elapsed` before it is converted to a cursor. The win probability and momentum charts plot each play at its `play_timeline()` position (`_el_min`), so OT lands after regulation, and the x-axis is capped at `elapsed_s / 60` to prevent the chart shape itself from being a spoiler.
 
 **Position model — the play cursor:** viewing position is a *play index*, not a game-seconds scalar. Three session-state keys:
 
@@ -58,9 +61,9 @@ The Streamlit app is `nfl_replay_app.py` (data loading, logic and UI). Two helpe
 - `_cursor_key` — `(game_id, qtr_pick, clock_str, safety_margin)`; a change re-seeds both from the clock baseline
 - `_cursor_frame` / `_cursor_anchor` — `(game_id, source, len(pbp_game))` and a `(elapsed, rank-within-that-second)` anchor for both cursors. When the frame changes (live plays arrive, or live → official, whose indices differ), `cursor_from_anchor()` carries the position over by game time. It never lands on a later second, or on a later rank within the same second, so a switch can't unlock anything.
 
-An index is used because a clock value cannot address plays individually: plays sharing one `game_seconds_remaining` (penalties, timeouts, two snaps in a second) collapse together. Overtime is worse — its clock restarts *inside* the regulation range (a 2024 OT game carries values like 442, 403, 363), so every OT play looks earlier than the end of Q4 and a game-seconds threshold reveals the whole OT period at once. This is also why `play_timeline()` applies `cummax`: the raw `3600 - clock` series runs backwards at the start of OT. `elapsed_s` is still derived from the cursor, but only for display and the WP x-axis cap — nothing filters on it.
+An index is used because a clock value cannot address plays individually: plays sharing one `game_seconds_remaining` (penalties, timeouts, two snaps in a second) collapse together. Overtime is worse: its clock restarts *inside* the regulation range (a 2024 OT game carries values like 600, 563, 523), so taken as game seconds every OT play looks earlier than the end of Q4. `play_timeline()` therefore gives OT period n its own slot after regulation, `3600 + 900·(n-1)` to `3600 + 900·n` (the same slot the sidebar's OT + clock input maps to), strictly after the period start. Untimed college OT plays have no clock and are spaced `cfb_feed.OT_PLAY_SECS` apart within their slot. `cummax` keeps the series sorted where a feed's clock steps backwards; it only ever moves a play later. `elapsed_s` is still derived from the cursor, but only for display and the WP x-axis cap — nothing filters on it.
 
-**Viewing position (sidebar):** a single control — quarter + MM:SS game clock, converted to elapsed game seconds (`completed_qtrs * 900 + (900 - remaining)`; OT is `qtr=5`, treated as starting after Q4). Its only job is to seed the cursor; the time bar does the exact syncing from there. `safety_margin` is subtracted from the baseline before the cursor lookup, clamped at 0.
+**Viewing position (sidebar):** a single control — quarter + MM:SS game clock, converted to elapsed game seconds (`completed_qtrs * 900 + (900 - remaining)`; OT is `qtr=5`, treated as starting after Q4). Its only job is to seed the cursor; the time bar does the exact syncing from there. `safety_margin` is subtracted from the baseline before the cursor lookup, clamped at 0. For college OT the clock input is hidden: OT seeds at the end of regulation and you step through it.
 
 **Time bar (main panel, between the header metrics and the reveal gate):** an HTML track (`_time_bar_html()`, quarter ticks, fill coloured by possession team, OT segment only once the cursor is in OT) plus an `st.slider` capped at `_cursor_max` and a row of step buttons. The slider deliberately has **no `key=`** so it re-seeds from `_cursor_idx` each rerun and buttons/auto-advance can drive it without a widget-state exception. Only `▶ Next play` and `▶▶ Next drive` raise `_cursor_max`; scrubbing and `⏭ Catch up` never do. Nothing past the cursor is drawn — no scoring marks, no play density, and the caption says "of N *unlocked*", never a total, since the play count alone leaks whether the game ran long.
 
@@ -72,12 +75,14 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
 
+**AI summary league:** `GameContext.league` (`"NFL"`/`"CFB"`) picks the analyst, model name, percentile baseline and OT note in `system_prompt()` (`_LEAGUE`); the NFL prompt text is unchanged. `period_label()` gives Q1–Q4, OT, 2OT, … for the app and the summary.
+
 **AI summary spoiler gate:** `st.session_state["_summary"]` holds the latest summary with the `cursor_anchor` it was written at. It is shown only for the same game and while that anchor is ≤ the anchor of `_cursor_max`, so re-seeding the clock earlier hides it. Keys come from `_setting()`, which reads `st.secrets` and then the environment.
 
 **UI sections (top to bottom):** header metrics → boxscore → AI summary (on demand) → recent plays (paginated, 15/page) → current drive → team stats → player leaders → win probability chart.
 
 **Stat tables:**
-- `boxscore()` — quarter-by-quarter score via cumulative score diffs
-- `team_stats()` — advanced EPA-based stats, returned as a transposed DataFrame (stat names as index, team abbrs as columns); styled by `style_stat_table()`
-- `top_players()` — per-team passing/rushing/receiving leaders sorted by yards
+- `boxscore()` — quarter-by-quarter score via cumulative score diffs; every OT period goes in the one OT column
+- `team_stats()` — advanced EPA-based stats, returned as a transposed DataFrame (stat names as index, team abbrs as columns); styled by `style_stat_table()`. Percentiles come from `load_stat_baselines(season, league)` / `load_situational_baselines(season, league)`: the 3 prior NFL seasons, or last college season's FBS-vs-FBS games (`_cfb_baseline_pbp`); `BASELINE_LABEL` names them in the captions
+- `top_players()` / `top_defenders()` — per-team passing/rushing/receiving leaders sorted by yards, and defensive leaders; `drop=` removes columns the league's data doesn't have
 - `drive_chart()` — one row per drive; above it, `drive_field_figure()` draws each drive from `drive_field_spots()` as an arrow on a field (home drives left → right from its own end zone on the left, away right → left; end zones carry team colors, logo and nickname). Each arrow is split into one segment per play (line of scrimmage to the next play's spot), coloured by `_play_category()` — pass or run on 1st/2nd down, pass or run on 3rd/4th down, or accepted penalty (`no_play` with `penalty == 1`); scrambles count as runs and sacks as passes, following nflfastR's `play_type`. A tick marks every snap so no-gain plays still show, and hovering a tick shows that play. The start/end markers keep the team color. Hover shows each drive's time of possession, measured to the next drive's start within the same half, as nflfastR does. The field graph is always shown; the table sits in an expander, collapsed by default. The last revealed drive is labelled "In progress" unless the last revealed row is an END marker.

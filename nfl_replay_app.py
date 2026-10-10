@@ -1,7 +1,7 @@
 """
 NFL Tape-Delay Replay Boxscore
 -------------------------------
-A spoiler-free way to follow an NFL game on tape delay.
+A spoiler-free way to follow an NFL or college football game on tape delay.
 
 You tell the app:
   1. Which game you're watching
@@ -27,11 +27,14 @@ import requests
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
+import cfb_feed
 import game_summary
 import live_feed
 import nflfastr_models
 
-st.set_page_config(page_title="NFL Replay Boxscore", layout="wide", page_icon="🏈")
+st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
+
+NFL, CFB = "NFL", "College football"
 
 # ---------- Data loading ----------
 @st.cache_data(ttl=3600)
@@ -69,12 +72,13 @@ def load_team_nicknames() -> dict[str, str]:
     return {a: n for a, n in zip(df["team_abbr"], df["team_nick"]) if isinstance(n, str)}
 
 
-def wp_crossings(revealed: pd.DataFrame) -> list[float]:
-    """Elapsed minutes at which the revealed home win probability crosses 50%."""
-    d = revealed[["game_seconds_remaining", "home_wp"]].dropna()
+def wp_crossings(revealed: pd.DataFrame, elapsed_min: pd.Series) -> list[float]:
+    """Elapsed minutes at which the revealed home win probability crosses 50%.
+    `elapsed_min` is each revealed play's place on the play timeline."""
+    d = revealed[["home_wp"]].assign(t=elapsed_min).dropna()
     if len(d) < 2:
         return []
-    t = ((3600 - d["game_seconds_remaining"]) / 60.0).to_numpy()
+    t = d["t"].to_numpy()
     w = d["home_wp"].to_numpy() - 0.5
     out = []
     for i in range(1, len(w)):
@@ -219,10 +223,50 @@ def load_live_game(sched_row: dict) -> tuple[pd.DataFrame, str, str, str | None]
     return df, live_feed.game_state(summary), datetime.now().strftime("%H:%M:%S"), model_err
 
 
+# ---------- College football ----------
+# Published games only, from sportsdataverse (see cfb_feed). Like nflverse, it
+# is rebuilt about once a day; a game shows up the morning after it's played.
+@st.cache_data(ttl=60)
+def cfb_stamp() -> str:
+    """When the college pbp was last rebuilt. Checked every minute."""
+    return cfb_feed.stamp() or f"unknown-{int(time.time() // 600)}"
+
+
+@st.cache_resource(max_entries=2)
+def load_cfb_season(season: int, stamp: str) -> pd.DataFrame:
+    """A season of college pbp, raw release columns. Shared, not copied, so
+    callers must not modify it. `stamp` is only a cache key."""
+    return cfb_feed.read_season(season)
+
+
+@st.cache_data(ttl=3600)
+def load_cfb_schedule(season: int) -> pd.DataFrame:
+    return cfb_feed.read_schedule(season)
+
+
+@st.cache_data(max_entries=4)
+def list_cfb_games(season: int, stamp: str) -> pd.DataFrame:
+    return cfb_feed.list_games(load_cfb_season(season, stamp), load_cfb_schedule(season))
+
+
+@st.cache_data(max_entries=8)
+def load_cfb_game(season: int, stamp: str, game_id: str) -> pd.DataFrame:
+    raw = load_cfb_season(season, stamp)
+    return cfb_feed.to_pbp(raw[raw["game_id"].astype(str) == game_id], PBP_COLS)
+
+
+@st.cache_data(ttl=3600)
+def load_cfb_team_meta(season: int, stamp: str) -> tuple[dict, dict, dict]:
+    """(colors, logos, nicknames) keyed by team abbreviation."""
+    return cfb_feed.team_meta(load_cfb_season(season, stamp), cfb_feed.read_team_info(season))
+
+
 # ---------- Replay logic ----------
-# A real NFL broadcast runs ~3h10m for 60 minutes of game clock. Used only to
-# show an approximate broadcast position alongside the game clock.
+# A real NFL broadcast runs ~3h10m for 60 minutes of game clock, a college one
+# ~3h20m. Used only to show an approximate broadcast position alongside the
+# game clock.
 BROADCAST_MINUTES = 190.0
+CFB_BROADCAST_MINUTES = 200.0
 GAME_SECONDS = 3600.0
 
 
@@ -233,14 +277,32 @@ def play_timeline(pbp_game: pd.DataFrame) -> pd.Series:
     regulation. Null-clock rows (timeouts, end-of-period admin plays) inherit
     the nearest real clock value so they aren't treated as kickoff-time.
 
-    cummax is load-bearing, not tidiness: in overtime the clock restarts inside
-    the regulation range (a 2024 OT game carries values like 442, 403, 363),
-    so the raw 3600 - clock jumps *backwards* by several hundred seconds at the
-    start of OT. Without the clamp the series isn't sorted and every lookup
-    into it is wrong.
+    Overtime gets its own stretch after regulation: OT period n (qtr 4 + n)
+    spans 3600 + 900·(n-1) to 3600 + 900·n, the same 15-minute slot the
+    sidebar's quarter + clock inputs give it. In nflfastR an OT clock counts
+    down inside its period (a 2024 OT game carries 600, 563, 523, ...), so
+    taken as game seconds remaining every OT play would land at or before the
+    end of Q4, and seeding the cursor at any OT clock would unlock the whole
+    overtime. College OT is untimed: its plays have no clock, so each is
+    placed cfb_feed.OT_PLAY_SECS after the one before it within its period.
+
+    cummax keeps the series sorted (every lookup into it needs that) where a
+    feed's clock steps backwards; it only ever moves a play later.
     """
-    clock = pbp_game["game_seconds_remaining"].ffill().bfill().fillna(3600)
-    return (3600 - clock).cummax().reset_index(drop=True)
+    q = pbp_game["qtr"].ffill().bfill().fillna(1).to_numpy(float)
+    gsr = pbp_game["game_seconds_remaining"]
+    el = (3600 - gsr.ffill().bfill().fillna(3600)).to_numpy(float)
+    ot = q >= 5
+    if ot.any():
+        o = pd.DataFrame({"q": q[ot], "c": gsr.to_numpy(float)[ot]})
+        clock = o.groupby("q")["c"].transform(lambda s: s.ffill().bfill())
+        nth = o.groupby("q").cumcount() + 1
+        start = 3600 + (o["q"] - 5) * 900
+        # Strictly after the period start, so the end of Q4 never unlocks
+        # a playoff OT's opening kickoff (its clock reads a full 15:00).
+        el[ot] = np.where(clock.notna(), np.maximum(start + 900 - clock, start + 1),
+                          start + np.minimum(nth * cfb_feed.OT_PLAY_SECS, 899))
+    return pd.Series(el).cummax()
 
 
 def cursor_from_elapsed(timeline: pd.Series, elapsed_game_s: float) -> int:
@@ -286,7 +348,8 @@ def boxscore(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     out = {"Team": [away, home]}
     last_h, last_a = 0, 0
     for q in [1, 2, 3, 4, 5]:
-        in_q = revealed[revealed["qtr"] == q]
+        # Every overtime period goes in the one OT column.
+        in_q = revealed[revealed["qtr"] >= 5] if q == 5 else revealed[revealed["qtr"] == q]
         if in_q.empty:
             h_pts, a_pts = 0, 0
         else:
@@ -448,12 +511,58 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
 
+# What the percentile colors compare against, per league.
+BASELINE_LABEL = {NFL: "last 3 seasons", CFB: "last season's FBS-vs-FBS games"}
+# Every column the baselines read, so the college season is mapped only once.
+_BASELINE_COLS = [
+    "game_id", "posteam",
+    "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa",
+    "passing_yards", "rushing_yards",
+    "complete_pass", "air_yards",
+    "interception", "fumble_lost", "first_down",
+    "third_down_converted", "third_down_failed",
+    "yardline_100", "touchdown",
+    "drive", "qtr", "game_seconds_remaining",
+    "penalty", "penalty_team", "penalty_yards",
+    "down", "ydstogo",
+]
+
+
+@st.cache_data(ttl=86400, max_entries=1)
+def _cfb_baseline_pbp(season: int) -> pd.DataFrame:
+    """The college season before `season`, FBS-vs-FBS games only, mapped to
+    the app's layout. Empty if it isn't published."""
+    prior = season - 1
+    if prior < cfb_feed.FIRST_SEASON:
+        return pd.DataFrame(columns=_BASELINE_COLS)
+    pbp = cfb_feed.to_pbp(cfb_feed.read_season(prior), PBP_COLS)
+    fbs = cfb_feed.fbs_games(cfb_feed.read_schedule(prior))
+    if fbs:
+        pbp = pbp[pbp["game_id"].isin(fbs)]
+    return pbp[_BASELINE_COLS].reset_index(drop=True)
+
+
+def _baseline_pbp(league: str, season: int, cols: list[str]) -> pd.DataFrame | None:
+    """Play-by-play the percentile baselines are built from: the 3 NFL seasons
+    before `season`, or last college season's FBS-vs-FBS games (one college
+    season has as many team-games as three NFL ones). None if unavailable."""
+    try:
+        if league == CFB:
+            df = _cfb_baseline_pbp(season)
+            return df[cols] if not df.empty else None
+        prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
+        if not prior:
+            return None
+        return nfl.import_pbp_data(prior, columns=cols, downcast=True,
+                                   include_participation=False)
+    except Exception:  # network error, missing season data, etc.
+        return None
+
+
 @st.cache_data(ttl=86400)
-def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
-    """Per-stat distributions from the 3 seasons prior to `season`, sorted ascending."""
-    prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
-    if not prior:
-        return {}
+def load_stat_baselines(season: int, league: str = NFL) -> dict[str, np.ndarray]:
+    """Per-stat distributions from the seasons before `season`
+    (see `_baseline_pbp`), sorted ascending."""
     cols = [
         "game_id", "posteam",
         "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa",
@@ -465,10 +574,8 @@ def load_stat_baselines(season: int) -> dict[str, np.ndarray]:
         "drive", "qtr", "game_seconds_remaining",
         "penalty", "penalty_team", "penalty_yards",
     ]
-    try:
-        raw_all = nfl.import_pbp_data(prior, columns=cols, downcast=True,
-                                      include_participation=False)
-    except Exception:  # network error, missing season data, etc.
+    raw_all = _baseline_pbp(league, season, cols)
+    if raw_all is None:
         return {}
 
     raw = raw_all[raw_all["posteam"].notna()]
@@ -607,16 +714,12 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
 
 
 @st.cache_data(ttl=86400)
-def load_situational_baselines(season: int) -> dict[str, dict[str, np.ndarray]]:
-    """Per-situation metric distributions from the 3 seasons prior to `season`."""
-    prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
-    if not prior:
-        return {}
+def load_situational_baselines(season: int, league: str = NFL) -> dict[str, dict[str, np.ndarray]]:
+    """Per-situation metric distributions from the seasons before `season`
+    (see `_baseline_pbp`)."""
     cols = ["game_id", "posteam", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike", "epa", "down", "ydstogo"]
-    try:
-        raw = nfl.import_pbp_data(prior, columns=cols, downcast=True,
-                                  include_participation=False)
-    except Exception:
+    raw = _baseline_pbp(league, season, cols)
+    if raw is None:
         return {}
 
     raw = raw[raw["posteam"].notna()]
@@ -781,7 +884,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
 
 
 def stat_percentiles(df: pd.DataFrame, baselines: dict) -> pd.DataFrame:
-    """Percentile of each Team stats cell vs the last 3 seasons, 100 = best
+    """Percentile of each Team stats cell vs the baseline seasons, 100 = best
     (flipped for stats where fewer is better). NaN without a baseline."""
     out = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
     for row in df.index:
@@ -792,8 +895,10 @@ def stat_percentiles(df: pd.DataFrame, baselines: dict) -> pd.DataFrame:
     return out
 
 
-def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.DataFrame:
-    """Leaders for a team so far."""
+def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
+                drop: frozenset = frozenset()) -> pd.DataFrame:
+    """Leaders for a team so far. `drop` names columns the data source doesn't
+    have (they'd only ever read 0)."""
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
         pass_td = td[(td["pass_attempt"] == 1) & (td["qb_spike"].fillna(0) == 0)].copy()
@@ -853,12 +958,14 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.
     int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
     g[int_cols] = g[int_cols].astype(int)
     g["EPA/play"] = (g["_epa"] / g["_plays"]).round(2)
-    g = g.drop(columns=["_epa", "_plays"])
+    g = g.drop(columns=["_epa", "_plays", *[c for c in drop if c in g.columns]])
     return g.sort_values("Yds", ascending=False).head(n)
 
 
-def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame:
-    """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs."""
+def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
+                  drop: frozenset = frozenset()) -> pd.DataFrame:
+    """Defensive leaders for a team: tackles, sacks, QB hits, TFLs, INTs, PDs, FFs.
+    `drop` names columns the data source doesn't have."""
     _ST_TYPES = {"kickoff", "punt", "field_goal", "extra_point", "no_play"}
     td = revealed[
         (revealed["defteam"] == team)
@@ -912,6 +1019,7 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5) -> pd.DataFrame
         + g.get("INT", 0) * 2 + g.get("TFL", 0) + g.get("QB Hits", 0) * 0.5
         + g.get("PD", 0) * 0.5 + g.get("FF", 0) * 1.5
     )
+    g = g.drop(columns=[c for c in drop if c in g.columns])
     return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
 
 
@@ -1510,40 +1618,73 @@ def _setting(name: str) -> str | None:
 
 
 # ---------- UI ----------
-st.title("🏈 NFL Tape-Delay Replay")
+with st.sidebar:
+    st.header("Setup")
+    league = st.radio("League", [NFL, CFB], horizontal=True)
+is_cfb = league == CFB
+
+st.title("🏈 College Football Tape-Delay Replay" if is_cfb else "🏈 NFL Tape-Delay Replay")
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
-    st.header("Setup")
-    season = st.number_input("Season", min_value=1999, max_value=2026, value=2026, step=1)
+    season = st.number_input("Season", min_value=cfb_feed.FIRST_SEASON if is_cfb else 1999,
+                             max_value=2026, value=2026, step=1)
 
-    stamp = nflverse_stamp()
-    with st.spinner("Loading play-by-play..."):
-        try:
-            pbp = load_pbp(int(season), stamp)
-        except Exception as e:
-            # Nothing published for this season yet: live games can still load.
-            pbp = pd.DataFrame(columns=PBP_COLS)
-            pbp_error = str(e)
-        else:
-            pbp_error = None
+    if is_cfb:
+        stamp = cfb_stamp()
+        with st.spinner("Loading college play-by-play..."):
+            try:
+                games = list_cfb_games(int(season), stamp)
+            except Exception as e:
+                st.error(f"No college play-by-play for the {int(season)} season yet ({e}).")
+                st.stop()
+        if games.empty:
+            st.warning(f"No college games published for the {int(season)} season yet.")
+            st.stop()
+        week_labels = list(dict.fromkeys(games["week_label"]))
+        week = st.selectbox("Week", week_labels, index=len(week_labels) - 1)
+        games = games[games["week_label"] == week]
+        # 50+ games a Saturday: narrow by conference.
+        confs = sorted((set(games["home_conf"].dropna()) | set(games["away_conf"].dropna())) - {""})
+        conf = st.selectbox("Conference", ["All"] + confs)
+        if conf != "All":
+            games = games[(games["home_conf"] == conf) | (games["away_conf"] == conf)]
+    else:
+        stamp = nflverse_stamp()
+        with st.spinner("Loading play-by-play..."):
+            try:
+                pbp = load_pbp(int(season), stamp)
+            except Exception as e:
+                # Nothing published for this season yet: live games can still load.
+                pbp = pd.DataFrame(columns=PBP_COLS)
+                pbp_error = str(e)
+            else:
+                pbp_error = None
 
-    games = list_games(pbp, load_schedule(int(season)))
-    if games.empty:
-        if pbp_error:
-            st.error(f"Could not load pbp: {pbp_error}")
-        else:
-            st.warning(f"No games found for the {int(season)} season yet.")
-        st.stop()
-    weeks = sorted(games["week"].dropna().astype(int).unique())
-    week = st.selectbox("Week", weeks, index=len(weeks) - 1)
-    games = games[games["week"] == week]
+        games = list_games(pbp, load_schedule(int(season)))
+        if games.empty:
+            if pbp_error:
+                st.error(f"Could not load pbp: {pbp_error}")
+            else:
+                st.warning(f"No games found for the {int(season)} season yet.")
+            st.stop()
+        weeks = sorted(games["week"].dropna().astype(int).unique())
+        week = st.selectbox("Week", weeks, index=len(weeks) - 1)
+        games = games[games["week"] == week]
     game_label = st.selectbox("Game", games["label"].tolist())
     game_row = games.loc[games["label"] == game_label].iloc[0]
     game_id = game_row["game_id"]
     source = game_row["source"]
 
-    if source == "nflfastR":
+    if source == "published":
+        # College: sportsdataverse's published pbp. No live feed yet.
+        pbp_game = load_cfb_game(int(season), stamp, game_id)
+        st.caption(f"📊 College play-by-play from ESPN, with sportsdataverse's EPA and "
+                   f"win probability models · data as of {stamp}")
+        st.caption("A game shows up here once sportsdataverse publishes it, usually "
+                   "the morning after. Live college games aren't supported yet.")
+        live_state = "post"
+    elif source == "nflfastR":
         pbp_game = pbp[pbp["game_id"] == game_id].sort_values("play_id").reset_index(drop=True)
         st.caption(f"📊 Official nflfastR play-by-play · nflverse data as of {stamp}")
         live_state = "post"
@@ -1571,6 +1712,14 @@ with st.sidebar:
     away = pbp_game["away_team"].iloc[0]
     timeline = play_timeline(pbp_game)
     last_idx = len(pbp_game) - 1
+
+    if is_cfb:
+        team_colors, team_logos, team_nicks = load_cfb_team_meta(int(season), stamp)
+    else:
+        team_colors, team_logos, team_nicks = load_team_colors(), load_team_logos(), load_team_nicknames()
+    # Player-leader columns the data source has no data for.
+    missing_stats = cfb_feed.MISSING_LEADER_STATS if is_cfb else frozenset()
+    broadcast_minutes = CFB_BROADCAST_MINUTES if is_cfb else BROADCAST_MINUTES
 
     st.divider()
     st.subheader("Your viewing")
@@ -1602,8 +1751,13 @@ with st.sidebar:
                    "with the time bar.")
         # The game clock counts DOWN within each quarter from 15:00 to 0:00.
         qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT"], index=0)
-        clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
-                                  help="Time left on the in-quarter clock, e.g. 7:32")
+        if is_cfb and qtr_pick == "OT":
+            st.caption("College overtime has no clock: you start at the end of "
+                       "regulation. Step through it with ▶ Next play.")
+            clock_str = "15:00"
+        else:
+            clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
+                                      help="Time left on the in-quarter clock, e.g. 7:32")
     try:
         mm, ss = clock_str.strip().split(":")
         remaining_in_qtr = int(mm) * 60 + int(ss)
@@ -1734,11 +1888,9 @@ if not revealed.empty:
 else:
     home_score = away_score = 0
 
-_logos = load_team_logos()
-
 
 def _logo_img(team: str) -> str:
-    url = _logos.get(team)
+    url = team_logos.get(team)
     return f"<img src='{url}' alt='{team}' style='height:clamp(36px,9vw,64px);width:auto'>" if url else ""
 
 
@@ -1755,13 +1907,12 @@ st.markdown(
 
 st.markdown(
     f"<div style='text-align:center;font-size:1.1rem;opacity:0.8;margin-bottom:0.5rem'>"
-    f"{'Q' + str(qtr_now) if qtr_now <= 4 else 'OT'} · {game_clock}</div>",
+    f"{game_summary.period_label(qtr_now)}"
+    # College overtime has no clock to show.
+    f"{'' if qtr_now >= 5 and game_clock == '—' else ' · ' + game_clock}</div>",
     unsafe_allow_html=True)
 
 # ---------- Play-by-play time bar ----------
-_team_colors = load_team_colors()
-
-
 def _hex_or_none(v):
     """nfl_data_py leaves a few team_color cells blank/NaN."""
     return v if isinstance(v, str) and v.startswith("#") else None
@@ -1771,8 +1922,8 @@ _bar_fill = "#4c78a8"
 _in_ot = False
 if cursor_idx >= 0:
     _cur_row = pbp_game.iloc[cursor_idx]
-    _bar_fill = (_hex_or_none(_team_colors.get(_cur_row["posteam"]))
-                 or _hex_or_none(_team_colors.get(home))
+    _bar_fill = (_hex_or_none(team_colors.get(_cur_row["posteam"]))
+                 or _hex_or_none(team_colors.get(home))
                  or _bar_fill)
     _in_ot = pd.notna(_cur_row["qtr"]) and int(_cur_row["qtr"]) >= 5
 st.markdown(_time_bar_html(elapsed_s / 3600.0, _bar_fill, _in_ot), unsafe_allow_html=True)
@@ -1832,7 +1983,7 @@ if _b5.button("⏭ Catch up", key="bar_catchup", width='stretch', disabled=curso
 if cursor_idx >= 0:
     _r = pbp_game.iloc[cursor_idx]
     _q = int(_r["qtr"]) if pd.notna(_r["qtr"]) else 0
-    _bits = ["OT" if _q >= 5 else (f"Q{_q}" if _q >= 1 else "—")]
+    _bits = [game_summary.period_label(_q) if _q >= 1 else "—"]
     if pd.notna(_r["time"]):
         _bits.append(str(_r["time"]))
     _dd, _fp = _down_distance(_r), _field_pos_label(_r)
@@ -1843,8 +1994,9 @@ if cursor_idx >= 0:
     # "of N unlocked", never "of N total" — the play count alone would leak
     # whether the game ran long.
     _bits.append(f"play {cursor_idx + 1} of {cursor_max + 1} unlocked")
-    _bits.append(f"⏱ {elapsed_s / 60:.1f} game min "
-                 f"(≈ {elapsed_s / GAME_SECONDS * BROADCAST_MINUTES:.0f} broadcast min)")
+    if _q <= 4:  # overtime's place on the timeline isn't real game minutes
+        _bits.append(f"⏱ {elapsed_s / 60:.1f} game min "
+                     f"(≈ {elapsed_s / GAME_SECONDS * broadcast_minutes:.0f} broadcast min)")
     st.caption(" · ".join(_bits))
 else:
     st.caption("Kickoff — nothing revealed yet. Press **▶ Next play** to begin.")
@@ -1897,11 +2049,12 @@ else:
             format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
     if _sum_btn.button("Update summary" if _summary else "Explain the score so far",
                        help="Only the plays you've unlocked are sent to the model."):
-        _season_baselines = load_stat_baselines(int(season))
+        _season_baselines = load_stat_baselines(int(season), league)
         _stats = team_stats(revealed, home, away)
         _sit, _sit_n = situational_success_rate(revealed, home, away)
         _ctx = game_summary.GameContext(
             home=home, away=away, revealed=revealed,
+            league="CFB" if is_cfb else "NFL",
             boxscore=boxscore(revealed, home, away),
             scoring=scoring_timeline(revealed, home, away),
             team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines),
@@ -1910,9 +2063,10 @@ else:
             top_wpa=top_plays_wpa(revealed, home, away),
             explosive=explosive_plays(revealed),
             leaders={
-                **{(t, k): top_players(revealed, t, k, n) for t in (away, home)
+                **{(t, k): top_players(revealed, t, k, n, drop=missing_stats) for t in (away, home)
                    for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
-                **{(t, "defense"): top_defenders(revealed, t, 10) for t in (away, home)},
+                **{(t, "defense"): top_defenders(revealed, t, 10, drop=missing_stats)
+                   for t in (away, home)},
             },
         )
         # No Streamlit calls inside summarize(), so an auto-refresh rerun
@@ -2075,8 +2229,7 @@ if not revealed.empty:
     _spots = drive_field_spots(revealed)
     if not _spots.empty:
         st.plotly_chart(
-            drive_field_figure(_spots, home, away, load_team_colors(),
-                               load_team_logos(), load_team_nicknames()),
+            drive_field_figure(_spots, home, away, team_colors, team_logos, team_nicks),
             width='stretch', config={"displayModeBar": False},
         )
         st.caption(f"{home} drives left → right · {away} drives right → left · "
@@ -2097,15 +2250,15 @@ else:
 # ---------- Team stats ----------
 st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
-_baselines = load_stat_baselines(int(season))
+_baselines = load_stat_baselines(int(season), league)
 st.dataframe(style_stat_table(stat_df, away, home, _baselines), width='stretch')
-st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
+st.caption(f"Colors show percentile vs {BASELINE_LABEL[league]} · green = top · red = bottom")
 
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
-st.caption("Colors show percentile vs last 3 seasons · green = top of league · red = bottom")
+st.caption(f"Colors show percentile vs {BASELINE_LABEL[league]} · green = top · red = bottom")
 sr_df, _sit_counts = situational_success_rate(revealed, home, away)
-_sit_baselines = load_situational_baselines(int(season))
+_sit_baselines = load_situational_baselines(int(season), league)
 st.dataframe(_style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch')
 
 # ---------- Player leaders ----------
@@ -2115,7 +2268,7 @@ if not hide_leaders:
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
-            _pass_df = top_players(revealed, team, "passing")
+            _pass_df = top_players(revealed, team, "passing", drop=missing_stats)
             st.caption("Passing")
             if not _pass_df.empty:
                 st.dataframe(_pass_df, hide_index=True, width='stretch',
@@ -2126,7 +2279,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _rush_df = top_players(revealed, team, "rushing",4)
+            _rush_df = top_players(revealed, team, "rushing", 4, drop=missing_stats)
             st.caption("Rushing")
             if not _rush_df.empty:
                 st.dataframe(_rush_df, hide_index=True, width='stretch',
@@ -2136,7 +2289,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _recv_df = top_players(revealed, team, "receiving",8)
+            _recv_df = top_players(revealed, team, "receiving", 8, drop=missing_stats)
             st.caption("Receiving")
             if not _recv_df.empty:
                 st.dataframe(_recv_df, hide_index=True, width='stretch',
@@ -2146,7 +2299,7 @@ if not hide_leaders:
                              })
             else:
                 st.caption("No data yet")
-            _def_df = top_defenders(revealed, team,10)
+            _def_df = top_defenders(revealed, team, 10, drop=missing_stats)
             st.caption("Defense")
             if not _def_df.empty:
                 st.dataframe(_def_df, hide_index=True, width='stretch',
@@ -2163,6 +2316,9 @@ if not hide_leaders:
                 st.caption("No data yet")
 
 # ---------- Win probability chart ----------
+# x is each play's place on the play timeline, so overtime plots after
+# regulation (and untimed college OT gets room) instead of on top of Q4.
+_el_min = pd.Series(timeline.iloc[: len(revealed)].to_numpy() / 60.0, index=revealed.index)
 if not hide_wp:
     st.subheader("Momentum")
     if not revealed.empty:
@@ -2171,13 +2327,10 @@ if not hide_wp:
             (revealed["rush_attempt"].fillna(0) == 1)
         ].copy()
         if not _mom_scrimmage.empty:
-            _mom_scrimmage["_elapsed_min"] = (
-                (3600 - _mom_scrimmage["game_seconds_remaining"].fillna(3600)) / 60.0
-            )
-            _mom_team_colors = load_team_colors()
+            _mom_scrimmage["_elapsed_min"] = _el_min.loc[_mom_scrimmage.index]
             _mom_color_map = {
-                home: _mom_team_colors.get(home, "#1f77b4"),
-                away: _mom_team_colors.get(away, "#ff7f0e"),
+                home: team_colors.get(home, "#1f77b4"),
+                away: team_colors.get(away, "#ff7f0e"),
             }
             _mom_rows = []
             for _mom_team in [away, home]:
@@ -2213,9 +2366,7 @@ if not hide_wp:
                     (revealed["safety"].fillna(0) == 1)
                 )
                 _mom_scores = revealed[_mom_score_mask].copy()
-                _mom_scores["_elapsed"] = (
-                    (3600 - _mom_scores["game_seconds_remaining"].fillna(3600)) / 60.0
-                )
+                _mom_scores["_elapsed"] = _el_min.loc[_mom_scores.index]
                 _mom_scores["_team"] = _mom_scores.apply(
                     lambda r: r["defteam"] if r["safety"] == 1 else r["posteam"], axis=1
                 )
@@ -2225,7 +2376,7 @@ if not hide_wp:
                     axis=1,
                 )
                 for _, _se in _mom_scores.iterrows():
-                    _se_color = _mom_team_colors.get(str(_se["_team"]), "#333333")
+                    _se_color = team_colors.get(str(_se["_team"]), "#333333")
                     fig_mom.add_vline(
                         x=float(_se["_elapsed"]),
                         line_dash="dot",
@@ -2242,14 +2393,12 @@ if not hide_wp:
 
     st.subheader("Win probability")
     if not revealed.empty:
-        wp_df = revealed[["game_seconds_remaining", "home_wp", "away_wp"]].dropna()
-        wp_df = wp_df.assign(elapsed=(3600 - wp_df["game_seconds_remaining"]) / 60.0)
+        wp_df = revealed[["home_wp", "away_wp"]].assign(elapsed=_el_min).dropna()
         wp_long = wp_df.melt(id_vars="elapsed", value_vars=["home_wp", "away_wp"],
                              var_name="team", value_name="wp")
         wp_long["team"] = wp_long["team"].map({"home_wp": home, "away_wp": away})
-        _team_colors = load_team_colors()
-        _color_map = {home: _team_colors.get(home, "#1f77b4"),
-                      away: _team_colors.get(away, "#ff7f0e")}
+        _color_map = {home: team_colors.get(home, "#1f77b4"),
+                      away: team_colors.get(away, "#ff7f0e")}
         fig = px.line(wp_long, x="elapsed", y="wp", color="team",
                       color_discrete_map=_color_map,
                       labels={"elapsed": "Game minutes elapsed", "wp": "Win probability"})
@@ -2260,7 +2409,7 @@ if not hide_wp:
         x_cap = max(elapsed_s / 60.0, 1.0)
         fig.update_xaxes(range=[0, x_cap])
         fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5)
-        for _x in wp_crossings(revealed):
+        for _x in wp_crossings(revealed, _el_min):
             fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
         st.plotly_chart(fig, width='stretch')
