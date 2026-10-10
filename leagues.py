@@ -58,7 +58,6 @@ class League:
     baseline_label: str         # what the percentile colors compare against
     group_label: str | None = None  # a sidebar filter on games["groups"], e.g. conference
     untimed_ot: bool = False    # OT has no clock: the sidebar seeds OT at its start
-    missing_stats: frozenset = frozenset()  # Player-leader columns the data doesn't have
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -81,6 +80,11 @@ class League:
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         """Play-by-play (core.BASELINE_COLS) the percentile baselines for
         `season` are built from; None if unavailable."""
+        raise NotImplementedError
+
+    def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
+        """Player-leader columns (top_players/top_defenders `drop=`) the data
+        behind `pbp` doesn't have."""
         raise NotImplementedError
 
 
@@ -303,6 +307,9 @@ class NFLLeague(League):
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         return _nfl_baseline_pbp(season)
 
+    def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
+        return frozenset({"Hurries"})  # nflfastR has QB hits instead
+
 
 # ---------- College football ----------
 # Published games only, from sportsdataverse (see cfb_feed). Like nflverse, it
@@ -417,6 +424,9 @@ class CollegeLeague(League):
         df = _cfb_baseline_pbp(season)
         return None if df.empty else df
 
+    def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
+        return cfb_feed.missing_leader_stats(pbp)
+
 
 NFL = NFLLeague(
     name="NFL", key="NFL", title="🏈 NFL Tape-Delay Replay", first_season=1999,
@@ -427,7 +437,7 @@ COLLEGE = CollegeLeague(
     first_season=cfb_feed.FIRST_SEASON,
     # ~3h20m. One college season has about as many team-games as three NFL ones.
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
-    group_label="Conference", untimed_ot=True, missing_stats=cfb_feed.MISSING_LEADER_STATS)
+    group_label="Conference", untimed_ot=True)
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
 
 

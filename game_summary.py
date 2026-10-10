@@ -124,7 +124,8 @@ _LEAGUE = {
         "analyst": "a college football analyst",
         "model": "sportsdataverse's college model",
         "baseline": "every FBS-vs-FBS team-game of last season",
-        "defense": "sacks, INTs, passes defensed and forced fumbles (the college feed has no tackles or QB hits)",
+        "defense": ("tackles, sacks, QB hurries, TFLs, INTs, passes defensed and forced fumbles (the "
+                    "college feed has no QB hits, and older games' feeds have no tackles, TFLs or hurries)"),
         "notes": (" College overtime is untimed: each team gets a possession from the "
                   "opponent's 25, and from the third overtime on, teams trade two-point tries."),
     },
