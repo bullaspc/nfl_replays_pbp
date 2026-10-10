@@ -6,8 +6,10 @@ layout (`replay_core.PBP_COLS`), and supplies team colors/logos/nicknames and
 the play-by-play its percentile baselines are built from. The page picks one
 with the sidebar's League radio and otherwise never branches on the league.
 
-- NFL: nflverse's published nflfastR pbp, and for games it hasn't published
-  yet ESPN's live feed (live_feed.py) with nflfastR's models (nflfastr_models.py).
+- NFL: nflverse's published nflfastR pbp, read with nflreadpy (nflverse's
+  successor to nfl_data_py, which can't run on pandas 2), and for games it
+  hasn't published yet ESPN's live feed (live_feed.py) with nflfastR's models
+  (nflfastr_models.py).
 - College football: sportsdataverse's published pbp (cfb_feed.py), and for
   games it hasn't published yet ESPN's live feed run through sportsdataverse's
   own processing (cfb_feed.live_raw).
@@ -15,16 +17,17 @@ with the sidebar's League radio and otherwise never branches on the league.
 The loaders here are cached with Streamlit; the modules they call aren't.
 """
 
-import io
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import nflreadpy
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from nflreadpy.config import update_config
 
 import cfb_feed
 import live_feed
@@ -83,35 +86,23 @@ class League:
 
 # ---------- NFL ----------
 NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"
-# The schedule as CSV, if the release's parquet can't be read.
-NFLVERSE_GAMES_CSV = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
 
-
-def _get(url: str, timeout: float = 60) -> bytes:
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.content
+# The app decides when to download again (nflverse's timestamp.json, below):
+# nflreadpy's own day-long memory cache would keep serving a season after
+# nflverse republishes it. A season of pbp can take longer than its 30s default.
+update_config(cache_mode="off", timeout=120)
 
 
 def nflverse_teams() -> pd.DataFrame:
     """nflverse's team table: abbreviation, colors, logos, nickname."""
-    return pd.read_csv(io.BytesIO(_get(f"{NFLVERSE_RELEASE}/teams/teams_colors_logos.csv")))
+    return nflreadpy.load_teams().to_pandas()
 
 
 def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
     """nflverse play-by-play for `seasons`, `columns` only, with float64 columns
-    stored as float32 to save memory. A season that isn't published (404) is
-    skipped; an empty frame means none was."""
-    frames = []
-    for season in seasons:
-        r = requests.get(f"{NFLVERSE_RELEASE}/pbp/play_by_play_{season}.parquet", timeout=120)
-        if r.status_code == 404:
-            continue
-        r.raise_for_status()
-        frames.append(pd.read_parquet(io.BytesIO(r.content), columns=columns))
-    if not frames:
-        return pd.DataFrame()
-    df = pd.concat(frames, ignore_index=True)
+    stored as float32 to save memory, as nfl_data_py did. Raises if a season
+    isn't published."""
+    df = nflreadpy.load_pbp(seasons).select(columns).to_pandas()
     floats = df.select_dtypes("float64").columns
     df[floats] = df[floats].astype("float32")
     return df
@@ -169,12 +160,15 @@ def nflverse_stamp() -> str:
 def load_pbp(season: int, stamp: str) -> pd.DataFrame:
     """Load nflverse play-by-play for a season. `stamp` is only a cache key:
     the file is downloaded again when nflverse republishes it."""
-    df = nflverse_pbp([season], core.PBP_COLS)
-    if df.empty:
+    try:
+        df = nflverse_pbp([season], core.PBP_COLS)
+    except Exception as e:
         raise ValueError(
             f"No play-by-play data is available for the {season} season yet. "
             "nflverse publishes it once games have been played."
-        )
+        ) from e
+    if df.empty:
+        raise ValueError(f"No play-by-play data is available for the {season} season yet.")
     return df
 
 
@@ -182,12 +176,9 @@ def load_pbp(season: int, stamp: str) -> pd.DataFrame:
 def load_schedule(season: int) -> pd.DataFrame:
     """nflverse's schedule: ESPN event id, spread line, roof, kickoff time."""
     try:
-        sched = pd.read_parquet(io.BytesIO(_get(f"{NFLVERSE_RELEASE}/schedules/games.parquet")))
+        sched = nflreadpy.load_schedules([season]).to_pandas()
     except Exception:
-        try:
-            sched = pd.read_csv(io.BytesIO(_get(NFLVERSE_GAMES_CSV)))
-        except Exception:
-            return pd.DataFrame()
+        return pd.DataFrame()
     return sched[sched["season"] == season].reset_index(drop=True)
 
 

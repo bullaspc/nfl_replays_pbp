@@ -35,7 +35,8 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | Package | Purpose |
 |---|---|
 | `streamlit` | Web UI framework |
-| `pandas`, `pyarrow` | Data manipulation, reading nflverse and sportsdataverse parquet files |
+| `nflreadpy` | NFL play-by-play, schedules and team colors from nflverse (the successor to `nfl_data_py`) |
+| `pandas`, `pyarrow` | Data manipulation, reading sportsdataverse parquet files |
 | `numpy` | Numeric helpers |
 | `plotly` | Win probability chart |
 | `streamlit-autorefresh` | Auto-advance timer |
@@ -66,7 +67,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## Data Source
 
-Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, read straight from nflverse's release files. nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
+Play-by-play comes from [nflverse](https://nflverse.com/), meaning nflfastR's play-by-play, loaded through [nflreadpy](https://github.com/nflverse/nflreadpy). nflverse rebuilds it about once a day after games finish. The app checks nflverse's `timestamp.json` every minute and reloads as soon as a new build is out.
 
 ## College football
 
