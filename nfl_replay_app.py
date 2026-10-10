@@ -13,6 +13,7 @@ Run with:
     streamlit run nfl_replay_app.py
 """
 
+import os
 import time
 from datetime import date, datetime
 
@@ -26,6 +27,7 @@ import requests
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
+import game_summary
 import live_feed
 import nflfastr_models
 
@@ -778,6 +780,18 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
     return styled
 
 
+def stat_percentiles(df: pd.DataFrame, baselines: dict) -> pd.DataFrame:
+    """Percentile of each Team stats cell vs the last 3 seasons, 100 = best
+    (flipped for stats where fewer is better). NaN without a baseline."""
+    out = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
+    for row in df.index:
+        arr = baselines.get(row, np.array([]))
+        for team in df.columns:
+            pct = _percentile_of(float(df.at[row, team]), arr)
+            out.at[row, team] = 100.0 - pct if row in _LOWER_IS_BETTER and pd.notna(pct) else pct
+    return out
+
+
 def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3) -> pd.DataFrame:
     """Leaders for a team so far."""
     td = revealed[revealed["posteam"] == team]
@@ -1485,6 +1499,16 @@ def keep_screen_awake(enabled: bool) -> None:
 """, height=0)
 
 
+def _setting(name: str) -> str | None:
+    """A setting from .streamlit/secrets.toml, else the environment."""
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:  # no secrets.toml
+        pass
+    return os.environ.get(name) or None
+
+
 # ---------- UI ----------
 st.title("🏈 NFL Tape-Delay Replay")
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
@@ -1844,6 +1868,74 @@ st.divider()
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
 st.dataframe(boxscore(revealed, home, away), hide_index=True, width='stretch')
+
+# ---------- AI game summary ----------
+# An agent reads the same stats as the sections below, built from `revealed`
+# only, and explains the score so far. It runs only when asked, and the result
+# is kept until the next request.
+st.subheader("🧠 Why the score is what it is")
+_providers = game_summary.configured_providers(_setting)
+_summary = st.session_state.get("_summary")
+# Show a summary only for this game and only up to the unlocked edge. Moving the
+# clock inputs back lowers that edge and hides it until you get there again.
+if _summary and (_summary["game_id"] != game_id
+                 or _summary["anchor"] > cursor_anchor(timeline, cursor_max)):
+    _summary = None
+
+if not _providers:
+    st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
+               "`.streamlit/secrets.toml` or the environment to get an AI summary of "
+               "what you've watched.")
+elif revealed.empty:
+    st.caption("No plays revealed yet.")
+else:
+    _sum_btn, _sum_pick = st.columns([3, 2])
+    _prov = next(iter(_providers))
+    if len(_providers) > 1:
+        _prov = _sum_pick.selectbox(
+            "Model", list(_providers), label_visibility="collapsed",
+            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
+    if _sum_btn.button("Update summary" if _summary else "Explain the score so far",
+                       help="Only the plays you've unlocked are sent to the model."):
+        _season_baselines = load_stat_baselines(int(season))
+        _stats = team_stats(revealed, home, away)
+        _sit, _sit_n = situational_success_rate(revealed, home, away)
+        _ctx = game_summary.GameContext(
+            home=home, away=away, revealed=revealed,
+            boxscore=boxscore(revealed, home, away),
+            scoring=scoring_timeline(revealed, home, away),
+            team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines),
+            situational=_sit, situational_counts=_sit_n,
+            drives=drive_chart(revealed),
+            top_wpa=top_plays_wpa(revealed, home, away),
+            explosive=explosive_plays(revealed),
+            leaders={
+                **{(t, k): top_players(revealed, t, k, n) for t in (away, home)
+                   for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
+                **{(t, "defense"): top_defenders(revealed, t, 10) for t in (away, home)},
+            },
+        )
+        # No Streamlit calls inside summarize(), so an auto-refresh rerun
+        # requested while it runs waits for it instead of cutting it off.
+        with st.spinner("Reading the stats and key plays…"):
+            try:
+                _res = game_summary.summarize(_ctx, _providers[_prov])
+            except game_summary.SummaryError as e:
+                st.error(str(e))
+            else:
+                _summary = {
+                    "game_id": game_id, "text": _res.text, "model": _res.model,
+                    "anchor": cursor_anchor(timeline, cursor_idx),
+                    "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
+                }
+                st.session_state["_summary"] = _summary
+    if _summary:
+        with st.container(border=True):
+            st.markdown(_summary["text"])
+            _note = f"As of {_summary['as_of']} · {_summary['model']}"
+            if _summary["anchor"] != cursor_anchor(timeline, cursor_idx):
+                _note += " · you've moved since, press Update summary to catch it up"
+            st.caption(_note)
 
 # ---------- Scoring timeline ----------
 st.subheader("Scoring timeline")

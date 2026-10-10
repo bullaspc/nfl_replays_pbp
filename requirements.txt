@@ -7,3 +7,4 @@ plotly
 streamlit-autorefresh
 requests
 xgboost>=2.0
+anthropic>=1.13
