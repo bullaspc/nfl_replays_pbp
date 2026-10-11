@@ -21,7 +21,7 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
-from replay_core import period_label
+from replay_core import LINE_COUNT_ROWS, period_label
 
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
@@ -108,6 +108,8 @@ class GameContext:
     leaders: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict)
     # (team, "passing" | "rushing" | "receiving" | "defense") → the Player leaders table
     league: str = "NFL"             # "NFL" or "CFB"
+    line_play: pd.DataFrame | None = None  # the Line play table: stat × [away, home]
+    line_pct: pd.DataFrame | None = None   # same shape: percentile, 100 = best for the line
 
 
 # What changes between the leagues: who's talking, whose models, and what the
@@ -181,6 +183,22 @@ def offense_table(ctx: GameContext) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def line_table(ctx: GameContext) -> pd.DataFrame:
+    """The Line play table with a percentile column per team (none on the
+    play counts, which are only context)."""
+    rows = []
+    for stat in ctx.line_play.index:
+        row = {"Stat": stat}
+        for team in (ctx.away, ctx.home):
+            v = ctx.line_play.at[stat, team]
+            row[team] = "-" if pd.isna(v) else (f"{v:.0f}" if stat in LINE_COUNT_ROWS else f"{v:.1%}")
+            pct = (float("nan") if stat in LINE_COUNT_ROWS or ctx.line_pct is None
+                   or stat not in ctx.line_pct.index else ctx.line_pct.at[stat, team])
+            row[f"{team} pct"] = "" if pd.isna(pct) else f"{pct:.0f}"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def defense_table(ctx: GameContext) -> pd.DataFrame:
     """What each defense allowed (its opponent's offense, with the same play
     masks as the Team stats table) plus the defense's own pressure, stops and
@@ -237,6 +255,10 @@ def snapshot(ctx: GameContext) -> str:
     wp = ctx.revealed["home_wp"].dropna()
     wp_line = (f"\nHome ({ctx.home}) win probability now: {wp.iloc[-1]:.0%} ({_LEAGUE[ctx.league]['model']})"
                if not final and not wp.empty else "")
+    line = "" if ctx.line_play is None or ctx.line_play.empty else f"""
+
+Line play: each offense's line, so a team's column is also what the other team's defensive front did against it. Dropbacks include sacks and QB hits include sacks; designed runs leave out kneels and scrambles, stuffed = no gain or a loss, explosive = 10+ yards; OL penalties are holding, false starts and ineligible man downfield on the offense, per snap. "pct" is against the same baseline, 100 = best for the offensive line (for Sack %, QB Hit %, Stuff % and OL Penalty %, lower is better).
+{_csv(line_table(ctx))}"""
     return f"""Game: {ctx.away} (away) at {ctx.home} (home)
 Viewer's position: {where}
 Score: {ctx.away} {as_}, {ctx.home} {hs}{wp_line}
@@ -251,7 +273,7 @@ Offense: the dashboard's Team stats. "pct" is the percentile against {_LEAGUE[ct
 {_csv(offense_table(ctx))}
 
 Defense: what each defense allowed, and its own pressure, stops and takeaways.
-{_csv(defense_table(ctx))}"""
+{_csv(defense_table(ctx))}{line}"""
 
 
 # ---------- Tools ----------
@@ -450,7 +472,7 @@ SYSTEM_PROMPT = """You are {analyst} inside a spoiler-free replay app. The fan i
 Ground rules:
 - Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
 - Your data stops at the viewer's current play. If the game isn't over, describe where it stands. Never predict, hint at or speculate about what happens next or how it ends.
-- Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
+- Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
 Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA. WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}

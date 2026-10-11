@@ -29,7 +29,7 @@ from streamlit_autorefresh import st_autorefresh
 import game_summary
 import leagues
 from replay_core import (
-    EXPLOSIVE_RUN_YDS, GAME_SECONDS, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
+    EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label,
     line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
     stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
@@ -356,6 +356,8 @@ revealed = pbp_game.iloc[: cursor_idx + 1].copy()
 # Player-leader columns this game's data can't fill (e.g. tackles in older
 # college games), dropped rather than shown as zeros.
 missing_stats = league.missing_stats(revealed)
+# Line play's QB Hit % drops out where the data has no QB hits (college).
+_line_drop = frozenset({"QB Hit %"}) if "QB Hits" in missing_stats else frozenset()
 # elapsed_s is still derived because the win probability chart caps its x-axis
 # with it; nothing filters on it any more.
 elapsed_s = float(timeline.iloc[cursor_idx]) if cursor_idx >= 0 else 0.0
@@ -552,9 +554,13 @@ else:
         _season_baselines = leagues.stat_baselines(league, season)
         _stats = team_stats(revealed, home, away)
         _sit, _sit_n = situational_success_rate(revealed, home, away)
+        _line = line_play_stats(revealed, home, away, drop=_line_drop)
         _ctx = game_summary.GameContext(
             home=home, away=away, revealed=revealed,
             league=league.key,
+            line_play=_line,
+            line_pct=stat_percentiles(_line, leagues.line_baselines(league, season),
+                                      LINE_LOWER_IS_BETTER),
             boxscore=boxscore(revealed, home, away),
             scoring=scoring_timeline(revealed, home, away),
             team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines),
@@ -812,8 +818,6 @@ st.dataframe(style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch'
 st.subheader("Line play")
 st.caption(f"Each team's offensive line; the other column is its defensive front's side. "
            f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
-# QB hits drop out where the data has none (college).
-_line_drop = frozenset({"QB Hit %"}) if "QB Hits" in missing_stats else frozenset()
 line_df = line_play_stats(revealed, home, away, drop=_line_drop)
 st.dataframe(style_line_table(line_df, leagues.line_baselines(league, season)), width='stretch')
 st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave out "
