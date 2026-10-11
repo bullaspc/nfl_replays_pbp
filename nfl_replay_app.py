@@ -818,7 +818,8 @@ line_df = line_play_stats(revealed, home, away, drop=_line_drop)
 st.dataframe(style_line_table(line_df, leagues.line_baselines(league, season)), width='stretch')
 st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave out "
            f"kneels and scrambles: stuffed = no gain or a loss, explosive = {EXPLOSIVE_RUN_YDS}+ yards. "
-           f"Penalty rate: flags on the offense per snap (pass, run or no-play).")
+           f"OL penalties: holding, false starts and ineligible man downfield on the "
+           f"offense, per snap (pass, run or no-play).")
 
 # ---------- Player leaders ----------
 if not hide_leaders:

@@ -373,11 +373,16 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
 
 # ---------- Line play ----------
 LINE_ROWS = ["Dropbacks", "Sack %", "QB Hit %", "Designed Runs", "Stuff %",
-             "Explosive Run %", "Snaps", "Off. Penalty %"]
+             "Explosive Run %", "Snaps", "OL Penalty %"]
 LINE_COUNT_ROWS = {"Dropbacks", "Designed Runs", "Snaps"}
-LINE_LOWER_IS_BETTER = {"Sack %", "QB Hit %", "Stuff %", "Off. Penalty %"}
+LINE_LOWER_IS_BETTER = {"Sack %", "QB Hit %", "Stuff %", "OL Penalty %"}
 STUFF_MAX_YDS = 0       # a designed run for no gain or a loss
 EXPLOSIVE_RUN_YDS = 10  # as explosive_plays()
+# The penalties that are on the offensive line, as both leagues' text names
+# them: "Offensive Holding" / college "Holding" (the flag must be the
+# offense's, so defensive holding never counts), "False Start", and
+# "Ineligible Downfield Pass" / college "Ineligible Downfield on Pass".
+OL_PENALTY = r"(?i)(?<!defensive )holding|false start|ineligible downfield|illegal man downfield"
 
 
 def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
@@ -385,17 +390,20 @@ def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
     Downs only, so two-point tries don't count. Dropbacks are pass attempts
     plus sacks (nflfastR's pass_attempt); QB hits include sacks; designed
     runs leave out kneels and scrambles; snaps are pass, run and no-play
-    rows, and the penalty rate counts the offense's own flags on them."""
+    rows, and the penalty rate counts the offense's own holding, false start
+    and ineligible-downfield flags on them (`OL_PENALTY`)."""
     on_down = td["down"].notna()
     drop = on_down & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
     sacks = drop & (td["sack"].fillna(0) == 1)
     hits = drop & ((td["qb_hit"].fillna(0) == 1) | sacks)
-    scramble = td["desc"].fillna("").str.contains("scrambles", case=False, regex=False)
+    desc = td["desc"].fillna("")
+    scramble = desc.str.contains("scrambles", case=False, regex=False)
     run = (on_down & (td["rush_attempt"].fillna(0) == 1)
            & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
     yds = td["yards_gained"]
     snaps = on_down & td["play_type"].isin(["pass", "run", "no_play"])
-    flags = snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
+    flags = (snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
+             & desc.str.contains(OL_PENALTY))
     n_drop, n_run, n_snaps = int(drop.sum()), int(run.sum()), int(snaps.sum())
     return {
         "Dropbacks":       n_drop,
@@ -405,7 +413,7 @@ def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
         "Stuff %":         _rate((run & (yds <= STUFF_MAX_YDS)).sum(), n_run),
         "Explosive Run %": _rate((run & (yds >= EXPLOSIVE_RUN_YDS)).sum(), n_run),
         "Snaps":           n_snaps,
-        "Off. Penalty %":  _rate(flags.sum(), n_snaps),
+        "OL Penalty %":    _rate(flags.sum(), n_snaps),
     }
 
 
