@@ -54,17 +54,48 @@ def _setting(name: str) -> str | None:
     return os.environ.get(name) or None
 
 
+# ---------- Saved position ----------
+# The selection and the play cursor are mirrored into the URL (_save_url()), so
+# a phone that loses its session comes back where it was: a tab left in the
+# background longer than the server keeps a disconnected session, or a tab the
+# browser unloaded and reloads. The URL is read once per session and its values
+# only seed the widget defaults, which must stay put for the session: an
+# unkeyed widget whose default changes starts over.
+if "_url" not in st.session_state:
+    st.session_state["_url"] = st.query_params.to_dict()
+    st.session_state["_url_restore"] = True
+_url = st.session_state["_url"]
+
+
+def _url_int(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        return min(max(int(_url[name]), lo), hi)
+    except (KeyError, ValueError):
+        return default
+
+
+def _url_anchor(name: str) -> tuple[float, int]:
+    """A cursor_anchor() saved as "elapsed:rank"; KeyError/ValueError if absent."""
+    e, rank = _url[name].split(":")
+    return (float(e), int(rank))
+
+
 # ---------- UI ----------
 with st.sidebar:
     st.header("Setup")
-    league = leagues.LEAGUES[st.radio("League", list(leagues.LEAGUES), horizontal=True)]
+    _league_names = list(leagues.LEAGUES)
+    league_name = st.radio("League", _league_names, horizontal=True,
+                           index=_league_names.index(_url["league"])
+                           if _url.get("league") in _league_names else 0)
+    league = leagues.LEAGUES[league_name]
 
 st.title(league.title)
 st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
     season = int(st.number_input("Season", min_value=league.first_season,
-                                 max_value=2026, value=2026, step=1))
+                                 max_value=2026, step=1,
+                                 value=_url_int("season", 2026, league.first_season, 2026)))
     stamp = league.stamp()
     with st.spinner("Loading play-by-play..."):
         try:
@@ -76,7 +107,14 @@ with st.sidebar:
         st.warning(f"No games found for the {season} season yet.")
         st.stop()
     week_labels = list(dict.fromkeys(games["week_label"]))
-    week = st.selectbox("Week", week_labels, index=len(week_labels) - 1)
+    # Default to the week and game last on screen (from the URL on a new
+    # session). A game's label changes when it goes from live to official,
+    # which starts the Game box over, so it reselects the game by id.
+    _last_game = st.session_state.get("_game_id", _url.get("game"))
+    _last_row = games[games["game_id"] == _last_game]
+    week = st.selectbox("Week", week_labels,
+                        index=week_labels.index(_last_row["week_label"].iloc[0])
+                        if not _last_row.empty else len(week_labels) - 1)
     games = games[games["week_label"] == week]
     if league.group_label:
         # College has 50+ games a Saturday: narrow by conference.
@@ -84,9 +122,13 @@ with st.sidebar:
         group = st.selectbox(league.group_label, ["All"] + groups)
         if group != "All":
             games = games[games["groups"].apply(lambda gs: group in gs)]
-    game_label = st.selectbox("Game", games["label"].tolist())
+    _game_ids = games["game_id"].tolist()
+    game_label = st.selectbox("Game", games["label"].tolist(),
+                              index=_game_ids.index(_last_game)
+                              if _last_game in _game_ids else 0)
     game_row = games.loc[games["label"] == game_label].iloc[0]
     game_id = game_row["game_id"]
+    st.session_state["_game_id"] = game_id
     source = game_row["source"]
 
     try:
@@ -118,14 +160,14 @@ with st.sidebar:
     live_delay = 0
     if source == "live" and live_state != "post":
         follow_live = st.toggle(
-            "🔴 Follow live", value=False,
+            "🔴 Follow live", value=_url.get("follow") == "1",
             help="Keep up with the game as it airs. New plays appear on their own, "
                  "each held back by the delay below so the feed can't run ahead "
                  "of your TV or stream.")
         if follow_live:
             live_delay = st.slider(
                 "Hold each new play back (seconds)", min_value=0, max_value=180,
-                value=45, step=5,
+                value=_url_int("delay", 45, 0, 180), step=5,
                 help="How far your broadcast runs behind ESPN's play feed. Cable is "
                      "usually close to live; streaming apps often run 30–90s behind.")
 
@@ -137,7 +179,9 @@ with st.sidebar:
         st.caption("Set roughly where you are with the game clock, then sync exactly "
                    "with the time bar.")
         # The game clock counts DOWN within each quarter from 15:00 to 0:00.
-        qtr_pick = st.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4", "OT", FULL_GAME], index=0,
+        _qtrs = ["Q1", "Q2", "Q3", "Q4", "OT", FULL_GAME]
+        qtr_pick = st.selectbox("Quarter", _qtrs,
+                                index=_qtrs.index(_url["q"]) if _url.get("q") in _qtrs else 0,
                                 help=f"{FULL_GAME} unlocks every play: for a game you've "
                                      "already watched.")
         if qtr_pick == FULL_GAME:
@@ -148,7 +192,8 @@ with st.sidebar:
                        "regulation. Step through it with ▶ Next play.")
             clock_str = "15:00"
         else:
-            clock_str = st.text_input("Game clock remaining (MM:SS)", value="15:00",
+            clock_str = st.text_input("Game clock remaining (MM:SS)",
+                                      value=_url.get("clock", "15:00"),
                                       help="Time left on the in-quarter clock, e.g. 7:32")
     try:
         mm, ss = clock_str.strip().split(":")
@@ -187,7 +232,7 @@ with st.sidebar:
     st.subheader("🙈 Spoiler shield")
     safety_margin = st.slider(
         "Stay this many seconds *behind* my entered position",
-        min_value=0, max_value=120, value=15, step=5,
+        min_value=0, max_value=120, value=_url_int("margin", 15, 0, 120), step=5,
         help="Buffer against accidentally revealing the next play. "
              "15s is enough to absorb small clock drift.",
     )
@@ -218,6 +263,26 @@ baseline_cursor = last_idx if full_game else min(baseline_cursor, last_idx)
 
 # Full game re-seeds as live plays arrive, so it keeps showing all of them.
 _seed_key = (game_id, qtr_pick, clock_str, safety_margin, last_idx if full_game else None)
+# A new session for a game in the URL picks up its saved cursor. The anchors
+# are by game time, so they hold however many live plays arrived meanwhile,
+# or after the switch from live to official, as in the frame change below.
+if st.session_state.pop("_url_restore", False) and _url.get("game") == game_id:
+    try:
+        _r_anchor = (_url_anchor("at"), _url_anchor("max"))
+    except (KeyError, ValueError):
+        _r_anchor = None
+    if _r_anchor:
+        st.session_state["_cursor_key"] = _seed_key
+        st.session_state["_cursor_frame"] = None  # carry the anchors over below
+        st.session_state["_cursor_anchor"] = _r_anchor
+        if follow_live:
+            # When the plays past the saved edge arrived isn't known: start
+            # their delay now rather than count them as aired, and don't jump
+            # to the edge as switching Follow live on does.
+            _r_max = cursor_from_anchor(timeline, _r_anchor[1])
+            st.session_state.setdefault("_live_seen", {})[game_id] = (
+                [0.0] * (_r_max + 1) + [time.time()] * (last_idx - _r_max))
+            st.session_state["_live_follow_on"] = game_id
 if st.session_state.get("_cursor_key") != _seed_key:
     st.session_state["_cursor_key"] = _seed_key
     st.session_state["_cursor_max"] = baseline_cursor
@@ -263,6 +328,25 @@ st.session_state["_cursor_max"] = cursor_max
 st.session_state["_cursor_idx"] = cursor_idx
 st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),
                                       cursor_anchor(timeline, cursor_max))
+
+
+def _save_url() -> None:
+    """Write the selection and the cursor anchors to the URL (see "Saved
+    position" at the top). Only when they change: each write reaches the
+    browser."""
+    params = {"league": league_name, "season": str(season), "game": str(game_id),
+              "margin": str(safety_margin)}
+    if follow_live:
+        params |= {"follow": "1", "delay": str(live_delay)}
+    else:
+        params |= {"q": qtr_pick, "clock": clock_str}
+    for name, (e, rank) in zip(("at", "max"), st.session_state["_cursor_anchor"]):
+        params[name] = f"{e!r}:{rank}"
+    if st.query_params.to_dict() != params:
+        st.query_params.from_dict(params)
+
+
+_save_url()
 
 revealed = pbp_game.iloc[: cursor_idx + 1].copy()
 # Player-leader columns this game's data can't fill (e.g. tackles in older
@@ -904,4 +988,5 @@ if auto and cursor_max < last_idx:
     st.session_state["_cursor_anchor"] = (
         cursor_anchor(timeline, int(st.session_state["_cursor_idx"])),
         cursor_anchor(timeline, cursor_max + 1))
+    _save_url()
 
