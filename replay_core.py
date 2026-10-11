@@ -285,6 +285,7 @@ BASELINE_COLS = [
     "drive", "qtr", "game_seconds_remaining",
     "penalty", "penalty_team", "penalty_yards",
     "down", "ydstogo",
+    "desc", "play_type", "yards_gained", "sack", "qb_hit",
 ]
 
 
@@ -368,6 +369,67 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         stat: np.sort(per_game[stat].dropna().values)
         for stat in per_game.columns
     }
+
+
+# ---------- Line play ----------
+LINE_ROWS = ["Dropbacks", "Sack %", "QB Hit %", "Designed Runs", "Stuff %",
+             "Explosive Run %", "Snaps", "Off. Penalty %"]
+LINE_COUNT_ROWS = {"Dropbacks", "Designed Runs", "Snaps"}
+LINE_LOWER_IS_BETTER = {"Sack %", "QB Hit %", "Stuff %", "Off. Penalty %"}
+STUFF_MAX_YDS = 0       # a designed run for no gain or a loss
+EXPLOSIVE_RUN_YDS = 10  # as explosive_plays()
+
+
+def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
+    """Line play numbers for one offense's plays `td` (posteam == team).
+    Downs only, so two-point tries don't count. Dropbacks are pass attempts
+    plus sacks (nflfastR's pass_attempt); QB hits include sacks; designed
+    runs leave out kneels and scrambles; snaps are pass, run and no-play
+    rows, and the penalty rate counts the offense's own flags on them."""
+    on_down = td["down"].notna()
+    drop = on_down & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
+    sacks = drop & (td["sack"].fillna(0) == 1)
+    hits = drop & ((td["qb_hit"].fillna(0) == 1) | sacks)
+    scramble = td["desc"].fillna("").str.contains("scrambles", case=False, regex=False)
+    run = (on_down & (td["rush_attempt"].fillna(0) == 1)
+           & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
+    yds = td["yards_gained"]
+    snaps = on_down & td["play_type"].isin(["pass", "run", "no_play"])
+    flags = snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
+    n_drop, n_run, n_snaps = int(drop.sum()), int(run.sum()), int(snaps.sum())
+    return {
+        "Dropbacks":       n_drop,
+        "Sack %":          _rate(sacks.sum(), n_drop),
+        "QB Hit %":        _rate(hits.sum(), n_drop),
+        "Designed Runs":   n_run,
+        "Stuff %":         _rate((run & (yds <= STUFF_MAX_YDS)).sum(), n_run),
+        "Explosive Run %": _rate((run & (yds >= EXPLOSIVE_RUN_YDS)).sum(), n_run),
+        "Snaps":           n_snaps,
+        "Off. Penalty %":  _rate(flags.sum(), n_snaps),
+    }
+
+
+def line_play_stats(revealed: pd.DataFrame, home: str, away: str,
+                    drop: frozenset = frozenset()) -> pd.DataFrame:
+    """Each offense's line play (`_line_stats`) as a transposed table: rows
+    are `LINE_ROWS` (less any in `drop`), columns [away, home]. The other
+    team's column is the same numbers from its defensive front's side."""
+    df = pd.DataFrame(
+        {team: _line_stats(revealed[revealed["posteam"] == team], team) for team in [away, home]},
+        index=pd.Index(LINE_ROWS, name="Stat"),
+    )
+    return df.drop(index=[r for r in df.index if r in drop])
+
+
+def line_play_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Per-stat line play distributions over every team-game in `raw`."""
+    raw = raw[raw["posteam"].notna()]
+    per_game = pd.DataFrame(
+        [_line_stats(grp, team) for (_, team), grp in raw.groupby(["game_id", "posteam"])]
+    )
+    if per_game.empty:
+        return {}
+    return {stat: np.sort(per_game[stat].dropna().values) for stat in per_game.columns}
 
 
 SR_SITUATIONS = [
