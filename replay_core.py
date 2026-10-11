@@ -260,15 +260,16 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     ]
     return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
 
-def stat_percentiles(df: pd.DataFrame, baselines: dict) -> pd.DataFrame:
+def stat_percentiles(df: pd.DataFrame, baselines: dict,
+                     lower_is_better: set = LOWER_IS_BETTER) -> pd.DataFrame:
     """Percentile of each Team stats cell vs the baseline seasons, 100 = best
-    (flipped for stats where fewer is better). NaN without a baseline."""
+    (flipped for the stats in `lower_is_better`). NaN without a baseline."""
     out = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
     for row in df.index:
         arr = baselines.get(row, np.array([]))
         for team in df.columns:
             pct = percentile_of(float(df.at[row, team]), arr)
-            out.at[row, team] = 100.0 - pct if row in LOWER_IS_BETTER and pd.notna(pct) else pct
+            out.at[row, team] = 100.0 - pct if row in lower_is_better and pd.notna(pct) else pct
     return out
 
 
