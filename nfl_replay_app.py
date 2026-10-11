@@ -800,7 +800,11 @@ st.caption(f"Colors show percentile vs {league.baseline_label} · green = top ·
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
-sr_df, _sit_counts = situational_success_rate(revealed, home, away)
+_sr_subtotals = st.toggle("Early/late subtotals", value=False,
+                          help="Add rows totalling early downs (1st–2nd) and "
+                               "late downs (3rd–4th) over every distance.")
+sr_df, _sit_counts = situational_success_rate(revealed, home, away,
+                                              subtotals=_sr_subtotals)
 _sit_baselines = leagues.situational_baselines(league, season)
 st.dataframe(style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch')
 

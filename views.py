@@ -10,8 +10,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from replay_core import (LOWER_IS_BETTER, PLAY_CATS, SR_METRICS, down_distance, field_pos_label,
-                         fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
+from replay_core import (LOWER_IS_BETTER, PLAY_CATS, SR_METRICS, SR_SUBTOTALS, down_distance,
+                         field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 
 
 # ---------- Stat tables ----------
@@ -84,6 +84,10 @@ def style_sr_table(df: pd.DataFrame,
                 lambda v, s=sit, m=metric: _color_cell(v, s, m),
                 subset=pd.IndexSlice[sit, col],
             ).format(fmt_fn, subset=pd.IndexSlice[sit, col])
+    subtotals = [lbl for lbl, _, _ in SR_SUBTOTALS if lbl in df.index]
+    if subtotals:
+        styled = styled.set_properties(subset=pd.IndexSlice[subtotals, :],
+                                       **{"font-weight": "bold"})
     return (
         styled
         .set_properties(**{"text-align": "center"})

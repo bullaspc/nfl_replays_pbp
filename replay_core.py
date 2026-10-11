@@ -378,11 +378,20 @@ SR_SITUATIONS = [
     ("Early · Long",   (1, 2), (7, 99)),
     ("Late · Long",    (3, 4), (7, 99)),
 ]
+# Subtotal rows: every distance, early downs vs late downs.
+SR_SUBTOTALS = [
+    ("Early · Total",  (1, 2), (0, 99)),
+    ("Late · Total",   (3, 4), (0, 99)),
+]
 SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
 
 
-def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
-    """Success rate and EPA/play split by down group × distance × play type."""
+def situational_success_rate(revealed: pd.DataFrame, home: str, away: str,
+                             subtotals: bool = False) -> pd.DataFrame:
+    """Success rate and EPA/play split by down group × distance × play type.
+    With `subtotals`, the early-down and late-down totals (`SR_SUBTOTALS`)
+    follow the situation rows."""
+    situations = SR_SITUATIONS + (SR_SUBTOTALS if subtotals else [])
     def _sr(plays) -> float:
         if plays.empty:
             return float("nan")
@@ -395,7 +404,7 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
 
     rows = []
     counts: dict[tuple, dict[str, int]] = {}
-    for label, downs, (d_min, d_max) in SR_SITUATIONS:
+    for label, downs, (d_min, d_max) in situations:
         sit_mask = (
             revealed["down"].isin(downs) &
             revealed["ydstogo"].fillna(0).between(d_min, d_max)
@@ -423,6 +432,12 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
         for m in metrics:
             col_order.append(f"{team} {m}")
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
+    # pivot sorts the rows; keep the situations alphabetical, subtotals last.
+    subtotal_labels = [lbl for lbl, _, _ in SR_SUBTOTALS]
+    pivot = pivot.reindex(
+        sorted(i for i in pivot.index if i not in subtotal_labels)
+        + [lbl for lbl in subtotal_labels if lbl in pivot.index]
+    )
     pivot.index.name = "Situation"
     return pivot, counts
 
@@ -442,7 +457,7 @@ def situational_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarr
         return plays["epa"].fillna(0).mean()
 
     result: dict[str, dict[str, np.ndarray]] = {}
-    for label, downs, (d_min, d_max) in SR_SITUATIONS:
+    for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
         sit_mask = (
             raw["down"].isin(downs) &
             raw["ydstogo"].fillna(0).between(d_min, d_max)
