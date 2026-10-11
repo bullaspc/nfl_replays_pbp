@@ -305,14 +305,17 @@ def fbs_games(sched: pd.DataFrame) -> set[str]:
 
 
 # ---------- raw rows → nflfastR layout ----------
-_TD_TRY = re.compile(r"^(.*?\bTOUCHDOWN\b(?:,? clock \d{1,2}:\d{2})?(?:,? 1ST DOWN)?\.?)\s+(\S.*)$", re.S)
+_TD_TRY = re.compile(r"^(.*?\bTOUCHDOWN\b(?:,? clock \d{1,2}:\d{2})?(?:,? 1ST DOWN)?"
+                     r"(?:,? PENALTY [^#]*? declined)?\.?)\s+(\S.*)$", re.S)
 _PAREN_TRY = re.compile(r"^(.*\S)\s*\(([^()]*)\)\s*$", re.S)
 
 
 def _split_try(text: str, fallback: str) -> tuple[str, str]:
     """A touchdown row's text → (touchdown part, try part). ESPN puts the try
     on the touchdown's row, in two styles: '... TOUCHDOWN, clock 05:07 #39
-    C.Salas kick attempt good (...)' and '... for a TD (Conor Talty KICK)'."""
+    C.Salas kick attempt good (...)' and '... for a TD (Conor Talty KICK)'. A
+    declined penalty can sit between the two ('... TOUCHDOWN, clock 11:29, 1ST
+    DOWN, PENALTY MSU Offside declined #88 R.Meyer kick attempt good')."""
     m = _TD_TRY.match(text) or _PAREN_TRY.match(text)
     if m:
         return m.group(1).strip(), m.group(2).strip()
@@ -375,6 +378,16 @@ def _crew_defenders(text: str) -> dict[str, list[str]]:
 _PASSER = re.compile(rf"#\d+ ({_NAME}) (?:pass|sacked)\b")
 _RUSHER = re.compile(rf"#\d+ ({_NAME}) rush\b|Kneel down by #\d+ ({_NAME})")
 _RECEIVER = re.compile(rf"pass (?:complete|incomplete)[^#]*?\bto #\d+ ({_NAME})")
+_YD_PASS = re.compile(r"^([^()#,]+?) -?\d+ Yd pass from ")
+
+
+def _td_receiver(text: pd.Series, receiver: pd.Series) -> pd.Series:
+    """The feed leaves the receiver blank on some touchdown passes in the
+    older text ('Nic Anderson 7 Yd pass from Garrett Nussmeier (...)'), so
+    the passer got the touchdown and the receiver didn't; the text names him
+    first."""
+    named = text.str.extract(_YD_PASS, expand=False)
+    return receiver.where(receiver.notna() & (receiver != "TEAM"), named)
 
 
 def _text_offense_names(raw: pd.DataFrame) -> pd.DataFrame:
@@ -390,6 +403,7 @@ def _text_offense_names(raw: pd.DataFrame) -> pd.DataFrame:
     crew = text.str.contains(_CREW)
     if not crew.any():
         return raw
+    raw["receiver_player_name"] = _td_receiver(text, raw["receiver_player_name"])
     body = text.str.split(_REVIEW.pattern, n=1, regex=True).str[0]
 
     def found(pattern: re.Pattern) -> pd.Series:
@@ -574,6 +588,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     # shows up in the player leaders.
     for c in ("passer_player_name", "rusher_player_name", "receiver_player_name"):
         out[c] = df[c].where(df[c] != "TEAM")
+    out["receiver_player_name"] = _td_receiver(text, out["receiver_player_name"])
     two_sackers = df["sack_player_name2"].notna()
     sacked = out["sack"] == 1
     out["sack_player_name"] = df["sack_player_name"].where(sacked & ~two_sackers)
