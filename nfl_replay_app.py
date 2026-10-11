@@ -439,15 +439,19 @@ if cursor_max >= 1:
     if _pick - 1 != cursor_idx:
         _move_cursor(_pick - 1)
 
+# How far the ▶ buttons may go. Following live, only the delay unlocks plays:
+# the feed's newest plays are still held back, and stepping onto them would
+# show them before the broadcast does.
+_step_max = cursor_max if follow_live else last_idx
 _b1, _b2, _b3, _b4, _b5 = st.columns(5)
 if _b1.button("⏮ Start", key="bar_start", width='stretch', disabled=cursor_idx <= 0):
     _move_cursor(0)
 if _b2.button("◀ Prev", key="bar_prev", width='stretch', disabled=cursor_idx <= 0):
     _move_cursor(cursor_idx - 1)
-if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= last_idx):
-    _move_cursor(cursor_idx + 1, unlock=True)
-if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch', disabled=cursor_idx >= last_idx):
-    _move_cursor(_drive_end(cursor_idx), unlock=True)
+if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= _step_max):
+    _move_cursor(min(cursor_idx + 1, _step_max), unlock=True)
+if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch', disabled=cursor_idx >= _step_max):
+    _move_cursor(min(_drive_end(cursor_idx), _step_max), unlock=True)
 if _b5.button("⏭ Catch up", key="bar_catchup", width='stretch', disabled=cursor_idx >= cursor_max):
     _move_cursor(cursor_max)
 
