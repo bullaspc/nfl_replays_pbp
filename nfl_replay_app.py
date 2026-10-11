@@ -17,6 +17,7 @@ Run with:
     streamlit run nfl_replay_app.py
 """
 
+import contextlib
 import os
 import time
 
@@ -227,6 +228,9 @@ with st.sidebar:
                              "page is open. Needs HTTPS and a recent browser "
                              "(iOS 16.4+, Android Chrome).")
     keep_screen_awake(awake)
+    collapse_plays = st.checkbox("Collapse play lists", value=False,
+                                 help="Recent plays shows only the last play and the "
+                                      "current drive's plays fold into an expander.")
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
@@ -647,7 +651,15 @@ st.markdown(
     '<span style="margin-right:6px">✅ Positive EPA</span>',
     unsafe_allow_html=True,
 )
-if not revealed.empty:
+if not revealed.empty and collapse_plays:
+    st.dataframe(
+        build_plays_df(revealed.iloc[[-1]], hide_descriptions, reverse=False)
+        .style.apply(style_plays, axis=1),
+        hide_index=True, width='stretch',
+        column_config=PLAYS_COL_CFG,
+        row_height=plays_row_height(hide_descriptions),
+    )
+elif not revealed.empty:
     _PAGE_SIZE = 15
     _all_rev = revealed.iloc[::-1].copy()
     _total_plays = len(_all_rev)
@@ -723,12 +735,14 @@ if not revealed.empty:
         )
 
         drive_df = build_plays_df(_drive_raw, hide_descriptions)
-        st.dataframe(
-            drive_df.style.apply(style_plays, axis=1),
-            hide_index=True, width='stretch',
-            column_config=PLAYS_COL_CFG,
-            row_height=plays_row_height(hide_descriptions),
-        )
+        with (st.expander(f"Drive plays ({len(drive_df)})", expanded=False)
+              if collapse_plays else contextlib.nullcontext()):
+            st.dataframe(
+                drive_df.style.apply(style_plays, axis=1),
+                hide_index=True, width='stretch',
+                column_config=PLAYS_COL_CFG,
+                row_height=plays_row_height(hide_descriptions),
+            )
     else:
         st.caption("No drive data available.")
 else:

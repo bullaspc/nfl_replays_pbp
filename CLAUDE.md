@@ -84,6 +84,8 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Auto-advance:** When `auto=True`, `st_autorefresh` fires and the block at the bottom of the file bumps `_cursor_max` by one, carrying `_cursor_idx` with it only if it was already at the edge — so an auto-advancing replay doesn't yank you forward while you're scrubbing back through a drive.
 
+**Collapse play lists:** a sidebar checkbox (default off). When on, Recent plays shows only the last revealed play (no pagination) and the Current drive's play table goes into a collapsed "Drive plays" expander; the drive summary caption stays visible.
+
 **Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
 
 **AI summary league:** `GameContext.league` (`"NFL"`/`"CFB"`) picks the analyst, model name, percentile baseline and OT note in `system_prompt()` (`_LEAGUE`); the NFL prompt text is unchanged. `replay_core.period_label()` gives Q1–Q4, OT, 2OT, … for the page and the summary.
