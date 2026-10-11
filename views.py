@@ -10,8 +10,9 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from replay_core import (LOWER_IS_BETTER, PLAY_CATS, SR_METRICS, down_distance, field_pos_label,
-                         fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
+from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+                         SR_METRICS, SR_SUBTOTALS, down_distance,
+                         field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 
 
 # ---------- Stat tables ----------
@@ -84,6 +85,10 @@ def style_sr_table(df: pd.DataFrame,
                 lambda v, s=sit, m=metric: _color_cell(v, s, m),
                 subset=pd.IndexSlice[sit, col],
             ).format(fmt_fn, subset=pd.IndexSlice[sit, col])
+    subtotals = [lbl for lbl, _, _ in SR_SUBTOTALS if lbl in df.index]
+    if subtotals:
+        styled = styled.set_properties(subset=pd.IndexSlice[subtotals, :],
+                                       **{"font-weight": "bold"})
     return (
         styled
         .set_properties(**{"text-align": "center"})
@@ -158,6 +163,33 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
         [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
     )
     return styled
+
+
+def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
+    """Line play table: rates colored by percentile vs `baselines` (flipped
+    where lower is better), counts plain."""
+    baselines = baselines or {}
+    styled = df.style
+    for row in df.index:
+        if row in LINE_COUNT_ROWS:
+            styled = styled.format("{:.0f}", subset=pd.IndexSlice[row, :], na_rep="—")
+            continue
+        styled = styled.format("{:.1%}", subset=pd.IndexSlice[row, :], na_rep="—")
+
+        def _cell(val, _arr=baselines.get(row, np.array([])), _lower=row in LINE_LOWER_IS_BETTER):
+            pct = percentile_of(float(val), _arr) if pd.notna(val) else float("nan")
+            if pd.isna(pct):
+                return ""
+            return percentile_color(100.0 - pct if _lower else pct)
+
+        styled = smap(styled, _cell, subset=pd.IndexSlice[row, :])
+    return (
+        styled
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
 
 
 # ---------- Drives ----------

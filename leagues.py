@@ -462,6 +462,20 @@ def _situational_baselines(league: str, season: int) -> dict[str, dict[str, np.n
     return {} if raw is None else core.situational_distributions(raw)
 
 
+@st.cache_data(ttl=86400)
+def _line_baselines(league: str, season: int) -> dict[str, np.ndarray]:
+    try:
+        raw = LEAGUES[league].baseline_pbp(season)
+    except Exception:
+        return {}
+    return {} if raw is None else core.line_play_distributions(raw)
+
+
+def line_baselines(league: League, season: int) -> dict[str, np.ndarray]:
+    """Line play percentile baselines for `season`, by stat."""
+    return _line_baselines(league.name, season)
+
+
 def stat_baselines(league: League, season: int) -> dict[str, np.ndarray]:
     """Team stats percentile baselines for `season`, by stat."""
     return _stat_baselines(league.name, season)

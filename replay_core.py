@@ -285,6 +285,7 @@ BASELINE_COLS = [
     "drive", "qtr", "game_seconds_remaining",
     "penalty", "penalty_team", "penalty_yards",
     "down", "ydstogo",
+    "desc", "play_type", "yards_gained", "sack", "qb_hit",
 ]
 
 
@@ -370,6 +371,75 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
     }
 
 
+# ---------- Line play ----------
+LINE_ROWS = ["Dropbacks", "Sack %", "QB Hit %", "Designed Runs", "Stuff %",
+             "Explosive Run %", "Snaps", "OL Penalty %"]
+LINE_COUNT_ROWS = {"Dropbacks", "Designed Runs", "Snaps"}
+LINE_LOWER_IS_BETTER = {"Sack %", "QB Hit %", "Stuff %", "OL Penalty %"}
+STUFF_MAX_YDS = 0       # a designed run for no gain or a loss
+EXPLOSIVE_RUN_YDS = 10  # as explosive_plays()
+# The penalties that are on the offensive line, as both leagues' text names
+# them: "Offensive Holding" / college "Holding" (the flag must be the
+# offense's, so defensive holding never counts), "False Start", and
+# "Ineligible Downfield Pass" / college "Ineligible Downfield on Pass".
+OL_PENALTY = r"(?i)(?<!defensive )holding|false start|ineligible downfield|illegal man downfield"
+
+
+def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
+    """Line play numbers for one offense's plays `td` (posteam == team).
+    Downs only, so two-point tries don't count. Dropbacks are pass attempts
+    plus sacks (nflfastR's pass_attempt); QB hits include sacks; designed
+    runs leave out kneels and scrambles; snaps are pass, run and no-play
+    rows, and the penalty rate counts the offense's own holding, false start
+    and ineligible-downfield flags on them (`OL_PENALTY`)."""
+    on_down = td["down"].notna()
+    drop = on_down & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
+    sacks = drop & (td["sack"].fillna(0) == 1)
+    hits = drop & ((td["qb_hit"].fillna(0) == 1) | sacks)
+    desc = td["desc"].fillna("")
+    scramble = desc.str.contains("scrambles", case=False, regex=False)
+    run = (on_down & (td["rush_attempt"].fillna(0) == 1)
+           & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
+    yds = td["yards_gained"]
+    snaps = on_down & td["play_type"].isin(["pass", "run", "no_play"])
+    flags = (snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
+             & desc.str.contains(OL_PENALTY))
+    n_drop, n_run, n_snaps = int(drop.sum()), int(run.sum()), int(snaps.sum())
+    return {
+        "Dropbacks":       n_drop,
+        "Sack %":          _rate(sacks.sum(), n_drop),
+        "QB Hit %":        _rate(hits.sum(), n_drop),
+        "Designed Runs":   n_run,
+        "Stuff %":         _rate((run & (yds <= STUFF_MAX_YDS)).sum(), n_run),
+        "Explosive Run %": _rate((run & (yds >= EXPLOSIVE_RUN_YDS)).sum(), n_run),
+        "Snaps":           n_snaps,
+        "OL Penalty %":    _rate(flags.sum(), n_snaps),
+    }
+
+
+def line_play_stats(revealed: pd.DataFrame, home: str, away: str,
+                    drop: frozenset = frozenset()) -> pd.DataFrame:
+    """Each offense's line play (`_line_stats`) as a transposed table: rows
+    are `LINE_ROWS` (less any in `drop`), columns [away, home]. The other
+    team's column is the same numbers from its defensive front's side."""
+    df = pd.DataFrame(
+        {team: _line_stats(revealed[revealed["posteam"] == team], team) for team in [away, home]},
+        index=pd.Index(LINE_ROWS, name="Stat"),
+    )
+    return df.drop(index=[r for r in df.index if r in drop])
+
+
+def line_play_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Per-stat line play distributions over every team-game in `raw`."""
+    raw = raw[raw["posteam"].notna()]
+    per_game = pd.DataFrame(
+        [_line_stats(grp, team) for (_, team), grp in raw.groupby(["game_id", "posteam"])]
+    )
+    if per_game.empty:
+        return {}
+    return {stat: np.sort(per_game[stat].dropna().values) for stat in per_game.columns}
+
+
 SR_SITUATIONS = [
     ("Early · Short",  (1, 2), (1,  3)),
     ("Late · Short",   (3, 4), (1,  3)),
@@ -378,11 +448,20 @@ SR_SITUATIONS = [
     ("Early · Long",   (1, 2), (7, 99)),
     ("Late · Long",    (3, 4), (7, 99)),
 ]
+# Subtotal rows: every distance, early downs vs late downs.
+SR_SUBTOTALS = [
+    ("Early · Total",  (1, 2), (0, 99)),
+    ("Late · Total",   (3, 4), (0, 99)),
+]
 SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
 
 
-def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
-    """Success rate and EPA/play split by down group × distance × play type."""
+def situational_success_rate(revealed: pd.DataFrame, home: str, away: str,
+                             subtotals: bool = False) -> pd.DataFrame:
+    """Success rate and EPA/play split by down group × distance × play type.
+    With `subtotals`, the early-down and late-down totals (`SR_SUBTOTALS`)
+    follow the situation rows."""
+    situations = SR_SITUATIONS + (SR_SUBTOTALS if subtotals else [])
     def _sr(plays) -> float:
         if plays.empty:
             return float("nan")
@@ -395,7 +474,7 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
 
     rows = []
     counts: dict[tuple, dict[str, int]] = {}
-    for label, downs, (d_min, d_max) in SR_SITUATIONS:
+    for label, downs, (d_min, d_max) in situations:
         sit_mask = (
             revealed["down"].isin(downs) &
             revealed["ydstogo"].fillna(0).between(d_min, d_max)
@@ -423,6 +502,12 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str) -> pd
         for m in metrics:
             col_order.append(f"{team} {m}")
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
+    # pivot sorts the rows; keep the situations alphabetical, subtotals last.
+    subtotal_labels = [lbl for lbl, _, _ in SR_SUBTOTALS]
+    pivot = pivot.reindex(
+        sorted(i for i in pivot.index if i not in subtotal_labels)
+        + [lbl for lbl in subtotal_labels if lbl in pivot.index]
+    )
     pivot.index.name = "Situation"
     return pivot, counts
 
@@ -442,7 +527,7 @@ def situational_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarr
         return plays["epa"].fillna(0).mean()
 
     result: dict[str, dict[str, np.ndarray]] = {}
-    for label, downs, (d_min, d_max) in SR_SITUATIONS:
+    for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
         sit_mask = (
             raw["down"].isin(downs) &
             raw["ydstogo"].fillna(0).between(d_min, d_max)

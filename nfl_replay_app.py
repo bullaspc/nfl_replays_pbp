@@ -29,15 +29,15 @@ from streamlit_autorefresh import st_autorefresh
 import game_summary
 import leagues
 from replay_core import (
-    GAME_SECONDS, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
+    EXPLOSIVE_RUN_YDS, GAME_SECONDS, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label,
-    period_label, play_timeline, scoring_timeline, situational_success_rate,
+    line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
     stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
     PLAYS_COL_CFG, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, plays_row_height, smap, style_drive_chart, style_plays,
-    style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
+    style_line_table, style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -800,9 +800,26 @@ st.caption(f"Colors show percentile vs {league.baseline_label} · green = top ·
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
-sr_df, _sit_counts = situational_success_rate(revealed, home, away)
+_sr_subtotals = st.toggle("Early/late subtotals", value=False,
+                          help="Add rows totalling early downs (1st–2nd) and "
+                               "late downs (3rd–4th) over every distance.")
+sr_df, _sit_counts = situational_success_rate(revealed, home, away,
+                                              subtotals=_sr_subtotals)
 _sit_baselines = leagues.situational_baselines(league, season)
 st.dataframe(style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch')
+
+# ---------- Line play ----------
+st.subheader("Line play")
+st.caption(f"Each team's offensive line; the other column is its defensive front's side. "
+           f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
+# QB hits drop out where the data has none (college).
+_line_drop = frozenset({"QB Hit %"}) if "QB Hits" in missing_stats else frozenset()
+line_df = line_play_stats(revealed, home, away, drop=_line_drop)
+st.dataframe(style_line_table(line_df, leagues.line_baselines(league, season)), width='stretch')
+st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave out "
+           f"kneels and scrambles: stuffed = no gain or a loss, explosive = {EXPLOSIVE_RUN_YDS}+ yards. "
+           f"OL penalties: holding, false starts and ineligible man downfield on the "
+           f"offense, per snap (pass, run or no-play).")
 
 # ---------- Player leaders ----------
 if not hide_leaders:
