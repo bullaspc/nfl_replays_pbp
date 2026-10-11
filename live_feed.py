@@ -426,7 +426,7 @@ def _mmss(s) -> str | None:
 
 
 _END_TYPES = re.compile(r"end (?:of )?(?:period|quarter|half|regulation|game)", re.I)
-_PAT_SPLIT = re.compile(r"(?<=TOUCHDOWN)(?:[^.]*\.)?\s+(?=(?:\(Kick formation\)\s*|\(Pass formation\)\s*)?"
+_PAT_SPLIT = re.compile(r"(?:(?<=TOUCHDOWN)|(?<=\]))(?:[^.]*\.)?\s+(?=(?:\(Kick formation\)\s*|\(Pass formation\)\s*)?"
                         rf"(?:{NAME} extra point is|TWO-POINT CONVERSION ATTEMPT))")
 
 
