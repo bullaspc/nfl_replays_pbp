@@ -30,8 +30,8 @@ import game_summary
 import leagues
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
-    down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label,
-    line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
+    down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
+    PLAY_KINDS, line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
     stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
@@ -658,11 +658,34 @@ st.markdown(
     '<span style="margin-right:6px">✅ Positive EPA</span>',
     unsafe_allow_html=True,
 )
-if not revealed.empty and collapse_plays:
-    plays_table(build_plays_df(revealed.iloc[[-1]], hide_descriptions, reverse=False))
-elif not revealed.empty:
+def _reset_recent_page():
+    st.session_state.recent_plays_page = 1
+
+
+_DOWN_NAMES = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}
+_f_down, _f_kind, _f_team = st.columns([4, 6, 3])
+with _f_down:
+    _sel_downs = st.pills("Down", list(_DOWN_NAMES), selection_mode="multi",
+                          format_func=_DOWN_NAMES.get, key="plays_downs",
+                          on_change=_reset_recent_page)
+with _f_kind:
+    _sel_kinds = st.pills("Play type", PLAY_KINDS, selection_mode="multi",
+                          key="plays_kinds", on_change=_reset_recent_page)
+with _f_team:
+    # Keyed by game: the options are this game's teams.
+    _sel_teams = st.pills("Offense", [away, home], selection_mode="multi",
+                          key=f"plays_teams_{game_id}", on_change=_reset_recent_page)
+_filtered = bool(_sel_downs or _sel_kinds or _sel_teams)
+_matching = filter_plays(revealed, _sel_downs, _sel_kinds, _sel_teams)
+
+if _matching.empty:
+    st.caption("No plays match these filters yet." if _filtered and not revealed.empty
+               else "No plays revealed yet.")
+elif collapse_plays:
+    plays_table(build_plays_df(_matching.iloc[[-1]], hide_descriptions, reverse=False))
+else:
     _PAGE_SIZE = 15
-    _all_rev = revealed.iloc[::-1].copy()
+    _all_rev = _matching.iloc[::-1].copy()
     _total_plays = len(_all_rev)
     _total_pages = max(1, (_total_plays + _PAGE_SIZE - 1) // _PAGE_SIZE)
     if "recent_plays_page" not in st.session_state:
@@ -678,13 +701,13 @@ elif not revealed.empty:
             st.session_state.recent_plays_page = _page - 1
             st.rerun()
     with col_info:
-        st.caption(f"Page {_page} of {_total_pages}  ({_total_plays} plays total)")
+        _count = (f"{_total_plays} of {len(revealed)} plays" if _filtered
+                  else f"{_total_plays} plays total")
+        st.caption(f"Page {_page} of {_total_pages}  ({_count})")
     with col_next:
         if st.button("Next ▶", disabled=(_page >= _total_pages), key="next_plays"):
             st.session_state.recent_plays_page = _page + 1
             st.rerun()
-else:
-    st.caption("No plays revealed yet.")
 
 # ---------- Current drive ----------
 st.subheader("Current drive")

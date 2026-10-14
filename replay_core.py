@@ -921,6 +921,39 @@ def scoring_timeline(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFra
         columns={"time": "Clock", "desc": "Description"}
     ).reset_index(drop=True)
 
+PLAY_KINDS = ["Pass", "Run", "Special teams", "Penalty"]
+
+
+def play_kind(r) -> str | None:
+    """Filter category of a play, from nflfastR's play_type: scrambles count as
+    runs and sacks as passes, as on the drive chart; Penalty is an accepted
+    penalty with no play. None for timeouts and period markers."""
+    pt = r["play_type"]
+    if pt in ("pass", "qb_spike"):
+        return "Pass"
+    if pt in ("run", "qb_kneel"):
+        return "Run"
+    if pt in ("punt", "field_goal", "extra_point", "kickoff"):
+        return "Special teams"
+    if pt == "no_play" and r.get("penalty") == 1:
+        return "Penalty"
+    return None
+
+
+def filter_plays(plays: pd.DataFrame, downs=(), kinds=(), teams=()) -> pd.DataFrame:
+    """The rows of `plays` on any of `downs` (1-4), of any of `kinds`
+    (PLAY_KINDS) and run by any of `teams` (posteam). An empty selection
+    keeps everything for that filter."""
+    mask = pd.Series(True, index=plays.index)
+    if downs:
+        mask &= plays["down"].isin(list(downs))
+    if kinds:
+        mask &= plays.apply(play_kind, axis=1).isin(list(kinds))
+    if teams:
+        mask &= plays["posteam"].isin(list(teams))
+    return plays[mask]
+
+
 def explosive_plays(revealed: pd.DataFrame, min_pass_yds: int = 15, min_rush_yds: int = 10) -> pd.DataFrame:
     """Passing plays >= min_pass_yds yards or rushing plays >= min_rush_yds yards, sorted by yards desc."""
     if revealed.empty:

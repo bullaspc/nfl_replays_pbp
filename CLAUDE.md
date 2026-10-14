@@ -98,7 +98,7 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **AI summary spoiler gate:** `st.session_state["_summary"]` holds the latest summary with the `cursor_anchor` it was written at. It is shown only for the same game and while that anchor is ≤ the anchor of `_cursor_max`, so re-seeding the clock earlier hides it. Keys come from `_setting()`, which reads `st.secrets` and then the environment.
 
-**UI sections (top to bottom):** header metrics → boxscore → AI summary (on demand) → recent plays (paginated, 15/page) → current drive → team stats → situational success rates → line play → player leaders → win probability chart.
+**UI sections (top to bottom):** header metrics → boxscore → AI summary (on demand) → recent plays (Down / Play type / Offense filter pills, `replay_core.filter_plays()` over `PLAY_KINDS` from `play_kind()`, applied before paginating 15/page; a filter change goes back to page 1) → current drive → team stats → situational success rates → line play → player leaders → win probability chart.
 
 **Stat tables:**
 - `boxscore()` — quarter-by-quarter score via cumulative score diffs; every OT period goes in the one OT column
