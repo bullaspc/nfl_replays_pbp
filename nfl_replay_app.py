@@ -663,18 +663,31 @@ def _reset_recent_page():
 
 
 _DOWN_NAMES = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}
-_f_down, _f_kind, _f_team = st.columns([4, 6, 3])
-with _f_down:
-    _sel_downs = st.pills("Down", list(_DOWN_NAMES), selection_mode="multi",
-                          format_func=_DOWN_NAMES.get, key="plays_downs",
-                          on_change=_reset_recent_page)
-with _f_kind:
-    _sel_kinds = st.pills("Play type", PLAY_KINDS, selection_mode="multi",
-                          key="plays_kinds", on_change=_reset_recent_page)
-with _f_team:
-    # Keyed by game: the options are this game's teams.
-    _sel_teams = st.pills("Offense", [away, home], selection_mode="multi",
-                          key=f"plays_teams_{game_id}", on_change=_reset_recent_page)
+
+
+def _play_filters(prefix: str, teams: list[str] | None = None, on_change=None):
+    """Down / Play type (/ Offense, given `teams`) pill rows for a play table;
+    returns the selected downs, kinds and teams (empty lists keep all).
+    `prefix` keeps each table's selection separate."""
+    cols = st.columns([4, 6, 3] if teams else [4, 6])
+    with cols[0]:
+        downs = st.pills("Down", list(_DOWN_NAMES), selection_mode="multi",
+                         format_func=_DOWN_NAMES.get, key=f"{prefix}_downs",
+                         on_change=on_change)
+    with cols[1]:
+        kinds = st.pills("Play type", PLAY_KINDS, selection_mode="multi",
+                         key=f"{prefix}_kinds", on_change=on_change)
+    picked = []
+    if teams:
+        with cols[2]:
+            # Keyed by game: the options are this game's teams.
+            picked = st.pills("Offense", teams, selection_mode="multi",
+                              key=f"{prefix}_teams_{game_id}", on_change=on_change)
+    return downs, kinds, picked
+
+
+_sel_downs, _sel_kinds, _sel_teams = _play_filters(
+    "plays", [away, home], on_change=_reset_recent_page)
 _filtered = bool(_sel_downs or _sel_kinds or _sel_teams)
 _matching = filter_plays(revealed, _sel_downs, _sel_kinds, _sel_teams)
 
@@ -753,10 +766,16 @@ if not revealed.empty:
             f"Success rate: {_sr_str} · Time of possession: {_top_str}"
         )
 
-        drive_df = build_plays_df(_drive_raw, hide_descriptions)
-        with (st.expander(f"Drive plays ({len(drive_df)})", expanded=False)
+        with (st.expander(f"Drive plays ({len(_drive_raw)})", expanded=False)
               if collapse_plays else contextlib.nullcontext()):
-            plays_table(drive_df)
+            _d_downs, _d_kinds, _ = _play_filters("drive")
+            _drive_shown = filter_plays(_drive_raw, _d_downs, _d_kinds)
+            if _drive_shown.empty:
+                st.caption("No plays in this drive match these filters.")
+            else:
+                plays_table(build_plays_df(_drive_shown, hide_descriptions))
+                if _d_downs or _d_kinds:
+                    st.caption(f"{len(_drive_shown)} of {len(_drive_raw)} drive plays")
     else:
         st.caption("No drive data available.")
 else:
