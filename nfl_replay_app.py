@@ -35,8 +35,8 @@ from replay_core import (
     stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
-    PLAYS_COL_CFG, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
-    logo_img, plays_row_height, smap, style_drive_chart, style_plays,
+    build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
+    logo_img, plays_table, smap, style_drive_chart,
     style_line_table, style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
 )
 
@@ -652,19 +652,14 @@ else:
 st.subheader("Recent plays")
 st.markdown(
     '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
+    '<span style="background:#ffd0a6;padding:2px 8px;border-radius:3px;margin-right:6px">4th-down attempt</span>'
     '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
     '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
     '<span style="margin-right:6px">✅ Positive EPA</span>',
     unsafe_allow_html=True,
 )
 if not revealed.empty and collapse_plays:
-    st.dataframe(
-        build_plays_df(revealed.iloc[[-1]], hide_descriptions, reverse=False)
-        .style.apply(style_plays, axis=1),
-        hide_index=True, width='stretch',
-        column_config=PLAYS_COL_CFG,
-        row_height=plays_row_height(hide_descriptions),
-    )
+    plays_table(build_plays_df(revealed.iloc[[-1]], hide_descriptions, reverse=False))
 elif not revealed.empty:
     _PAGE_SIZE = 15
     _all_rev = revealed.iloc[::-1].copy()
@@ -676,12 +671,7 @@ elif not revealed.empty:
 
     _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
     recent_df = build_plays_df(_slice, hide_descriptions, reverse=False)
-    st.dataframe(
-        recent_df.style.apply(style_plays, axis=1),
-        hide_index=True, width = 'stretch',
-        column_config=PLAYS_COL_CFG,
-        row_height=plays_row_height(hide_descriptions),
-    )
+    plays_table(recent_df)
     col_prev, col_info, col_next = st.columns([1, 4, 1])
     with col_prev:
         if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
@@ -743,12 +733,7 @@ if not revealed.empty:
         drive_df = build_plays_df(_drive_raw, hide_descriptions)
         with (st.expander(f"Drive plays ({len(drive_df)})", expanded=False)
               if collapse_plays else contextlib.nullcontext()):
-            st.dataframe(
-                drive_df.style.apply(style_plays, axis=1),
-                hide_index=True, width='stretch',
-                column_config=PLAYS_COL_CFG,
-                row_height=plays_row_height(hide_descriptions),
-            )
+            plays_table(drive_df)
     else:
         st.caption("No drive data available.")
 else:
@@ -761,13 +746,7 @@ if not revealed.empty:
     with st.expander(f"Explosive plays ({_exp_count})", expanded=False):
         if not _exp_df.empty:
             exp_display = build_plays_df(_exp_df, hide_descriptions, reverse=False)
-            st.dataframe(
-                exp_display.style.apply(style_plays, axis=1),
-                hide_index=True,
-                width='stretch',
-                column_config=PLAYS_COL_CFG,
-                row_height=plays_row_height(hide_descriptions),
-            )
+            plays_table(exp_display)
         else:
             st.caption("No explosive plays yet.")
 

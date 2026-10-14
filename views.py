@@ -383,36 +383,45 @@ def build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) -> 
     df["EPA"] = pd.to_numeric(df["EPA"], errors="coerce").round(2)
     return df.iloc[::-1] if reverse else df
 
-def style_plays(row):
-    t = row["Type"]
-    if row.get("_go4", False):
-        row_bg = "#ffd0a6"
-    elif t.startswith("3rd"):
-        row_bg = "#ffeeba"
-    else:
-        row_bg = "#ffffff"
-    styles = []
-    for col in row.index:
-        if col in ("_rz", "_go4"):
-            styles.append("")
-        elif col == "Field" and row.get("_rz", False):
-            styles.append("background-color: #dc3545; color: #ffffff")
-        else:
-            styles.append(f"background-color: {row_bg}; color: #000000")
+_PLAY_FLAGS = ["_rz", "_go4"]
+
+
+def style_plays(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
+    """Cell styles for a play table: the row's colour from its down (4th-down
+    attempt, then 3rd down), and the Field cell red inside the red zone.
+    `flags` holds build_plays_df()'s _rz/_go4 columns, kept out of `df`
+    because st.table shows every column it is given."""
+    third = df["Type"].str.startswith("3rd")
+    row_bg = flags["_go4"].map({True: "#ffd0a6"}).fillna(
+        third.map({True: "#ffeeba"})).fillna("#ffffff")
+    styles = pd.DataFrame(
+        {c: "background-color: " + row_bg + "; color: #000000" for c in df.columns},
+        index=df.index)
+    if "Field" in styles.columns:
+        styles.loc[flags["_rz"].astype(bool), "Field"] = (
+            "background-color: #dc3545; color: #ffffff")
     return styles
 
 
-EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
-PLAYS_COL_CFG = {
-    **EPA_COL_CFG, "_rz": None, "_go4": None,
-    "Description": st.column_config.TextColumn(width="large"),
-}
-
-
-def plays_row_height(hide_desc: bool) -> int | None:
-    """Row height for play tables: st.dataframe only wraps cell text when
-    row_height is above 4rem (64px), so give descriptions room for ~3 lines."""
-    return None if hide_desc else 84
+def plays_table(df: pd.DataFrame) -> None:
+    """A play table from build_plays_df(), as a static st.table: its columns
+    can't be dragged out of order or sorted out of game order, and
+    descriptions wrap to whatever height they need."""
+    df = df.reset_index(drop=True)
+    flags, shown = df[_PLAY_FLAGS], df.drop(columns=_PLAY_FLAGS)
+    # st.table drops white-space styles, so keep "OPP 46", "2 & 12" and
+    # "4th & 🏈 Pass" on one line with non-breaking spaces; only
+    # descriptions wrap.
+    for c in ["Field", "Type", "D&D"]:
+        shown[c] = shown[c].str.replace(" ", "\u00a0")
+    styled = (
+        shown.style.apply(style_plays, axis=None, flags=flags)
+        .format({"EPA": "{:.2f}"}, na_rep="")
+    )
+    if "Description" in shown.columns:
+        styled = styled.set_properties(
+            subset=["Description"], **{"min-width": "260px", "text-align": "left"})
+    st.table(styled, hide_index=True)
 
 
 # ---------- Header and time bar ----------
