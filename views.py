@@ -368,27 +368,32 @@ def build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) -> 
     raw["Field"] = raw.apply(field_pos_label, axis=1)
     is_special = raw["play_type"].isin(["field_goal", "extra_point"])
     raw["_rz"] = (raw["yardline_100"].fillna(100) <= 20) & ~is_special
+    # 4th-down attempts: the offense went for it (fakes included, as nflfastR
+    # types them pass/run), not a punt, field goal or penalty-only snap.
+    raw["_go4"] = (raw["down"] == 4) & raw["play_type"].isin(["pass", "run"])
     if hide_desc:
-        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "Type", "D&D", "Success?", "yards_gained", "epa"]
+        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "_go4", "Type", "D&D", "Success?", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
-        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "Type", "D&D", "Success?", "Yds", "EPA"]
+        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "_go4", "Type", "D&D", "Success?", "Yds", "EPA"]
     else:
-        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "Type", "D&D", "Success?", "desc", "yards_gained", "epa"]
+        cols_sel = ["Q", "time", "posteam", "Field", "_rz", "_go4", "Type", "D&D", "Success?", "desc", "yards_gained", "epa"]
         df = raw[cols_sel].copy()
-        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "Type", "D&D", "Success?", "Description", "Yds", "EPA"]
+        df.columns = ["Q", "Clock", "Off", "Field", "_rz", "_go4", "Type", "D&D", "Success?", "Description", "Yds", "EPA"]
     df["Yds"] = pd.to_numeric(df["Yds"], errors="coerce").fillna(0).astype(int)
     df["EPA"] = pd.to_numeric(df["EPA"], errors="coerce").round(2)
     return df.iloc[::-1] if reverse else df
 
 def style_plays(row):
     t = row["Type"]
-    if t.startswith("3rd"):
+    if row.get("_go4", False):
+        row_bg = "#ffd0a6"
+    elif t.startswith("3rd"):
         row_bg = "#ffeeba"
     else:
         row_bg = "#ffffff"
     styles = []
     for col in row.index:
-        if col == "_rz":
+        if col in ("_rz", "_go4"):
             styles.append("")
         elif col == "Field" and row.get("_rz", False):
             styles.append("background-color: #dc3545; color: #ffffff")
@@ -399,7 +404,7 @@ def style_plays(row):
 
 EPA_COL_CFG = {"EPA": st.column_config.NumberColumn(format="%.2f")}
 PLAYS_COL_CFG = {
-    **EPA_COL_CFG, "_rz": None,
+    **EPA_COL_CFG, "_rz": None, "_go4": None,
     "Description": st.column_config.TextColumn(width="large"),
 }
 
