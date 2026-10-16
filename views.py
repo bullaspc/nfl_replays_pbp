@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          SR_METRICS, SR_SUBTOTALS, down_distance,
@@ -395,8 +394,9 @@ def style_plays(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
     `flags` holds build_plays_df()'s _rz/_go4 columns, kept out of `df`
     because st.table shows every column it is given."""
     third = df["Type"].str.startswith("3rd")
-    row_bg = flags["_go4"].map({True: "#ffd0a6"}).fillna(
-        third.map({True: "#ffeeba"})).fillna("#ffffff")
+    row_bg = pd.Series(
+        np.select([flags["_go4"].astype(bool), third], ["#ffd0a6", "#ffeeba"], "#ffffff"),
+        index=df.index)
     styles = pd.DataFrame(
         {c: "background-color: " + row_bg + "; color: #000000" for c in df.columns},
         index=df.index)
@@ -473,13 +473,13 @@ def time_bar_html(frac: float, fill: str, in_ot: bool) -> str:
 def keep_screen_awake(enabled: bool) -> None:
     """Hold (or release) a Screen Wake Lock so a phone doesn't dim or lock mid-game.
 
-    components.html runs in a same-origin iframe, so the script requests the lock on
+    st.iframe runs the HTML in a same-origin iframe, so the script requests the lock on
     the parent (top-level) document -- iframes need a permissions-policy grant that
     Streamlit doesn't give. The sentinel lives on the parent window so reruns reuse
     it, and it's re-acquired on visibilitychange because the browser drops the lock
     whenever the tab is hidden. Needs HTTPS (or localhost); iOS Safari 16.4+.
     """
-    components.html(f"""
+    st.iframe(f"""
 <script>
 (function () {{
   const w = window.parent, nav = w.navigator, doc = w.document;
@@ -500,4 +500,4 @@ def keep_screen_awake(enabled: bool) -> None:
   else if (w.__nflWakeLock) {{ w.__nflWakeLock.release(); w.__nflWakeLock = null; }}
 }})();
 </script>
-""", height=0)
+""", height="content")
