@@ -366,6 +366,9 @@ def build_plays_df(raw: pd.DataFrame, hide_desc: bool, reverse: bool = True) -> 
     raw["Success?"] = raw.apply(success_emoji, axis=1)
     raw["Q"] = raw["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
     raw["Field"] = raw.apply(field_pos_label, axis=1)
+    # On an empty frame apply() gives float columns, which .str rejects.
+    labels = ["Type", "D&D", "Success?", "Field"]
+    raw[labels] = raw[labels].astype(str)
     is_special = raw["play_type"].isin(["field_goal", "extra_point"])
     raw["_rz"] = (raw["yardline_100"].fillna(100) <= 20) & ~is_special
     # 4th-down attempts: the offense went for it (fakes included, as nflfastR
