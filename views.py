@@ -440,14 +440,30 @@ def _nowrap(v) -> str:
     return s.replace("–", "\u2060–\u2060").replace("—", "\u2060—\u2060")
 
 
+# The column that stays put while a wide table scrolls sideways on a phone.
+PINNED_COL = "Player"
+# Streamlit's page background, which the pinned cells need to hide the
+# columns scrolling under them. Streamlit doesn't expose it to CSS.
+_PAGE_BG = {"light": "#ffffff", "dark": "#0e1117"}
+
+
+def _pinned_props() -> list[tuple[str, str]]:
+    """CSS that pins a column (header and cells) to the left edge, with an
+    inset line as its border: a collapsed table border stays behind."""
+    return [("position", "sticky"), ("left", "0"), ("z-index", "1"),
+            ("background-color", _PAGE_BG.get(st.context.theme.type, _PAGE_BG["light"])),
+            ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
+
+
 def stat_table(table, hide_index: bool = False) -> None:
     """A table (DataFrame or Styler) as a static st.table: on a phone it
     scrolls with the page instead of catching swipes, its cells are tighter
     than st.dataframe's, and its columns can't be sorted or dragged. A
-    Description column wraps; st.table drops white-space styles, so the other
-    text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither") are displayed
-    with non-breaking spaces and hyphens to stay on one line. Only the
-    display changes, so styles keyed on the values still match."""
+    Description column wraps, and a `PINNED_COL` column stays at the left
+    edge while the table scrolls sideways. st.table drops white-space styles,
+    so the other text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither")
+    are displayed with non-breaking spaces and hyphens to stay on one line.
+    Only the display changes, so styles keyed on the values still match."""
     styled = table.style if isinstance(table, pd.DataFrame) else table
     df = styled.data
     text = [c for c in df.columns if c != "Description" and df[c].notna().any()
@@ -457,6 +473,9 @@ def stat_table(table, hide_index: bool = False) -> None:
     if "Description" in df.columns:
         styled = styled.set_properties(
             subset=["Description"], **{"min-width": "260px", "text-align": "left"})
+    if PINNED_COL in df.columns:
+        styled = styled.set_table_styles(
+            {PINNED_COL: [{"selector": "", "props": _pinned_props()}]}, overwrite=False)
     st.table(styled, hide_index=hide_index)
 
 
