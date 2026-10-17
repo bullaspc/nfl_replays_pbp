@@ -37,7 +37,8 @@ from replay_core import (
 from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, plays_table, smap, style_drive_chart,
-    style_line_table, style_player_table, style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
+    stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
+    style_sr_table, style_stat_table, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -496,7 +497,7 @@ st.divider()
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
-st.dataframe(boxscore(revealed, home, away), hide_index=True, width='stretch')
+stat_table(boxscore(revealed, home, away), hide_index=True)
 
 # ---------- AI game summary ----------
 # An agent reads the same stats as the sections below, built from `revealed`
@@ -638,11 +639,7 @@ if not revealed.empty:
         _stl_cols = ["Q", "Clock", "Team", "Type", "Score"]
         if not hide_descriptions:
             _stl_cols = ["Q", "Clock", "Team", "Type", "Score", "Description"]
-        st.dataframe(
-            style_scoring_timeline(_stl_df[_stl_cols]),
-            hide_index=True,
-            width='stretch',
-        )
+        stat_table(style_scoring_timeline(_stl_df[_stl_cols]), hide_index=True)
     else:
         st.caption("No scores yet.")
 else:
@@ -788,11 +785,7 @@ if not revealed.empty:
                    "latest drive on top")
     if not _dc.empty:
         with st.expander(f"Drive table ({len(_dc)})", expanded=False):
-            st.dataframe(
-                style_drive_chart(_dc),
-                hide_index=True,
-                width='stretch',
-            )
+            stat_table(style_drive_chart(_dc), hide_index=True)
     else:
         st.caption("No drive data available.")
 else:
@@ -802,7 +795,7 @@ else:
 st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
 _baselines = leagues.stat_baselines(league, season)
-st.dataframe(style_stat_table(stat_df, away, home, _baselines), width='stretch')
+stat_table(style_stat_table(stat_df, away, home, _baselines))
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
 
 # ---------- Situational success rates ----------
@@ -814,14 +807,14 @@ _sr_subtotals = st.toggle("Early/late subtotals", value=False,
 sr_df, _sit_counts = situational_success_rate(revealed, home, away,
                                               subtotals=_sr_subtotals)
 _sit_baselines = leagues.situational_baselines(league, season)
-st.dataframe(style_sr_table(sr_df, _sit_baselines, _sit_counts), width='stretch')
+stat_table(style_sr_table(sr_df, _sit_baselines, _sit_counts))
 
 # ---------- Line play ----------
 st.subheader("Line play")
 st.caption(f"Each team's offensive line; the other column is its defensive front's side. "
            f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
 line_df = line_play_stats(revealed, home, away, drop=_line_drop)
-st.dataframe(style_line_table(line_df, leagues.line_baselines(league, season)), width='stretch')
+stat_table(style_line_table(line_df, leagues.line_baselines(league, season)))
 st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave out "
            f"kneels and scrambles: stuffed = no gain or a loss, explosive = {EXPLOSIVE_RUN_YDS}+ yards. "
            f"OL penalties: holding, false starts and ineligible man downfield on the "
@@ -843,24 +836,14 @@ if not hide_leaders:
                 _lead_df = top_players(revealed, team, _kind, _n, drop=missing_stats)
                 st.caption(_kind.capitalize())
                 if not _lead_df.empty:
-                    st.dataframe(style_player_table(_lead_df, _kind, _player_baselines),
-                                 hide_index=True, width='stretch')
+                    stat_table(style_player_table(_lead_df, _kind, _player_baselines),
+                               hide_index=True)
                 else:
                     st.caption("No data yet")
             _def_df = top_defenders(revealed, team, 10, drop=missing_stats)
             st.caption("Defense")
             if not _def_df.empty:
-                st.dataframe(_def_df, hide_index=True, width='stretch',
-                             column_config={
-                                 "Tackles": st.column_config.NumberColumn(format="%.0f"),
-                                 "Sacks": st.column_config.NumberColumn(format="%.1f"),
-                                 "QB Hits": st.column_config.NumberColumn(format="%.0f"),
-                                 "Hurries": st.column_config.NumberColumn(format="%.0f"),
-                                 "TFL": st.column_config.NumberColumn(format="%.1f"),
-                                 "INT": st.column_config.NumberColumn(format="%.0f"),
-                                 "PD": st.column_config.NumberColumn(format="%.0f"),
-                                 "FF": st.column_config.NumberColumn(format="%.0f"),
-                             })
+                stat_table(style_defense_table(_def_df), hide_index=True)
             else:
                 st.caption("No data yet")
 
@@ -990,7 +973,7 @@ if not revealed.empty:
         styled_wpa = styled_wpa.set_properties(**{"text-align": "center"}).set_table_styles(
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
-        st.dataframe(styled_wpa, hide_index=False, width='stretch')
+        stat_table(styled_wpa)
         st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits")
     else:
         st.caption("No win probability data available.")

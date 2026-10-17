@@ -192,6 +192,10 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
 
 
 _PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}"}
+def style_defense_table(df: pd.DataFrame):
+    """A defensive leaders table: counts, shown as 1 or 0.5 (half sacks and
+    half TFLs) rather than 1.0."""
+    return df.style.format("{:g}", subset=df.select_dtypes("number").columns)
 
 
 def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None):
@@ -427,25 +431,46 @@ def style_plays(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
     return styles
 
 
+def _nowrap(v) -> str:
+    """v with no line break opportunities: non-breaking spaces and hyphens, and
+    word joiners around each dash ("ARI 20–10 NO")."""
+    if pd.isna(v):
+        return ""
+    s = str(v).replace(" ", "\u00a0").replace("-", "\u2011")
+    return s.replace("–", "\u2060–\u2060").replace("—", "\u2060—\u2060")
+
+
+def stat_table(table, hide_index: bool = False) -> None:
+    """A table (DataFrame or Styler) as a static st.table: on a phone it
+    scrolls with the page instead of catching swipes, its cells are tighter
+    than st.dataframe's, and its columns can't be sorted or dragged. A
+    Description column wraps; st.table drops white-space styles, so the other
+    text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither") are displayed
+    with non-breaking spaces and hyphens to stay on one line. Only the
+    display changes, so styles keyed on the values still match."""
+    styled = table.style if isinstance(table, pd.DataFrame) else table
+    df = styled.data
+    text = [c for c in df.columns if c != "Description" and df[c].notna().any()
+            and df[c].dropna().map(lambda v: isinstance(v, str)).all()]
+    if text:
+        styled = styled.format(_nowrap, subset=text)
+    if "Description" in df.columns:
+        styled = styled.set_properties(
+            subset=["Description"], **{"min-width": "260px", "text-align": "left"})
+    st.table(styled, hide_index=hide_index)
+
+
 def plays_table(df: pd.DataFrame) -> None:
     """A play table from build_plays_df(), as a static st.table: its columns
     can't be dragged out of order or sorted out of game order, and
     descriptions wrap to whatever height they need."""
     df = df.reset_index(drop=True)
     flags, shown = df[_PLAY_FLAGS], df.drop(columns=_PLAY_FLAGS)
-    # st.table drops white-space styles, so keep "OPP 46", "2 & 12" and
-    # "4th & 🏈 Pass" on one line with non-breaking spaces; only
-    # descriptions wrap.
-    for c in ["Field", "Type", "D&D"]:
-        shown[c] = shown[c].str.replace(" ", "\u00a0")
-    styled = (
+    stat_table(
         shown.style.apply(style_plays, axis=None, flags=flags)
-        .format({"EPA": "{:.2f}"}, na_rep="")
+        .format({"EPA": "{:.2f}"}, na_rep=""),
+        hide_index=True,
     )
-    if "Description" in shown.columns:
-        styled = styled.set_properties(
-            subset=["Description"], **{"min-width": "260px", "text-align": "left"})
-    st.table(styled, hide_index=True)
 
 
 # ---------- Header and time bar ----------
