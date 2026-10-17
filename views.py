@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         SR_METRICS, SR_SUBTOTALS, down_distance,
+                         PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SR_METRICS, SR_SUBTOTALS, down_distance,
                          field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 
 
@@ -189,6 +189,27 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
     )
+
+
+_PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}"}
+
+
+def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None):
+    """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`)
+    colored by percentile vs `baselines[kind]`; players with fewer than
+    `PLAYER_MIN_PLAYS` plays, like the baseline's, stay plain."""
+    arrs = (baselines or {}).get(kind, {})
+    qualified = df[PLAYER_VOLUME_COL[kind]] >= PLAYER_MIN_PLAYS[kind]
+
+    def _colors(col):
+        arr = arrs.get(col.name, np.array([]))
+        return [percentile_color(percentile_of(float(v), arr)) if q else ""
+                for v, q in zip(col, qualified)]
+
+    styled = df.style.format({c: f for c, f in _PLAYER_FORMATS.items() if c in df.columns},
+                             na_rep="—")
+    rate_cols = [c for c in PLAYER_RATE_COLS[kind] if c in df.columns]
+    return styled.apply(_colors, subset=rate_cols) if rate_cols else styled
 
 
 # ---------- Drives ----------

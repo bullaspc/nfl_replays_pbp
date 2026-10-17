@@ -287,6 +287,7 @@ BASELINE_COLS = [
     "penalty", "penalty_team", "penalty_yards",
     "down", "ydstogo",
     "desc", "play_type", "yards_gained", "sack", "qb_hit",
+    "passer_player_name", "rusher_player_name", "receiver_player_name",
 ]
 
 
@@ -557,13 +558,37 @@ def situational_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarr
 
 
 # ---------- Player leaders ----------
+PLAYER_NAME_COL = {"passing": "passer_player_name", "rushing": "rusher_player_name",
+                   "receiving": "receiver_player_name"}
+# The per-play averages and ratios in each leaders table, colored by
+# percentile; the rest are counts.
+PLAYER_RATE_COLS = {"passing": ["SR%", "aDOT", "EPA/play"],
+                    "rushing": ["SR%", "EPA/play"],
+                    "receiving": ["aDOT", "EPA/play"]}
+# The volume column (one per play) and the minimum a player-game needs to go
+# in the baseline and to be colored: a rate over a couple of plays says little.
+PLAYER_VOLUME_COL = {"passing": "Att", "rushing": "Att", "receiving": "Tgt"}
+PLAYER_MIN_PLAYS = {"passing": 10, "rushing": 5, "receiving": 3}
+
+
+def _player_plays(td: pd.DataFrame, kind: str) -> pd.DataFrame:
+    """The plays a `kind` leaders table credits to a player: dropbacks (sacks
+    included) without spikes, carries without kneels, or targets."""
+    no_spike = td["qb_spike"].fillna(0) == 0
+    if kind == "passing":
+        return td[(td["pass_attempt"] == 1) & no_spike]
+    if kind == "rushing":
+        return td[(td["rush_attempt"] == 1) & (td["qb_kneel"].fillna(0) == 0)]
+    return td[td["receiver_player_name"].notna() & (td["pass_attempt"].fillna(0) == 1) & no_spike]
+
+
 def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
                 drop: frozenset = frozenset()) -> pd.DataFrame:
     """Leaders for a team so far. `drop` names columns the data source doesn't
     have (they'd only ever read 0)."""
     td = revealed[revealed["posteam"] == team]
     if kind == "passing":
-        pass_td = td[(td["pass_attempt"] == 1) & (td["qb_spike"].fillna(0) == 0)].copy()
+        pass_td = _player_plays(td, kind).copy()
         if pass_td.empty:
             return pd.DataFrame()
         pass_td["_success"] = (pass_td["epa"].fillna(0) > 0).astype(int)
@@ -578,7 +603,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
         g["aDOT"] = g["aDOT"].round(1)
         g["SR%"] = (g["SR%"] * 100).round(1)
     elif kind == "rushing":
-        rush_td = td[(td["rush_attempt"] == 1) & (td["qb_kneel"].fillna(0) == 0)].copy()
+        rush_td = _player_plays(td, kind).copy()
         if rush_td.empty:
             return pd.DataFrame()
         rush_td["_success"] = (rush_td["epa"].fillna(0) > 0).astype(int)
@@ -592,11 +617,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
         g = g.join(sr, on="Player")
         g["SR%"] = (g["SR%"] * 100).round(1)
     else:  # receiving
-        recv_td = td[
-            td["receiver_player_name"].notna()
-            & (td["pass_attempt"].fillna(0) == 1)
-            & (td["qb_spike"].fillna(0) == 0)
-        ].copy()
+        recv_td = _player_plays(td, kind).copy()
         if recv_td.empty:
             return pd.DataFrame()
         recv_td["_exp"] = (
@@ -622,6 +643,24 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
     g["EPA/play"] = (g["_epa"] / g["_plays"]).round(2)
     g = g.drop(columns=["_epa", "_plays", *[c for c in drop if c in g.columns]])
     return g.sort_values("Yds", ascending=False).head(n)
+
+
+def player_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarray]]:
+    """Per-kind distributions of the leaders tables' rates (`PLAYER_RATE_COLS`)
+    over every player-game in `raw` with at least `PLAYER_MIN_PLAYS` plays,
+    computed as `top_players` does, sorted ascending."""
+    raw = raw[raw["posteam"].notna()]
+    out = {}
+    for kind, name in PLAYER_NAME_COL.items():
+        plays = _player_plays(raw, kind)
+        plays = plays.assign(_success=(plays["epa"].fillna(0) > 0) * 100.0)
+        g = plays.groupby(["game_id", name]).agg(
+            _n=("epa", "size"), **{"SR%": ("_success", "mean"),
+                                   "aDOT": ("air_yards", "mean"),
+                                   "EPA/play": ("epa", "mean")})
+        g = g[g["_n"] >= PLAYER_MIN_PLAYS[kind]]
+        out[kind] = {stat: np.sort(g[stat].dropna().values) for stat in PLAYER_RATE_COLS[kind]}
+    return out
 
 def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
                   drop: frozenset = frozenset()) -> pd.DataFrame:

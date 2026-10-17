@@ -31,13 +31,13 @@ import leagues
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    PLAY_KINDS, line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
+    PLAY_KINDS, PLAYER_MIN_PLAYS, line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
     stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, plays_table, smap, style_drive_chart,
-    style_line_table, style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
+    style_line_table, style_player_table, style_scoring_timeline, style_sr_table, style_stat_table, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -830,41 +830,23 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
 # ---------- Player leaders ----------
 if not hide_leaders:
     st.subheader("Player leaders")
+    _player_baselines = leagues.player_baselines(league, season)
+    st.caption(f"SR%, aDOT and EPA/play colors show percentile vs player games in the "
+               f"{league.baseline_label} · green = top · red = bottom · only players with "
+               f"{PLAYER_MIN_PLAYS['passing']}+ dropbacks, {PLAYER_MIN_PLAYS['rushing']}+ "
+               f"carries or {PLAYER_MIN_PLAYS['receiving']}+ targets are colored")
     col_a, col_h = st.columns(2)
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
-            _pass_df = top_players(revealed, team, "passing", drop=missing_stats)
-            st.caption("Passing")
-            if not _pass_df.empty:
-                st.dataframe(_pass_df, hide_index=True, width='stretch',
-                             column_config={
-                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
-                                 "SR%": st.column_config.NumberColumn(format="%.1f%%"),
-                                 "aDOT": st.column_config.NumberColumn(format="%.1f"),
-                             })
-            else:
-                st.caption("No data yet")
-            _rush_df = top_players(revealed, team, "rushing", 4, drop=missing_stats)
-            st.caption("Rushing")
-            if not _rush_df.empty:
-                st.dataframe(_rush_df, hide_index=True, width='stretch',
-                             column_config={
-                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
-                                 "SR%": st.column_config.NumberColumn(format="%.1f%%"),
-                             })
-            else:
-                st.caption("No data yet")
-            _recv_df = top_players(revealed, team, "receiving", 8, drop=missing_stats)
-            st.caption("Receiving")
-            if not _recv_df.empty:
-                st.dataframe(_recv_df, hide_index=True, width='stretch',
-                             column_config={
-                                 "aDOT": st.column_config.NumberColumn(format="%.1f"),
-                                 "EPA/play": st.column_config.NumberColumn(format="%.2f"),
-                             })
-            else:
-                st.caption("No data yet")
+            for _kind, _n in [("passing", 3), ("rushing", 4), ("receiving", 8)]:
+                _lead_df = top_players(revealed, team, _kind, _n, drop=missing_stats)
+                st.caption(_kind.capitalize())
+                if not _lead_df.empty:
+                    st.dataframe(style_player_table(_lead_df, _kind, _player_baselines),
+                                 hide_index=True, width='stretch')
+                else:
+                    st.caption("No data yet")
             _def_df = top_defenders(revealed, team, 10, drop=missing_stats)
             st.caption("Defense")
             if not _def_df.empty:
