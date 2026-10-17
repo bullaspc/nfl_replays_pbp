@@ -562,6 +562,8 @@ else:
             line_play=_line,
             line_pct=stat_percentiles(_line, leagues.line_baselines(league, season),
                                       LINE_LOWER_IS_BETTER),
+            run_gaps=league.run_gaps,
+            tendency_baselines=leagues.tendency_baselines(league, season),
             boxscore=boxscore(revealed, home, away),
             scoring=scoring_timeline(revealed, home, away),
             team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines),

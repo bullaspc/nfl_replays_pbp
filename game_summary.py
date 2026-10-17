@@ -21,7 +21,7 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
-from replay_core import LINE_COUNT_ROWS, period_label
+from replay_core import LINE_COUNT_ROWS, TENDENCY_DOWNS, pass_tendencies, period_label, run_tendencies
 
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
@@ -110,6 +110,9 @@ class GameContext:
     league: str = "NFL"             # "NFL" or "CFB"
     line_play: pd.DataFrame | None = None  # the Line play table: stat × [away, home]
     line_pct: pd.DataFrame | None = None   # same shape: percentile, 100 = best for the line
+    run_gaps: bool = True           # the play text names a run's gap (NFL), not just its side
+    # TENDENCY_DOWNS option → league-wide (runs, passes) tendencies, the dashboard's dashes
+    tendency_baselines: dict = field(default_factory=dict)
 
 
 # What changes between the leagues: who's talking, whose models, and what the
@@ -199,6 +202,49 @@ def line_table(ctx: GameContext) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+_TEND_DOWNS = {"all": "All downs", "early": "Early downs", "late": "Late downs"}
+
+
+def tendency_table(ctx: GameContext, downs: str = "all") -> pd.DataFrame:
+    """The Tendencies section as one table: a row per run gap (or side) and
+    pass depth × side, each team's plays, share, yds/play, success rate and
+    EPA/play there, and the league's share and EPA/play."""
+    label = _TEND_DOWNS[downs]
+    rng = TENDENCY_DOWNS[label]
+    base_runs, base_passes = ctx.tendency_baselines.get(label, (None, None))
+    parts = []
+    for kind, tables, base in (
+            ("Run", {t: run_tendencies(ctx.revealed, t, ctx.run_gaps, rng) for t in (ctx.away, ctx.home)},
+             base_runs),
+            ("Pass", {t: pass_tendencies(ctx.revealed, t, rng) for t in (ctx.away, ctx.home)},
+             base_passes)):
+        for key in next(iter(tables.values())).index:
+            row = {"Play": kind, "Where": " ".join(key) if isinstance(key, tuple) else key}
+            for team, df in tables.items():
+                r = df.loc[key]
+                n = int(r["Plays"])
+                row[f"{team} plays"] = n
+                row[f"{team} share"] = f"{r['Share']:.0%}" if n else "-"
+                row[f"{team} yds/play"] = f"{r['Yds/Play']:.1f}" if n else "-"
+                row[f"{team} SR"] = f"{r['SR%']:.0%}" if n else "-"
+                row[f"{team} EPA/play"] = f"{r['EPA/play']:+.2f}" if n else "-"
+            known = base is not None and key in base.index
+            row["league share"] = f"{base.at[key, 'Share']:.0%}" if known else "-"
+            row["league EPA/play"] = f"{base.at[key, 'EPA/play']:+.2f}" if known else "-"
+            parts.append(row)
+    return pd.DataFrame(parts)
+
+
+def _tendency_note(ctx: GameContext) -> str:
+    runs = ("by gap: LE/LT/LG = left end/tackle/guard, Mid, RG/RT/RE" if ctx.run_gaps
+            else "by side (the college text names no gap)")
+    ints = "" if ctx.run_gaps else " Interceptions name no direction in the college text, so they're missing."
+    return (f"From the offense's side (left = the quarterback's left). Designed runs (no kneels or "
+            f"scrambles) {runs}; passes thrown (no sacks) by depth × side. Shares are of the plays "
+            f"whose text names a direction; plays without one are left out.{ints} League = "
+            f"{_LEAGUE[ctx.league]['baseline']}, all plays together.")
+
+
 def defense_table(ctx: GameContext) -> pd.DataFrame:
     """What each defense allowed (its opponent's offense, with the same play
     masks as the Team stats table) plus the defense's own pressure, stops and
@@ -259,6 +305,11 @@ def snapshot(ctx: GameContext) -> str:
 
 Line play: each offense's line, so a team's column is also what the other team's defensive front did against it. Dropbacks include sacks and QB hits include sacks; designed runs leave out kneels and scrambles, stuffed = no gain or a loss, explosive = 10+ yards; OL penalties are holding, false starts and ineligible man downfield on the offense, per snap. "pct" is against the same baseline, 100 = best for the offensive line (for Sack %, QB Hit %, Stuff % and OL Penalty %, lower is better).
 {_csv(line_table(ctx))}"""
+    tend = tendency_table(ctx)
+    tend = "" if tend.empty or not tend.filter(like=" plays").to_numpy().any() else f"""
+
+Tendencies, all downs: where each offense ran and threw. {_tendency_note(ctx)} get_tendencies has early and late downs.
+{_csv(tend)}"""
     return f"""Game: {ctx.away} (away) at {ctx.home} (home)
 Viewer's position: {where}
 Score: {ctx.away} {as_}, {ctx.home} {hs}{wp_line}
@@ -273,7 +324,7 @@ Offense: the dashboard's Team stats. "pct" is the percentile against {_LEAGUE[ct
 {_csv(offense_table(ctx))}
 
 Defense: what each defense allowed, and its own pressure, stops and takeaways.
-{_csv(defense_table(ctx))}{line}"""
+{_csv(defense_table(ctx))}{line}{tend}"""
 
 
 # ---------- Tools ----------
@@ -397,6 +448,13 @@ def _situational(ctx: GameContext) -> str:
     return _csv(out, index=True)
 
 
+def _tendencies(ctx: GameContext, downs: str) -> str:
+    df = tendency_table(ctx, downs if downs in _TEND_DOWNS else "all")
+    if df.empty or not df.filter(like=" plays").to_numpy().any():
+        return "(no plays with a direction)"
+    return _csv(df)
+
+
 def _leaders(ctx: GameContext, team: str, unit: str) -> str:
     return _csv(ctx.leaders.get((team, unit)))
 
@@ -431,6 +489,12 @@ def _tools(ctx: GameContext, strict: bool) -> list[dict]:
          "EPA/play by early or late down and short, medium or long distance, for "
          "both teams. Each cell has its play count in brackets.",
          {}, []),
+        ("get_tendencies",
+         "The dashboard's Tendencies on early downs (1st-2nd), late downs (3rd-4th) or "
+         "all: each offense's run share, yds/play, success rate and EPA/play by gap or "
+         "side, and pass share and results by depth × side, next to the league's. "
+         + _tendency_note(ctx),
+         {"downs": {"type": "string", "enum": list(_TEND_DOWNS)}}, ["downs"]),
         ("get_player_leaders",
          "The dashboard's Player leaders for one team and unit. Defense lists "
          + _LEAGUE[ctx.league]["defense"] + ".",
@@ -461,6 +525,8 @@ def _run_tool(ctx: GameContext, name: str, args: dict) -> str:
         return _splits(ctx, args["team"], args["by"])
     if name == "get_situational_success":
         return _situational(ctx)
+    if name == "get_tendencies":
+        return _tendencies(ctx, args.get("downs") or "all")
     if name == "get_player_leaders":
         return _leaders(ctx, args["team"], args["unit"])
     return f"Unknown tool {name!r}."
@@ -472,7 +538,7 @@ SYSTEM_PROMPT = """You are {analyst} inside a spoiler-free replay app. The fan i
 Ground rules:
 - Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
 - Your data stops at the viewer's current play. If the game isn't over, describe where it stands. Never predict, hint at or speculate about what happens next or how it ends.
-- Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
+- Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, where each offense ran and threw (and how it worked against the league's split), explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
 Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA. WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}
@@ -541,6 +607,10 @@ def describe_lookup(name: str, args: dict) -> str:
         return f"Splitting {team}'s offense by {str(args.get('by', '')).replace('_', ' ')}"
     if name == "get_situational_success":
         return "Checking success rates by down and distance"
+    if name == "get_tendencies":
+        downs = args.get("downs")
+        return "Checking where the offenses run and throw" + (
+            f" on {downs} downs" if downs in ("early", "late") else "")
     if name == "get_player_leaders":
         return f"Checking {team}'s {args.get('unit')} leaders"
     return f"Looking up {name}"
