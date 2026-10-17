@@ -28,6 +28,7 @@ from streamlit_autorefresh import st_autorefresh
 
 import game_summary
 import leagues
+import scoreboard
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
@@ -38,7 +39,7 @@ from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
-    style_sr_table, style_stat_table, time_bar_html,
+    style_sr_table, style_stat_table, ticker_html, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -247,6 +248,9 @@ with st.sidebar:
                                     help="Show yards/EPA only — descriptions can foreshadow what's about to happen on screen.")
     hide_leaders = st.checkbox("Hide player leaders", value=False,
                                help="A QB suddenly at 4 TDs hints something just happened.")
+    hide_ticker = st.checkbox("Hide other games' scores", value=False,
+                              help="The ticker of the league's other live games above the "
+                                   "score. The game you're watching is never in it.")
     blur_until_ready = st.checkbox("Blur everything until I click 'Reveal'", value=False)
 
 # ---------- Play cursor ----------
@@ -376,6 +380,29 @@ if not revealed.empty:
 else:
     home_score = away_score = 0
 
+
+# ---------- Other games ticker ----------
+# The league's other games from ESPN's scoreboard, ESPN-ticker style, while any
+# of them is on: score, clock, who has the ball and where. The game being
+# watched is never in it (its live score would spoil it). A fragment, so it
+# keeps itself current on a replay too, where nothing else reruns the page,
+# without rerunning the page; fast only while a game is on or about to start.
+_TICKER_SECS, _TICKER_IDLE_SECS = 30, 300
+_ticker_every = None
+if not hide_ticker:
+    _ticker_every = (_TICKER_SECS if scoreboard.busy(league.ticker(game_row), pd.Timestamp.now(tz="UTC"))
+                     else _TICKER_IDLE_SECS)
+
+
+@st.fragment(run_every=_ticker_every)
+def _ticker() -> None:
+    others = league.ticker(game_row)
+    if any(g.state == "in" for g in others):
+        st.markdown(ticker_html(others), unsafe_allow_html=True)
+
+
+if not hide_ticker:
+    _ticker()
 
 # One flex row that never wraps, so the scoreboard stays a single compact line
 # on phones (st.columns would stack the logos and score vertically there).

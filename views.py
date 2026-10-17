@@ -1,8 +1,11 @@
 """
 Presentation helpers for the app: table styling, the drive field figure, the
-play tables, the time bar and the screen wake lock. They turn replay_core's
-DataFrames into what Streamlit draws; no data loading here.
+play tables, the time bar, the other-games ticker and the screen wake lock.
+They turn replay_core's DataFrames into what Streamlit draws; no data loading
+here.
 """
+
+from html import escape
 
 import numpy as np
 import pandas as pd
@@ -12,6 +15,7 @@ import streamlit as st
 from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SR_METRICS, SR_SUBTOTALS, down_distance,
                          field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
+from scoreboard import TickerGame, TickerTeam
 
 
 # ---------- Stat tables ----------
@@ -616,6 +620,65 @@ def time_bar_html(frac: float, fill: str, in_ot: bool) -> str:
   </div>{ot_label}
 </div>
 """
+
+# ---------- Other games ticker ----------
+_LIVE_RED = "#d62728"
+
+
+def _ticker_team(t: TickerTeam, dim: bool) -> str:
+    logo = (f'<img src="{escape(t.logo)}" alt="" style="height:16px;width:16px;object-fit:contain">'
+            if t.logo else '<span style="width:16px"></span>')
+    rank = f'<span style="font-size:0.65rem;opacity:0.7">{t.rank}</span>' if t.rank else ""
+    ball = '<span style="font-size:0.62rem" title="Has the ball">🏈</span>' if t.has_ball else ""
+    return (f'<div style="display:flex;align-items:center;gap:4px;{"opacity:0.55;" if dim else ""}">'
+            f'{logo}{rank}<span style="font-weight:600">{escape(t.abbr)}</span>{ball}'
+            f'<span style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums">'
+            f'{escape(t.score)}</span></div>')
+
+
+def _ticker_card(g: TickerGame) -> str:
+    live, final = g.state == "in", g.state == "post"
+    head = (f'<div style="display:flex;gap:6px;font-size:0.68rem;white-space:nowrap">'
+            f'<span style="{f"color:{_LIVE_RED};font-weight:700" if live else "opacity:0.7"}">'
+            f'{"● " if live else ""}{escape(g.status)}</span>'
+            f'<span style="margin-left:auto;opacity:0.6">{escape(g.network or "")}</span></div>')
+    # A final dims the loser.
+    teams = _ticker_team(g.away, final and g.home.winner) + _ticker_team(g.home, final and g.away.winner)
+    sit = ""
+    if live and (g.down_distance or g.spot):
+        text = " · ".join(x for x in (g.down_distance, g.spot and f"at {g.spot}") if x)
+        sit = (f'<div style="font-size:0.68rem;white-space:nowrap;'
+               f'{f"color:{_LIVE_RED};font-weight:600" if g.red_zone else "opacity:0.85"}">'
+               f'{escape(text)}</div>')
+    if live and g.to_goal is not None:
+        # The offense's drive so far: its own goal line on the left, the one
+        # it's going for on the right, the red zone tinted, a tick at midfield.
+        offense = g.home if g.home.has_ball else g.away
+        sit += (f'<div style="position:relative;height:4px;margin-top:3px;border-radius:2px;'
+                f'background:rgba(128,128,128,0.25)">'
+                f'<div style="position:absolute;right:0;top:0;bottom:0;width:20%;'
+                f'background:rgba(214,39,40,0.3);border-radius:0 2px 2px 0"></div>'
+                f'<div style="position:absolute;left:0;top:0;bottom:0;width:{100 - g.to_goal}%;'
+                f'background:{offense.color or "#4c78a8"};border-radius:2px"></div>'
+                f'<div style="position:absolute;left:50%;top:-1px;bottom:-1px;width:1px;'
+                f'background:rgba(128,128,128,0.7)"></div></div>')
+    title = f' title="{escape(g.last_play)}"' if live and g.last_play else ""
+    border = _LIVE_RED if live and g.red_zone else "rgba(128,128,128,0.35)"
+    return (f'<div{title} style="flex:0 0 auto;width:8.5rem;border:1px solid {border};'
+            f'border-radius:6px;padding:3px 7px 4px;font-size:0.78rem;line-height:1.35">'
+            f'{head}{teams}{sit}</div>')
+
+
+def ticker_html(games: list[TickerGame]) -> str:
+    """The league's other games as a row of ESPN-style cards that scrolls
+    sideways: clock, score, who has the ball (🏈), down and distance, and a
+    bar of the offense's drive toward the goal. Hovering a live card shows its
+    last play. One line, no blank lines, so st.markdown keeps it raw HTML."""
+    cards = "".join(_ticker_card(g) for g in games)
+    return (f'<div style="display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;'
+            f'margin-bottom:0.25rem;-webkit-overflow-scrolling:touch;scrollbar-width:thin">'
+            f'{cards}</div>')
+
 
 def keep_screen_awake(enabled: bool) -> None:
     """Hold (or release) a Screen Wake Lock so a phone doesn't dim or lock mid-game.

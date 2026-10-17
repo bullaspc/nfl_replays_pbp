@@ -10,6 +10,7 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 - **Win probability chart** — x-axis capped at your current position so the chart shape itself can't spoil the ending
 - **Per-game play-by-play** — paginated recent plays list with current drive summary
 - **Player leaders** — passing, rushing, receiving, and defensive stats per team
+- **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
 
 ## Quick Start
 
@@ -52,7 +53,8 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | [nfl_replay_app.py](nfl_replay_app.py) | The Streamlit page: sidebar, play cursor, sections |
 | [leagues.py](leagues.py) | Where each league's games come from, behind one `League` interface |
 | [replay_core.py](replay_core.py) | League-neutral logic: play timeline, cursor, every stat (no Streamlit) |
-| [views.py](views.py) | Table styling, the drive field figure, the time bar |
+| [views.py](views.py) | Table styling, the drive field figure, the time bar, the other-games ticker |
+| [scoreboard.py](scoreboard.py) | The league's other games from ESPN's scoreboard, for the ticker |
 | [live_feed.py](live_feed.py), [nflfastr_models.py](nflfastr_models.py) | Live NFL games from ESPN with nflfastR's models |
 | [cfb_feed.py](cfb_feed.py) | College play-by-play in the same layout as the NFL's |
 | [game_summary.py](game_summary.py) | The AI game summary agent |

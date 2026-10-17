@@ -33,6 +33,7 @@ import cfb_feed
 import live_feed
 import nflfastr_models
 import replay_core as core
+import scoreboard
 
 
 class GameLoadError(Exception):
@@ -59,6 +60,7 @@ class League:
     group_label: str | None = None  # a sidebar filter on games["groups"], e.g. conference
     untimed_ot: bool = False    # OT has no clock: the sidebar seeds OT at its start
     run_gaps: bool = False      # the play text names a run's gap, not just its side
+    espn_id_col: str = "game_id"  # the games() column with ESPN's event id
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -87,6 +89,12 @@ class League:
         """Player-leader columns (top_players/top_defenders `drop=`) the data
         behind `pbp` doesn't have."""
         raise NotImplementedError
+
+    def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
+        """The league's other games on ESPN's scoreboard around now
+        (scoreboard.ticker), never `row`'s: its live score would spoil it."""
+        return scoreboard.ticker(load_scoreboard(self.key), row.get(self.espn_id_col),
+                                 (row["home_team"], row["away_team"]), pd.Timestamp.now(tz="UTC"))
 
 
 # ---------- NFL ----------
@@ -432,7 +440,8 @@ class CollegeLeague(League):
 NFL = NFLLeague(
     name="NFL", key="NFL", title="🏈 NFL Tape-Delay Replay", first_season=1999,
     # A real NFL broadcast runs ~3h10m for 60 minutes of game clock.
-    broadcast_minutes=190.0, baseline_label="last 3 seasons", run_gaps=True)
+    broadcast_minutes=190.0, baseline_label="last 3 seasons", run_gaps=True,
+    espn_id_col="espn")
 COLLEGE = CollegeLeague(
     name="College football", key="CFB", title="🏈 College Football Tape-Delay Replay",
     first_season=cfb_feed.FIRST_SEASON,
@@ -440,6 +449,18 @@ COLLEGE = CollegeLeague(
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
     group_label="Conference", untimed_ot=True)
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
+
+
+# ---------- Other games ----------
+@st.cache_data(ttl=20)
+def load_scoreboard(league_key: str) -> list[scoreboard.TickerGame]:
+    """The league's games on ESPN's scoreboard (scoreboard.games), or none
+    if it can't be read: the ticker then just doesn't show. Cached 20s like
+    the live play feeds, and shared by every viewer."""
+    try:
+        return scoreboard.games(league_key)
+    except Exception:
+        return []
 
 
 # ---------- Percentile baselines ----------
