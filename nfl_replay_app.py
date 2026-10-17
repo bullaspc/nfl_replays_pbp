@@ -473,15 +473,29 @@ if cursor_max >= 1:
     if _pick - 1 != cursor_idx:
         _move_cursor(_pick - 1)
 
+# How far the ▶ buttons may go on a game still being played:
+# - Follow live: only to what has aired (`cursor_max`). Past it are plays the
+#   delay is holding back, and a tap would show them early.
+# - Otherwise ▶▶ Next drive waits for the drive to end. The feed's last drive
+#   is still going, so its "end" would be ESPN's newest play, maybe several
+#   plays past the broadcast. ▶ Next play still steps one play at a time.
+_step_max = cursor_max if follow_live else last_idx
+_drive_to = min(_drive_end(cursor_idx), _step_max) if cursor_idx < _step_max else cursor_idx
+_drive_open = (source == "live" and live_state != "post" and not follow_live
+               and _drive_to == last_idx)
+
 _b1, _b2, _b3, _b4, _b5 = st.columns(5)
 if _b1.button("⏮ Start", key="bar_start", width='stretch', disabled=cursor_idx <= 0):
     _move_cursor(0)
 if _b2.button("◀ Prev", key="bar_prev", width='stretch', disabled=cursor_idx <= 0):
     _move_cursor(cursor_idx - 1)
-if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= last_idx):
+if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= _step_max):
     _move_cursor(cursor_idx + 1, unlock=True)
-if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch', disabled=cursor_idx >= last_idx):
-    _move_cursor(_drive_end(cursor_idx), unlock=True)
+if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch',
+              disabled=cursor_idx >= _step_max or _drive_open,
+              help="This drive is still being played: step through it with ▶ Next play."
+                   if _drive_open else None):
+    _move_cursor(_drive_to, unlock=True)
 if _b5.button("⏭ Catch up", key="bar_catchup", width='stretch', disabled=cursor_idx >= cursor_max):
     _move_cursor(cursor_max)
 
@@ -504,7 +518,9 @@ if cursor_idx >= 0:
                      f"(≈ {elapsed_s / GAME_SECONDS * league.broadcast_minutes:.0f} broadcast min)")
     st.caption(" · ".join(_bits))
 else:
-    st.caption("Kickoff — nothing revealed yet. Press **▶ Next play** to begin.")
+    st.caption("Kickoff — nothing revealed yet. "
+               + ("Plays show up here as they air." if follow_live
+                  else "Press **▶ Next play** to begin."))
 
 # ---------- Reveal gate ----------
 if blur_until_ready:
