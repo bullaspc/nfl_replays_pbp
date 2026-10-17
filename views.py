@@ -221,6 +221,88 @@ _FIELD_GREEN = "#2f7a3b"
 _FIELD_GREEN_ALT = "#2a6f35"
 
 
+# ---------- Tendencies ----------
+# EPA/play on the percentile tables' red → white → green, white at 0.
+_EPA_SCALE = [[0.0, "#dc3545"], [0.5, "#ffffff"], [1.0, "#28a745"]]
+_EPA_RANGE = 0.8  # ± EPA/play at the scale's ends
+
+
+def _vs_league(base: pd.DataFrame | None, key) -> tuple[float, float]:
+    """(league share, league EPA/play) for `key`, NaN without a baseline."""
+    if base is None or key not in base.index:
+        return float("nan"), float("nan")
+    return base.at[key, "Share"], base.at[key, "EPA/play"]
+
+
+def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) -> go.Figure:
+    """One bar per gap (or side), left to right as the offense sees it: height
+    is the share of runs, color EPA/play, the dash the league's share. Each
+    label carries the runs there and their yards per carry."""
+    league = [_vs_league(base, k) for k in runs.index]
+    share = runs["Share"].fillna(0) * 100
+    fig = go.Figure(go.Bar(
+        x=list(runs.index), y=share,
+        marker=dict(color=runs["EPA/play"].fillna(0), colorscale=_EPA_SCALE,
+                    cmin=-_EPA_RANGE, cmax=_EPA_RANGE,
+                    line=dict(color="rgba(128,128,128,0.6)", width=1)),
+        customdata=[[r["Plays"], r["Yds/Play"], r["SR%"], r["EPA/play"], ls * 100, le]
+                    for (_, r), (ls, le) in zip(runs.iterrows(), league)],
+        hovertemplate=("<b>%{x}</b><br>%{customdata[0]} runs · %{y:.0f}% of runs "
+                       "(league %{customdata[4]:.0f}%)<br>%{customdata[1]:.1f} yds/carry · "
+                       "SR %{customdata[2]:.0%}<br>EPA/play %{customdata[3]:+.2f} "
+                       "(league %{customdata[5]:+.2f})<extra></extra>"),
+    ))
+    for i, (ls, _) in enumerate(league):
+        if pd.notna(ls):
+            fig.add_shape(type="line", x0=i - 0.45, x1=i + 0.45, y0=ls * 100, y1=ls * 100,
+                          line=dict(width=2, color="rgba(128,128,128,0.9)"))
+    top = max([*share, *[ls * 100 for ls, _ in league if pd.notna(ls)], 10])
+    fig.update_layout(
+        height=240, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, bargap=0.15,
+        xaxis=dict(fixedrange=True, tickangle=0, tickvals=list(runs.index),
+                   ticktext=[f"{k}<br><b>{n}</b>" + (f" · {y:.1f}" if n else "")
+                             for k, n, y in zip(runs.index, runs["Plays"], runs["Yds/Play"])]),
+        yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False),
+    )
+    return fig
+
+
+def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None) -> go.Figure:
+    """Depth × side grid as the quarterback sees it, deep row on top: each
+    cell's color is EPA/play, its text attempts, share and completions."""
+    depths = list(dict.fromkeys(passes.index.get_level_values(0)))
+    sides = list(dict.fromkeys(passes.index.get_level_values(1)))
+    z, text, custom = [], [], []
+    for d in depths:
+        zr, tr, cr = [], [], []
+        for sd in sides:
+            r = passes.loc[(d, sd)]
+            ls, le = _vs_league(base, (d, sd))
+            n = int(r["Plays"])
+            zr.append(r["EPA/play"] if n else None)
+            tr.append(f"<b>{n}</b> · {r['Share']:.0%}<br>{r['Cmp%'] * n:.0f}/{n} · {r['EPA/play']:+.2f}"
+                      if n else "—")
+            cr.append([n, r["Share"] * 100 if n else 0, r["Cmp%"], r["Yds/Play"], r["SR%"],
+                       r["EPA/play"], f" · aDOT {r['aDOT']:.1f}" if pd.notna(r["aDOT"]) else "", ls * 100, le])
+        z.append(zr), text.append(tr), custom.append(cr)
+    fig = go.Figure(go.Heatmap(
+        z=z, x=sides, y=depths, text=text, texttemplate="%{text}", customdata=custom,
+        colorscale=_EPA_SCALE, zmin=-_EPA_RANGE, zmax=_EPA_RANGE, showscale=False,
+        xgap=3, ygap=3, hoverongaps=False,
+        hovertemplate=("<b>%{y} %{x}</b><br>%{customdata[0]} att · %{customdata[1]:.0f}% of "
+                       "passes (league %{customdata[7]:.0f}%)<br>Cmp %{customdata[2]:.0%} · "
+                       "%{customdata[3]:.1f} yds/att%{customdata[6]}<br>"
+                       "SR %{customdata[4]:.0%} · EPA/play %{customdata[5]:+.2f} "
+                       "(league %{customdata[8]:+.2f})<extra></extra>"),
+    ))
+    fig.update_layout(
+        height=200, margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(fixedrange=True, side="bottom", showgrid=False),
+        yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False),
+    )
+    return fig
+
+
 def drive_field_figure(spots: pd.DataFrame, home: str, away: str,
                        colors: dict[str, str], logos: dict[str, str],
                        nicknames: dict[str, str]) -> go.Figure:

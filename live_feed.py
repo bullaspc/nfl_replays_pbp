@@ -65,6 +65,8 @@ _TEAM_JERSEY = re.compile(r"\b([A-Z]{2,3})-\d{1,2}-")
 _LEAD = re.compile(r"^\s*(?:\([^)]*\)\s*)+")          # "(12:48) (Shotgun) "
 _YARDS = re.compile(r"for (-?\d+) yards?|for (no gain)")
 _RUN_DIR = re.compile(r"\b(?:left|right) (?:end|tackle|guard)\b|\bup the middle\b|\brushes\b")
+_RUN_GAP = re.compile(r"\b(left|right) (end|tackle|guard)\b")
+_PASS_DIR = re.compile(r" pass (?:incomplete )?(short|deep) (left|middle|right)\b")
 _PREAMBLE = re.compile(rf"^(?:(?:{NAME}(?:,? and {NAME})*|{NAME}(?:, {NAME})+,? and {NAME}) "
                        rf"reported in as eligible\.\s*|Direct snap to {NAME}\.\s*)+")
 _PAREN_NAMES = re.compile(rf"\(({_NAME_LIST})\)")
@@ -173,6 +175,17 @@ def parse_play_text(desc: str) -> dict:
                                        or _first(rf" pass (?:incomplete )?to ({NAME})", body))
     if is_run or play_type == "qb_kneel":
         out["rusher_player_name"] = _first(rf"^({NAME}) (?:scrambles|kneels|left|right|up|rushes|Aborted)", body)
+    # --- direction (offense's left/right), as nflfastR reads it ---
+    if is_pass and not is_sack:
+        m = _PASS_DIR.search(body)
+        if m:
+            out["pass_length"], out["pass_location"] = m.group(1), m.group(2)
+    if is_run:
+        m = _RUN_GAP.search(body)
+        if m:
+            out["run_location"], out["run_gap"] = m.group(1), m.group(2)
+        elif " up the middle" in body:
+            out["run_location"] = "middle"
     if out.get("complete_pass") == 1 and not np.isnan(yards):
         out["passing_yards"] = yards
         out["receiving_yards"] = yards

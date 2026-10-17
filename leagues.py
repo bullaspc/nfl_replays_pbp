@@ -58,6 +58,7 @@ class League:
     baseline_label: str         # what the percentile colors compare against
     group_label: str | None = None  # a sidebar filter on games["groups"], e.g. conference
     untimed_ot: bool = False    # OT has no clock: the sidebar seeds OT at its start
+    run_gaps: bool = False      # the play text names a run's gap, not just its side
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -431,7 +432,7 @@ class CollegeLeague(League):
 NFL = NFLLeague(
     name="NFL", key="NFL", title="🏈 NFL Tape-Delay Replay", first_season=1999,
     # A real NFL broadcast runs ~3h10m for 60 minutes of game clock.
-    broadcast_minutes=190.0, baseline_label="last 3 seasons")
+    broadcast_minutes=190.0, baseline_label="last 3 seasons", run_gaps=True)
 COLLEGE = CollegeLeague(
     name="College football", key="CFB", title="🏈 College Football Tape-Delay Replay",
     first_season=cfb_feed.FIRST_SEASON,
@@ -478,6 +479,21 @@ def _player_baselines(league: str, season: int) -> dict[str, dict[str, np.ndarra
     except Exception:
         return {}
     return {} if raw is None else core.player_distributions(raw)
+
+
+@st.cache_data(ttl=86400)
+def _tendency_baselines(league: str, season: int) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    try:
+        raw = LEAGUES[league].baseline_pbp(season)
+    except Exception:
+        return {}
+    return {} if raw is None else core.tendency_baselines(raw, LEAGUES[league].run_gaps)
+
+
+def tendency_baselines(league: League, season: int) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    """League-wide (runs, passes) tendencies for `season`'s baseline, by
+    `core.TENDENCY_DOWNS` option."""
+    return _tendency_baselines(league.name, season)
 
 
 def player_baselines(league: League, season: int) -> dict[str, dict[str, np.ndarray]]:

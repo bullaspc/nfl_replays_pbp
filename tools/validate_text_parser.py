@@ -30,7 +30,8 @@ FLAG_COLS = ["pass_attempt", "rush_attempt", "complete_pass", "sack", "intercept
              "safety", "qb_hit"]
 VALUE_COLS = ["play_type", "yards_gained", "passing_yards", "rushing_yards", "receiving_yards",
               "field_goal_result", "extra_point_result", "two_point_conv_result",
-              "penalty_team", "penalty_yards"]
+              "penalty_team", "penalty_yards",
+              "pass_length", "pass_location", "run_location", "run_gap"]
 
 
 def main(season: int, path: str | None = None, show: str | None = None) -> None:

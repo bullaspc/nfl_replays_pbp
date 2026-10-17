@@ -332,6 +332,8 @@ def _split_try(text: str, fallback: str) -> tuple[str, str]:
 # the leading clock is missing from some of them ('No Huddle-Shotgun #9
 # L.Avant rush ...'), more often in a game still being played.
 _CREW = re.compile(r"#\d+ [A-Za-z]")
+_CREW_RUN_DIR = re.compile(r" rush (left|middle|right)\b")
+_CREW_PASS_DIR = re.compile(r" pass (?:complete |incomplete )?(short|deep) (left|middle|right)\b")
 # A name: 'G.Sell', 'M.Abou Jaoude', 'H.Dyson III', 'D.Simon, Jr.'. Later
 # words start with a capital and a lowercase letter, so 'QB', 'PENALTY' and
 # 'TURNOVER' end it.
@@ -557,6 +559,15 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     real_pass = pass_att & ~out["sack"].astype(bool)
     out["air_yards"] = _num(df["air_yards"]).where(real_pass)
     out["yards_after_catch"] = _num(df["yards_after_catch"]).where(complete)
+    # Direction (the offense's left/right), from stat-crew text only: 'rush
+    # middle', 'pass incomplete short left'. It names no gap, and the older
+    # text has no direction at all.
+    designed_run = (play_type == "run") & ~two_pt
+    out["run_location"] = text.str.extract(_CREW_RUN_DIR, expand=False).where(designed_run)
+    out["run_gap"] = None
+    zone = text.str.extract(_CREW_PASS_DIR)
+    out["pass_length"] = zone[0].where(real_pass)
+    out["pass_location"] = zone[1].where(real_pass)
 
     live = ~no_play
     out["touchdown"] = (_b(df["touchdown"]) & live).astype(float)

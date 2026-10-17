@@ -27,6 +27,7 @@ PBP_COLS = [
     "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
     "first_down",
     "air_yards",
+    "run_location", "run_gap", "pass_location", "pass_length",
     "third_down_converted", "third_down_failed",
     "fourth_down_converted", "fourth_down_failed",
     "goal_to_go", "yardline_100", "drive",
@@ -288,6 +289,7 @@ BASELINE_COLS = [
     "down", "ydstogo",
     "desc", "play_type", "yards_gained", "sack", "qb_hit",
     "passer_player_name", "rusher_player_name", "receiver_player_name",
+    "run_location", "run_gap", "pass_location", "pass_length",
 ]
 
 
@@ -387,6 +389,13 @@ EXPLOSIVE_RUN_YDS = 10  # as explosive_plays()
 OL_PENALTY = r"(?i)(?<!defensive )holding|false start|ineligible downfield|illegal man downfield"
 
 
+def _designed_runs(td: pd.DataFrame) -> pd.Series:
+    """Runs on a down, leaving out kneels and scrambles."""
+    scramble = td["desc"].fillna("").str.contains("scrambles", case=False, regex=False)
+    return (td["down"].notna() & (td["rush_attempt"].fillna(0) == 1)
+            & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
+
+
 def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
     """Line play numbers for one offense's plays `td` (posteam == team).
     Downs only, so two-point tries don't count. Dropbacks are pass attempts
@@ -399,9 +408,7 @@ def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
     sacks = drop & (td["sack"].fillna(0) == 1)
     hits = drop & ((td["qb_hit"].fillna(0) == 1) | sacks)
     desc = td["desc"].fillna("")
-    scramble = desc.str.contains("scrambles", case=False, regex=False)
-    run = (on_down & (td["rush_attempt"].fillna(0) == 1)
-           & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
+    run = _designed_runs(td)
     yds = td["yards_gained"]
     snaps = on_down & td["play_type"].isin(["pass", "run", "no_play"])
     flags = (snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
@@ -440,6 +447,80 @@ def line_play_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
     if per_game.empty:
         return {}
     return {stat: np.sort(per_game[stat].dropna().values) for stat in per_game.columns}
+
+
+# ---------- Tendencies ----------
+# Where each offense runs and throws, from its own side (its left is the
+# quarterback's left), as the play text says: NFL runs name a gap ('left
+# tackle', 'up the middle'), passes a depth and side ('pass short right').
+# College stat-crew text names a side for runs but no gap.
+RUN_GAPS = {("left", "end"): "LE", ("left", "tackle"): "LT", ("left", "guard"): "LG",
+            ("middle", None): "Mid",
+            ("right", "guard"): "RG", ("right", "tackle"): "RT", ("right", "end"): "RE"}
+RUN_SIDES = {"left": "Left", "middle": "Middle", "right": "Right"}
+PASS_DEPTHS = {"deep": "Deep", "short": "Short"}
+PASS_SIDES = RUN_SIDES
+TENDENCY_DOWNS = {"All downs": (1, 4), "Early downs": (1, 2), "Late downs": (3, 4)}
+
+
+def _tendency(plays: pd.DataFrame, labels: pd.Series, order: list) -> pd.DataFrame:
+    """Plays, Share, Yds/Play, SR% and EPA/play per label, rows in `order`
+    (a label with no plays has Plays 0 and the rest NaN)."""
+    plays = plays.assign(_label=labels, _epa=plays["epa"].fillna(0)).dropna(subset=["_label"])
+    g = plays.groupby("_label")
+    n = g.size().reindex(order, fill_value=0)
+    out = pd.DataFrame({
+        "Plays": n,
+        "Share": n / n.sum() if n.sum() else np.nan,
+        "Yds/Play": g["yards_gained"].mean(),
+        "SR%": g["_epa"].apply(lambda e: (e > 0).mean()),
+        "EPA/play": g["_epa"].mean(),
+    }, index=pd.Index(order))
+    out["Plays"] = out["Plays"].astype(int)
+    return out
+
+
+def run_tendencies(pbp: pd.DataFrame, team: str | None = None, gaps: bool = True,
+                   downs: tuple[int, int] = (1, 4)) -> pd.DataFrame:
+    """`team`'s designed runs (every team's if None) on `downs`, by gap
+    (`RUN_GAPS`) or, without `gaps`, by side (`RUN_SIDES`). Runs whose text
+    names no direction are left out."""
+    td = pbp if team is None else pbp[pbp["posteam"] == team]
+    td = td[_designed_runs(td) & td["down"].between(*downs)]
+    loc = td["run_location"]
+    if gaps:
+        gap = td["run_gap"].where(loc != "middle")
+        labels = pd.Series([RUN_GAPS.get((l, None if pd.isna(g) else g)) for l, g in zip(loc, gap)],
+                           index=td.index, dtype=object)
+        return _tendency(td, labels, list(RUN_GAPS.values()))
+    return _tendency(td, loc.map(RUN_SIDES), list(RUN_SIDES.values()))
+
+
+def pass_tendencies(pbp: pd.DataFrame, team: str | None = None,
+                    downs: tuple[int, int] = (1, 4)) -> pd.DataFrame:
+    """`team`'s passes thrown (no sacks or spikes; every team's if None) on
+    `downs`, by depth × side: rows ("Deep", "Left") … ("Short", "Right"),
+    with Cmp% and aDOT added. Passes whose text names no direction (college
+    interceptions, for one) are left out."""
+    td = pbp if team is None else pbp[pbp["posteam"] == team]
+    td = td[td["down"].between(*downs) & (td["pass_attempt"].fillna(0) == 1)
+            & (td["sack"].fillna(0) == 0) & (td["qb_spike"].fillna(0) == 0)]
+    depth, side = td["pass_length"].map(PASS_DEPTHS), td["pass_location"].map(PASS_SIDES)
+    labels = depth + " " + side
+    order = [(d, s) for d in PASS_DEPTHS.values() for s in PASS_SIDES.values()]
+    out = _tendency(td, labels, [f"{d} {s}" for d, s in order])
+    g = td.assign(_label=labels).dropna(subset=["_label"]).groupby("_label")
+    out["Cmp%"] = g["complete_pass"].mean()
+    out["aDOT"] = g["air_yards"].mean()
+    out.index = pd.MultiIndex.from_tuples(order, names=["Depth", "Side"])
+    return out
+
+
+def tendency_baselines(raw: pd.DataFrame, gaps: bool) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    """League-wide run and pass tendencies over every play in `raw`, per
+    `TENDENCY_DOWNS` option: what each team's split is compared against."""
+    return {k: (run_tendencies(raw, gaps=gaps, downs=d), pass_tendencies(raw, downs=d))
+            for k, d in TENDENCY_DOWNS.items()}
 
 
 SR_SITUATIONS = [

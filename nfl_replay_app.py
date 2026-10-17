@@ -31,12 +31,12 @@ import leagues
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    PLAY_KINDS, PLAYER_MIN_PLAYS, line_play_stats, period_label, play_timeline, scoring_timeline, situational_success_rate,
-    stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
+    PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, line_play_stats, pass_tendencies, period_label, play_timeline,
+    run_tendencies, scoring_timeline, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
-    logo_img, plays_table, smap, style_drive_chart,
+    logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
     style_sr_table, style_stat_table, time_bar_html,
 )
@@ -819,6 +819,38 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
            f"kneels and scrambles: stuffed = no gain or a loss, explosive = {EXPLOSIVE_RUN_YDS}+ yards. "
            f"OL penalties: holding, false starts and ineligible man downfield on the "
            f"offense, per snap (pass, run or no-play).")
+
+# ---------- Tendencies ----------
+st.subheader("Tendencies")
+_tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
+                                   key="_tend_downs", label_visibility="collapsed") or "All downs"
+_tend_base = leagues.tendency_baselines(league, season).get(_tend_downs, (None, None))
+_tend_any = False
+col_a, col_h = st.columns(2)
+for col, team in [(col_a, away), (col_h, home)]:
+    with col:
+        st.markdown(f"**{team}**")
+        _runs = run_tendencies(revealed, team, league.run_gaps, TENDENCY_DOWNS[_tend_downs])
+        _passes = pass_tendencies(revealed, team, TENDENCY_DOWNS[_tend_downs])
+        st.caption(f"Runs · {_runs['Plays'].sum()} with a direction")
+        if _runs["Plays"].sum():
+            st.plotly_chart(run_tendency_figure(_runs, _tend_base[0]), width='stretch',
+                            config={"displayModeBar": False})
+        st.caption(f"Passes · {_passes['Plays'].sum()} with a direction")
+        if _passes["Plays"].sum():
+            st.plotly_chart(pass_tendency_figure(_passes, _tend_base[1]), width='stretch',
+                            config={"displayModeBar": False})
+        _tend_any = _tend_any or bool(_runs["Plays"].sum() or _passes["Plays"].sum())
+if _tend_any:
+    _gap_note = " (LE = left end … Mid … RE = right end)" if league.run_gaps else ""
+    st.caption("From the offense's side: left is the quarterback's left. Runs: share of designed "
+               f"runs (no kneels or scrambles), under each gap{_gap_note} its carries · yards per "
+               "carry; the grey dash is the league's share. Passes: attempts · share, completions · "
+               "EPA/play; sacks aren't thrown, so they're out. Plays whose text names no direction "
+               "are left out. Colors are EPA/play (green above 0, red below). League = "
+               f"{league.baseline_label}.")
+elif not revealed.empty:
+    st.caption("This game's play text gives no run or pass directions.")
 
 # ---------- Player leaders ----------
 if not hide_leaders:
