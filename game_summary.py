@@ -21,7 +21,8 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
-from replay_core import LINE_COUNT_ROWS, TENDENCY_DOWNS, pass_tendencies, period_label, run_tendencies
+from replay_core import (LINE_COUNT_ROWS, TENDENCY_DOWNS, has_air_yards, pass_tendencies, period_label,
+                          run_tendencies)
 
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
@@ -111,7 +112,7 @@ class GameContext:
     line_play: pd.DataFrame | None = None  # the Line play table: stat × [away, home]
     line_pct: pd.DataFrame | None = None   # same shape: percentile, 100 = best for the line
     run_gaps: bool = True           # the play text names a run's gap (NFL), not just its side
-    # TENDENCY_DOWNS option → league-wide (runs, passes) tendencies, the dashboard's dashes
+    # TENDENCY_DOWNS option → league-wide tendencies (replay_core.tendency_baselines)
     tendency_baselines: dict = field(default_factory=dict)
 
 
@@ -211,13 +212,14 @@ def tendency_table(ctx: GameContext, downs: str = "all") -> pd.DataFrame:
     EPA/play there, and the league's share and EPA/play."""
     label = _TEND_DOWNS[downs]
     rng = TENDENCY_DOWNS[label]
-    base_runs, base_passes = ctx.tendency_baselines.get(label, (None, None))
+    base = ctx.tendency_baselines.get(label, {})
+    air = has_air_yards(ctx.revealed)
     parts = []
     for kind, tables, base in (
             ("Run", {t: run_tendencies(ctx.revealed, t, ctx.run_gaps, rng) for t in (ctx.away, ctx.home)},
-             base_runs),
-            ("Pass", {t: pass_tendencies(ctx.revealed, t, rng) for t in (ctx.away, ctx.home)},
-             base_passes)):
+             base.get("runs")),
+            ("Pass", {t: pass_tendencies(ctx.revealed, t, rng, air) for t in (ctx.away, ctx.home)},
+             base.get("air" if air else "text"))):
         for key in next(iter(tables.values())).index:
             row = {"Play": kind, "Where": " ".join(key) if isinstance(key, tuple) else key}
             for team, df in tables.items():
@@ -238,9 +240,11 @@ def tendency_table(ctx: GameContext, downs: str = "all") -> pd.DataFrame:
 def _tendency_note(ctx: GameContext) -> str:
     runs = ("by gap: LE/LT/LG = left end/tackle/guard, Mid, RG/RT/RE" if ctx.run_gaps
             else "by side (the college text names no gap)")
+    depth = ("by air yards past the line of scrimmage (Deep 20+, Inter 10-19, Short 0-9, Behind LOS)"
+             if has_air_yards(ctx.revealed) else "by the play text's short/deep (this feed has no air yards)")
     ints = "" if ctx.run_gaps else " Interceptions name no direction in the college text, so they're missing."
     return (f"From the offense's side (left = the quarterback's left). Designed runs (no kneels or "
-            f"scrambles) {runs}; passes thrown (no sacks) by depth × side. Shares are of the plays "
+            f"scrambles) {runs}; passes thrown (no sacks) {depth} × side. Shares are of the plays "
             f"whose text names a direction; plays without one are left out.{ints} League = "
             f"{_LEAGUE[ctx.league]['baseline']}, all plays together.")
 

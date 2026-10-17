@@ -453,12 +453,17 @@ def line_play_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
 # Where each offense runs and throws, from its own side (its left is the
 # quarterback's left), as the play text says: NFL runs name a gap ('left
 # tackle', 'up the middle'), passes a depth and side ('pass short right').
-# College stat-crew text names a side for runs but no gap.
+# College stat-crew text names a side for runs but no gap. Pass depth is
+# measured in air yards (`PASS_BANDS`) where the data has them; live NFL games
+# don't, so they fall back on the text's short/deep (`PASS_DEPTHS`).
 RUN_GAPS = {("left", "end"): "LE", ("left", "tackle"): "LT", ("left", "guard"): "LG",
             ("middle", None): "Mid",
             ("right", "guard"): "RG", ("right", "tackle"): "RT", ("right", "end"): "RE"}
 RUN_SIDES = {"left": "Left", "middle": "Middle", "right": "Right"}
 PASS_DEPTHS = {"deep": "Deep", "short": "Short"}
+# Air-yard bands, deepest first: (label, lowest, highest + 1).
+PASS_BANDS = [("Deep 20+", 20, np.inf), ("Inter 10–19", 10, 20), ("Short 0–9", 0, 10),
+              ("Behind LOS", -np.inf, 0)]
 PASS_SIDES = RUN_SIDES
 TENDENCY_DOWNS = {"All downs": (1, 4), "Early downs": (1, 2), "Late downs": (3, 4)}
 
@@ -496,18 +501,36 @@ def run_tendencies(pbp: pd.DataFrame, team: str | None = None, gaps: bool = True
     return _tendency(td, loc.map(RUN_SIDES), list(RUN_SIDES.values()))
 
 
+def has_air_yards(pbp: pd.DataFrame) -> bool:
+    """Whether `pbp`'s passes carry air yards: False only once passes have
+    been thrown and none has them (a live NFL game)."""
+    thrown = pbp[(pbp["pass_attempt"].fillna(0) == 1) & (pbp["sack"].fillna(0) == 0)
+                 & pbp["pass_location"].notna()]
+    return thrown.empty or bool(thrown["air_yards"].notna().any())
+
+
 def pass_tendencies(pbp: pd.DataFrame, team: str | None = None,
-                    downs: tuple[int, int] = (1, 4)) -> pd.DataFrame:
+                    downs: tuple[int, int] = (1, 4), air: bool = True) -> pd.DataFrame:
     """`team`'s passes thrown (no sacks or spikes; every team's if None) on
-    `downs`, by depth × side: rows ("Deep", "Left") … ("Short", "Right"),
-    with Cmp% and aDOT added. Passes whose text names no direction (college
-    interceptions, for one) are left out."""
+    `downs`, by depth × side: rows ("Deep 20+", "Left") … ("Behind LOS",
+    "Right") by air yards (`PASS_BANDS`), or without `air` ("Deep", "Left") …
+    ("Short", "Right") by the text's depth, with Cmp% and aDOT added. Passes
+    whose text names no direction (college interceptions, for one) are left
+    out, and by air yards so are those without any."""
     td = pbp if team is None else pbp[pbp["posteam"] == team]
     td = td[td["down"].between(*downs) & (td["pass_attempt"].fillna(0) == 1)
             & (td["sack"].fillna(0) == 0) & (td["qb_spike"].fillna(0) == 0)]
-    depth, side = td["pass_length"].map(PASS_DEPTHS), td["pass_location"].map(PASS_SIDES)
+    side = td["pass_location"].map(PASS_SIDES)
+    if air:
+        depths = [b[0] for b in PASS_BANDS]
+        depth = pd.Series(np.nan, index=td.index, dtype=object)
+        for label, lo, hi in PASS_BANDS:
+            depth = depth.mask((td["air_yards"] >= lo) & (td["air_yards"] < hi), label)
+    else:
+        depths = list(PASS_DEPTHS.values())
+        depth = td["pass_length"].map(PASS_DEPTHS)
     labels = depth + " " + side
-    order = [(d, s) for d in PASS_DEPTHS.values() for s in PASS_SIDES.values()]
+    order = [(d, s) for d in depths for s in PASS_SIDES.values()]
     out = _tendency(td, labels, [f"{d} {s}" for d, s in order])
     g = td.assign(_label=labels).dropna(subset=["_label"]).groupby("_label")
     out["Cmp%"] = g["complete_pass"].mean()
@@ -516,10 +539,13 @@ def pass_tendencies(pbp: pd.DataFrame, team: str | None = None,
     return out
 
 
-def tendency_baselines(raw: pd.DataFrame, gaps: bool) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
-    """League-wide run and pass tendencies over every play in `raw`, per
-    `TENDENCY_DOWNS` option: what each team's split is compared against."""
-    return {k: (run_tendencies(raw, gaps=gaps, downs=d), pass_tendencies(raw, downs=d))
+def tendency_baselines(raw: pd.DataFrame, gaps: bool) -> dict[str, dict[str, pd.DataFrame]]:
+    """League-wide tendencies over every play in `raw`, per `TENDENCY_DOWNS`
+    option: what each team's split is compared against. Each holds "runs",
+    and passes both by air yards ("air") and by the text's depth ("text")."""
+    return {k: {"runs": run_tendencies(raw, gaps=gaps, downs=d),
+                "air": pass_tendencies(raw, downs=d),
+                "text": pass_tendencies(raw, downs=d, air=False)}
             for k, d in TENDENCY_DOWNS.items()}
 
 

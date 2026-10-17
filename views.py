@@ -268,7 +268,7 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
 
 
 def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None) -> go.Figure:
-    """Depth × side grid as the quarterback sees it, deep row on top: each
+    """Depth × side grid as the quarterback sees it, deepest row on top: each
     cell's color is EPA/play, its text attempts, share and completions."""
     depths = list(dict.fromkeys(passes.index.get_level_values(0)))
     sides = list(dict.fromkeys(passes.index.get_level_values(1)))
@@ -296,7 +296,7 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
                        "(league %{customdata[8]:+.2f})<extra></extra>"),
     ))
     fig.update_layout(
-        height=200, margin=dict(l=10, r=10, t=10, b=10),
+        height=60 + 70 * len(depths), margin=dict(l=10, r=10, t=10, b=10),
         xaxis=dict(fixedrange=True, side="bottom", showgrid=False),
         yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False),
     )

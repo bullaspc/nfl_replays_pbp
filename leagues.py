@@ -482,7 +482,7 @@ def _player_baselines(league: str, season: int) -> dict[str, dict[str, np.ndarra
 
 
 @st.cache_data(ttl=86400)
-def _tendency_baselines(league: str, season: int) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+def _tendency_baselines(league: str, season: int) -> dict[str, dict[str, pd.DataFrame]]:
     try:
         raw = LEAGUES[league].baseline_pbp(season)
     except Exception:
@@ -490,9 +490,9 @@ def _tendency_baselines(league: str, season: int) -> dict[str, tuple[pd.DataFram
     return {} if raw is None else core.tendency_baselines(raw, LEAGUES[league].run_gaps)
 
 
-def tendency_baselines(league: League, season: int) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
-    """League-wide (runs, passes) tendencies for `season`'s baseline, by
-    `core.TENDENCY_DOWNS` option."""
+def tendency_baselines(league: League, season: int) -> dict[str, dict[str, pd.DataFrame]]:
+    """League-wide tendencies for `season`'s baseline, by
+    `core.TENDENCY_DOWNS` option (see `core.tendency_baselines`)."""
     return _tendency_baselines(league.name, season)
 
 

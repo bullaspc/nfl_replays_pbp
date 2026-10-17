@@ -31,7 +31,7 @@ import leagues
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, line_play_stats, pass_tendencies, period_label, play_timeline,
+    PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
 )
 from views import (
@@ -826,21 +826,22 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
 st.subheader("Tendencies")
 _tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
                                    key="_tend_downs", label_visibility="collapsed") or "All downs"
-_tend_base = leagues.tendency_baselines(league, season).get(_tend_downs, (None, None))
+_tend_base = leagues.tendency_baselines(league, season).get(_tend_downs, {})
+_tend_air = has_air_yards(revealed)
 _tend_any = False
 col_a, col_h = st.columns(2)
 for col, team in [(col_a, away), (col_h, home)]:
     with col:
         st.markdown(f"**{team}**")
         _runs = run_tendencies(revealed, team, league.run_gaps, TENDENCY_DOWNS[_tend_downs])
-        _passes = pass_tendencies(revealed, team, TENDENCY_DOWNS[_tend_downs])
+        _passes = pass_tendencies(revealed, team, TENDENCY_DOWNS[_tend_downs], _tend_air)
         st.caption(f"Runs · {_runs['Plays'].sum()} with a direction")
         if _runs["Plays"].sum():
-            st.plotly_chart(run_tendency_figure(_runs, _tend_base[0]), width='stretch',
+            st.plotly_chart(run_tendency_figure(_runs, _tend_base.get("runs")), width='stretch',
                             config={"displayModeBar": False})
         st.caption(f"Passes · {_passes['Plays'].sum()} with a direction")
         if _passes["Plays"].sum():
-            st.plotly_chart(pass_tendency_figure(_passes, _tend_base[1]), width='stretch',
+            st.plotly_chart(pass_tendency_figure(_passes, _tend_base.get("air" if _tend_air else "text")), width='stretch',
                             config={"displayModeBar": False})
         _tend_any = _tend_any or bool(_runs["Plays"].sum() or _passes["Plays"].sum())
 if _tend_any:
@@ -848,7 +849,9 @@ if _tend_any:
     st.caption("From the offense's side: left is the quarterback's left. Runs: share of designed "
                f"runs (no kneels or scrambles), under each gap{_gap_note} its carries · yards per "
                "carry; the grey dash is the league's share. Passes: attempts · share, completions · "
-               "EPA/play; sacks aren't thrown, so they're out. Plays whose text names no direction "
+               "EPA/play, by air yards past the line of scrimmage"
+               + ("" if _tend_air else " (this feed has none, so by the play text's short/deep)")
+               + "; sacks aren't thrown, so they're out. Plays whose text names no direction "
                "are left out. Colors are EPA/play (green above 0, red below). League = "
                f"{league.baseline_label}.")
 elif not revealed.empty:
