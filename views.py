@@ -662,9 +662,10 @@ def _ticker_card(g: TickerGame) -> str:
                 f'background:{offense.color or "#4c78a8"};border-radius:2px"></div>'
                 f'<div style="position:absolute;left:50%;top:-1px;bottom:-1px;width:1px;'
                 f'background:rgba(128,128,128,0.7)"></div></div>')
-    title = f' title="{escape(g.last_play)}"' if live and g.last_play else ""
+    title = (f"{g.last_play}\n\n" if live and g.last_play else "") + "Open this game"
     border = _LIVE_RED if live and g.red_zone else "rgba(128,128,128,0.35)"
-    return (f'<div{title} style="flex:0 0 auto;width:8.5rem;border:1px solid {border};'
+    return (f'<div data-pick="{escape(g.event_id)}" role="button" tabindex="0" title="{escape(title)}" '
+            f'style="flex:0 0 auto;width:8.5rem;border:1px solid {border};'
             f'border-radius:6px;padding:3px 7px 4px;font-size:0.78rem;line-height:1.35">'
             f'{head}{teams}{sit}</div>')
 
@@ -673,11 +674,90 @@ def ticker_html(games: list[TickerGame]) -> str:
     """The league's other games as a row of ESPN-style cards that scrolls
     sideways: clock, score, who has the ball (🏈), down and distance, and a
     bar of the offense's drive toward the goal. Hovering a live card shows its
-    last play. One line, no blank lines, so st.markdown keeps it raw HTML."""
+    last play. Each card carries its ESPN event id in `data-pick`."""
     cards = "".join(_ticker_card(g) for g in games)
     return (f'<div style="display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;'
             f'margin-bottom:0.25rem;-webkit-overflow-scrolling:touch;scrollbar-width:thin">'
             f'{cards}</div>')
+
+
+# The ticker is a custom component so a click on a card can reach Python. It
+# is drawn in a fragment (it refreshes itself), and a fragment's event that
+# arrives while the whole page is running gets dropped, which on a live game
+# (a page run every 10-30s) would lose clicks. So a card click is a browser
+# event, `ticker-pick`, and ticker_pick(), drawn outside any fragment, turns it
+# into a whole-page rerun, which interrupts a running page instead. It sends
+# the click as a state value ("event id:time"), not a trigger: Streamlit can
+# drop a component's trigger when it merges two reruns (the click and a run's
+# own st.rerun()), while every rerun carries the newest state value.
+# Streamlit calls the ticker's function again on redraws, so it reuses one
+# container and one click handler instead of adding more each time.
+_TICKER_JS = """
+export default function ({ data, parentElement }) {
+  let root = parentElement.querySelector(".ticker");
+  if (!root) {
+    root = document.createElement("div");
+    root.className = "ticker";
+    parentElement.appendChild(root);
+  }
+  // Replace the cards only when they changed, keeping the strip's sideways
+  // scroll: a page run every 10-30s would otherwise jump it back to the
+  // start, and could swap a card out from under a click.
+  if (root._html !== data) {
+    const x = root.firstElementChild ? root.firstElementChild.scrollLeft : 0;
+    root.innerHTML = data;
+    root._html = data;
+    if (root.firstElementChild) root.firstElementChild.scrollLeft = x;
+  }
+  const pick = (e) => {
+    const card = e.target.closest("[data-pick]");
+    if (card) document.dispatchEvent(new CustomEvent("ticker-pick", { detail: card.dataset.pick }));
+  };
+  root.onclick = pick;
+  root.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); }
+  };
+}
+"""
+_TICKER_CSS = """
+[data-pick] { cursor: pointer; }
+[data-pick]:hover, [data-pick]:focus-visible { background: rgba(128, 128, 128, 0.14); outline: none; }
+"""
+# Streamlit calls this again on every redraw of the page, without the cleanup
+# in between, so it keeps exactly one listener (with the newest
+# setStateValue) rather than adding one each time.
+_TICKER_PICK_JS = """
+export default function ({ setStateValue }) {
+  if (document._tickerPick) document.removeEventListener("ticker-pick", document._tickerPick);
+  const pick = (e) => setStateValue("pick", `${e.detail}:${Date.now()}`);
+  document._tickerPick = pick;
+  document.addEventListener("ticker-pick", pick);
+  return () => {
+    if (document._tickerPick !== pick) return;
+    document.removeEventListener("ticker-pick", pick);
+    document._tickerPick = null;
+  };
+}
+"""
+_ticker_component = st.components.v2.component("ticker", js=_TICKER_JS, css=_TICKER_CSS)
+_ticker_pick_component = st.components.v2.component("ticker_pick", js=_TICKER_PICK_JS)
+
+
+def ticker(games: list[TickerGame]) -> None:
+    """Draw the ticker (ticker_html). Its clicks come back through
+    ticker_pick()."""
+    _ticker_component(data=ticker_html(games), key="_ticker")
+
+
+def ticker_pick() -> str | None:
+    """The ESPN event id of a ticker card clicked since the last call that
+    returned one, else None. Draws nothing, but must be drawn on every run and
+    outside any fragment."""
+    value = _ticker_pick_component(key="_ticker_listener", on_pick_change=lambda: None).pick
+    if not value or value == st.session_state.get("_ticker_seen"):
+        return None
+    st.session_state["_ticker_seen"] = value
+    return value.rsplit(":", 1)[0]
 
 
 def keep_screen_awake(enabled: bool) -> None:

@@ -96,6 +96,11 @@ class League:
         return scoreboard.ticker(load_scoreboard(self.key), row.get(self.espn_id_col),
                                  (row["home_team"], row["away_team"]), pd.Timestamp.now(tz="UTC"))
 
+    def ticker_game(self, games: pd.DataFrame, game: scoreboard.TickerGame) -> pd.Series | None:
+        """The games() row of a game picked in the ticker, or None if it
+        isn't listed (yet)."""
+        return scoreboard.find(games, self.espn_id_col, game)
+
 
 # ---------- NFL ----------
 NFLVERSE_RELEASE = "https://github.com/nflverse/nflverse-data/releases/download"

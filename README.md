@@ -10,7 +10,7 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 - **Win probability chart** — x-axis capped at your current position so the chart shape itself can't spoil the ending
 - **Per-game play-by-play** — paginated recent plays list with current drive summary
 - **Player leaders** — passing, rushing, receiving, and defensive stats per team
-- **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
+- **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s, and clicking a card opens that game. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
 
 ## Quick Start
 

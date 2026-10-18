@@ -5,9 +5,10 @@ ESPN's scoreboard lists a league's games for the current week with the score,
 the clock and, for a game in progress, who has the ball and where (its
 `situation`: "2nd & 7", "CAR 35", red zone, last play). `games()` reads it
 into one `TickerGame` per game; `ticker()` keeps the ones around now and
-leaves out the game being watched, whose live score would spoil it.
+leaves out the game being watched, whose live score would spoil it, and
+`find()` matches a ticker game to its row in the app's game list.
 
-No Streamlit here: leagues.load_scoreboard() caches it and views.ticker_html()
+No Streamlit here: leagues.load_scoreboard() caches it and views.ticker()
 draws it.
 """
 
@@ -54,6 +55,7 @@ class TickerTeam:
 @dataclass(frozen=True)
 class TickerGame:
     event_id: str
+    season: int | None      # ESPN's season year, as nflverse and sportsdataverse number it
     state: str              # ESPN's "pre" / "in" / "post"
     status: str             # ESPN's own: "7:12 - 2nd", "Halftime", "Final/OT", kickoff time
     kickoff: str            # ESPN's event date, ISO UTC
@@ -113,6 +115,7 @@ def parse(data: dict, team_fix: dict | None = None) -> list[TickerGame]:
     """ESPN scoreboard JSON → one TickerGame per game: in progress first,
     then final, then upcoming, each by kickoff."""
     fix = team_fix or {}
+    default_season = (data.get("season") or {}).get("year")
     out = []
     for ev in data.get("events") or []:
         comp = (ev.get("competitions") or [{}])[0]
@@ -154,6 +157,7 @@ def parse(data: dict, team_fix: dict | None = None) -> list[TickerGame]:
         names = ((comp.get("broadcasts") or [{}])[0] or {}).get("names") or []
         out.append(TickerGame(
             event_id=str(ev.get("id") or comp.get("id") or ""),
+            season=_int((ev.get("season") or {}).get("year") or default_season),
             state=state,
             status=str(stype.get("shortDetail") or stype.get("detail") or stype.get("description") or ""),
             kickoff=str(ev.get("date") or comp.get("date") or ""),
@@ -167,6 +171,13 @@ def parse(data: dict, team_fix: dict | None = None) -> list[TickerGame]:
 def games(league: str) -> list[TickerGame]:
     """The league's games on ESPN's scoreboard now (see parse)."""
     return parse(fetch(league), TEAM_FIX[league])
+
+
+def _int(v) -> int | None:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _event_id(v) -> str | None:
@@ -191,6 +202,24 @@ def ticker(games: list[TickerGame], event_id, teams, now: pd.Timestamp) -> list[
     return [g for g in games
             if g.event_id != eid and {g.home.abbr, g.away.abbr} != pair
             and (g.state == "in" or abs(_kickoff(g) - now) <= WINDOW)]
+
+
+def find(games: pd.DataFrame, id_col: str, game: TickerGame) -> pd.Series | None:
+    """`game`'s row in a League.games() table: by ESPN event id (`id_col`),
+    else by its home and away teams on a date within a day of its kickoff
+    (two teams can meet twice in a season)."""
+    if id_col in games.columns:
+        hit = games[games[id_col].map(_event_id) == game.event_id]
+        if not hit.empty:
+            return hit.iloc[-1]
+    kickoff = _kickoff(game)
+    if pd.isna(kickoff) or "game_date" not in games.columns:
+        return None
+    days = (pd.to_datetime(games["game_date"], errors="coerce")
+            - kickoff.tz_localize(None).normalize()).abs()
+    hit = games[(games["home_team"] == game.home.abbr) & (games["away_team"] == game.away.abbr)
+                & (days <= pd.Timedelta(days=1))]
+    return hit.iloc[-1] if not hit.empty else None
 
 
 def busy(games: list[TickerGame], now: pd.Timestamp,

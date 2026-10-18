@@ -39,7 +39,7 @@ from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
-    style_sr_table, style_stat_table, ticker_html, time_bar_html,
+    style_sr_table, style_stat_table, ticker, ticker_pick, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -109,6 +109,19 @@ with st.sidebar:
     if games.empty:
         st.warning(f"No games found for the {season} season yet.")
         st.stop()
+    # A game clicked in the ticker (see _ticker() below) is selected the way
+    # the Game box selects one: through `_game_id`, which the Week and Game
+    # boxes default to. The conference filter goes back to All if it hides it.
+    _pick = st.session_state.pop("_ticker_pick", None)
+    if _pick is not None:
+        _pick_row = league.ticker_game(games, _pick)
+        if _pick_row is None:
+            st.toast(f"{_pick.away.abbr} @ {_pick.home.abbr} isn't in the game list yet.")
+        else:
+            st.session_state["_game_id"] = _pick_row["game_id"]
+            if league.group_label and st.session_state.get("_group", "All") not in (
+                    "All", *_pick_row["groups"]):
+                st.session_state["_group"] = "All"
     week_labels = list(dict.fromkeys(games["week_label"]))
     # Default to the week and game last on screen (from the URL on a new
     # session). A game's label changes when it goes from live to official,
@@ -122,7 +135,7 @@ with st.sidebar:
     if league.group_label:
         # College has 50+ games a Saturday: narrow by conference.
         groups = sorted({g for gs in games["groups"] for g in gs if isinstance(g, str) and g})
-        group = st.selectbox(league.group_label, ["All"] + groups)
+        group = st.selectbox(league.group_label, ["All"] + groups, key="_group")
         if group != "All":
             games = games[games["groups"].apply(lambda gs: group in gs)]
     _game_ids = games["game_id"].tolist()
@@ -252,6 +265,20 @@ with st.sidebar:
                               help="The ticker of the league's other live games above the "
                                    "score. The game you're watching is never in it.")
     blur_until_ready = st.checkbox("Blur everything until I click 'Reveal'", value=False)
+
+    # A card clicked in the ticker (see _ticker() below) comes in here, outside
+    # the ticker's fragment, so the click reruns the whole page (a click inside
+    # a fragment is lost if the page is running). The game is selected at the
+    # top of the next run, before the Week and Game boxes are drawn.
+    _clicked = ticker_pick()
+    if _clicked:
+        _picked = next((g for g in league.ticker(game_row) if g.event_id == _clicked), None)
+        if _picked is not None and _picked.season and _picked.season != season:
+            st.toast(f"{_picked.away.abbr} @ {_picked.home.abbr} is in the {_picked.season} "
+                     f"season: set Season to {_picked.season} to open it.")
+        elif _picked is not None:
+            st.session_state["_ticker_pick"] = _picked
+            st.rerun()
 
 # ---------- Play cursor ----------
 # The cursor is the single source of truth for viewing position. A play index is
@@ -387,6 +414,7 @@ else:
 # watched is never in it (its live score would spoil it). A fragment, so it
 # keeps itself current on a replay too, where nothing else reruns the page,
 # without rerunning the page; fast only while a game is on or about to start.
+# Clicking a card opens that game (ticker_pick() in the sidebar).
 _TICKER_SECS, _TICKER_IDLE_SECS = 30, 300
 _ticker_every = None
 if not hide_ticker:
@@ -398,7 +426,7 @@ if not hide_ticker:
 def _ticker() -> None:
     others = league.ticker(game_row)
     if any(g.state == "in" for g in others):
-        st.markdown(ticker_html(others), unsafe_allow_html=True)
+        ticker(others)
 
 
 if not hide_ticker:
