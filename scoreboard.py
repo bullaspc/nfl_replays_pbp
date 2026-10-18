@@ -8,7 +8,7 @@ into one `TickerGame` per game; `ticker()` keeps the ones around now and
 leaves out the game being watched, whose live score would spoil it, and
 `find()` matches a ticker game to its row in the app's game list.
 
-No Streamlit here: leagues.load_scoreboard() caches it and views.ticker()
+No Streamlit here: leagues.load_scoreboard() caches it and views.ticker_html()
 draws it.
 """
 

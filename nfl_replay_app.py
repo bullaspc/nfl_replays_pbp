@@ -20,6 +20,7 @@ Run with:
 import contextlib
 import os
 import time
+from urllib.parse import quote, urlencode
 
 import streamlit as st
 import pandas as pd
@@ -39,7 +40,7 @@ from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
-    style_sr_table, style_stat_table, ticker, ticker_pick, time_bar_html,
+    style_sr_table, style_stat_table, ticker_html, time_bar_html,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -61,9 +62,10 @@ def _setting(name: str) -> str | None:
 # The selection and the play cursor are mirrored into the URL (_save_url()), so
 # a phone that loses its session comes back where it was: a tab left in the
 # background longer than the server keeps a disconnected session, or a tab the
-# browser unloaded and reloads. The URL is read once per session and its values
-# only seed the widget defaults, which must stay put for the session: an
-# unkeyed widget whose default changes starts over.
+# browser unloaded and reloads. The ticker's cards link to the same URL with
+# another game picked. The URL is read once per session and its values only
+# seed the widget defaults, which must stay put for the session: an unkeyed
+# widget whose default changes starts over.
 if "_url" not in st.session_state:
     st.session_state["_url"] = st.query_params.to_dict()
     st.session_state["_url_restore"] = True
@@ -109,19 +111,7 @@ with st.sidebar:
     if games.empty:
         st.warning(f"No games found for the {season} season yet.")
         st.stop()
-    # A game clicked in the ticker (see _ticker() below) is selected the way
-    # the Game box selects one: through `_game_id`, which the Week and Game
-    # boxes default to. The conference filter goes back to All if it hides it.
-    _pick = st.session_state.pop("_ticker_pick", None)
-    if _pick is not None:
-        _pick_row = league.ticker_game(games, _pick)
-        if _pick_row is None:
-            st.toast(f"{_pick.away.abbr} @ {_pick.home.abbr} isn't in the game list yet.")
-        else:
-            st.session_state["_game_id"] = _pick_row["game_id"]
-            if league.group_label and st.session_state.get("_group", "All") not in (
-                    "All", *_pick_row["groups"]):
-                st.session_state["_group"] = "All"
+    season_games = games  # before the Week and conference filters, for the ticker's links
     week_labels = list(dict.fromkeys(games["week_label"]))
     # Default to the week and game last on screen (from the URL on a new
     # session). A game's label changes when it goes from live to official,
@@ -135,7 +125,7 @@ with st.sidebar:
     if league.group_label:
         # College has 50+ games a Saturday: narrow by conference.
         groups = sorted({g for gs in games["groups"] for g in gs if isinstance(g, str) and g})
-        group = st.selectbox(league.group_label, ["All"] + groups, key="_group")
+        group = st.selectbox(league.group_label, ["All"] + groups)
         if group != "All":
             games = games[games["groups"].apply(lambda gs: group in gs)]
     _game_ids = games["game_id"].tolist()
@@ -255,30 +245,21 @@ with st.sidebar:
         help="Buffer against accidentally revealing the next play. "
              "15s is enough to absorb small clock drift.",
     )
-    hide_wp = st.checkbox("Hide win probability chart", value=False,
+    # Saved in the URL as `hide` (see _url_params), so they hold when a phone
+    # reloads the page or a ticker card opens another game.
+    _url_hide = set(_url.get("hide", "").split(","))
+    hide_wp = st.checkbox("Hide win probability chart", value="wp" in _url_hide,
                           help="The WP curve telegraphs upcoming swings.")
-    hide_descriptions = st.checkbox("Hide play descriptions", value=False,
+    hide_descriptions = st.checkbox("Hide play descriptions", value="desc" in _url_hide,
                                     help="Show yards/EPA only — descriptions can foreshadow what's about to happen on screen.")
-    hide_leaders = st.checkbox("Hide player leaders", value=False,
+    hide_leaders = st.checkbox("Hide player leaders", value="leaders" in _url_hide,
                                help="A QB suddenly at 4 TDs hints something just happened.")
-    hide_ticker = st.checkbox("Hide other games' scores", value=False,
+    hide_ticker = st.checkbox("Hide other games' scores", value="ticker" in _url_hide,
                               help="The ticker of the league's other live games above the "
                                    "score. The game you're watching is never in it.")
-    blur_until_ready = st.checkbox("Blur everything until I click 'Reveal'", value=False)
-
-    # A card clicked in the ticker (see _ticker() below) comes in here, outside
-    # the ticker's fragment, so the click reruns the whole page (a click inside
-    # a fragment is lost if the page is running). The game is selected at the
-    # top of the next run, before the Week and Game boxes are drawn.
-    _clicked = ticker_pick()
-    if _clicked:
-        _picked = next((g for g in league.ticker(game_row) if g.event_id == _clicked), None)
-        if _picked is not None and _picked.season and _picked.season != season:
-            st.toast(f"{_picked.away.abbr} @ {_picked.home.abbr} is in the {_picked.season} "
-                     f"season: set Season to {_picked.season} to open it.")
-        elif _picked is not None:
-            st.session_state["_ticker_pick"] = _picked
-            st.rerun()
+    blur_until_ready = st.checkbox("Blur everything until I click 'Reveal'", value="blur" in _url_hide)
+    hidden = [k for k, on in (("wp", hide_wp), ("desc", hide_descriptions), ("leaders", hide_leaders),
+                              ("ticker", hide_ticker), ("blur", blur_until_ready)) if on]
 
 # ---------- Play cursor ----------
 # The cursor is the single source of truth for viewing position. A play index is
@@ -366,15 +347,23 @@ st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),
                                       cursor_anchor(timeline, cursor_max))
 
 
-def _save_url() -> None:
-    """Write the selection and the cursor anchors to the URL (see "Saved
-    position" at the top). Only when they change: each write reaches the
-    browser."""
-    params = {"league": league_name, "season": str(season), "game": str(game_id),
+def _url_params(game: str) -> dict[str, str]:
+    """The URL for `game` with this page's league, season, safety margin,
+    Spoiler shield and Follow live settings (see "Saved position" at the top)."""
+    params = {"league": league_name, "season": str(season), "game": str(game),
               "margin": str(safety_margin)}
+    if hidden:
+        params["hide"] = ",".join(hidden)
     if follow_live:
         params |= {"follow": "1", "delay": str(live_delay)}
-    else:
+    return params
+
+
+def _save_url() -> None:
+    """Write the selection and the cursor anchors to the URL. Only when they
+    change: each write reaches the browser."""
+    params = _url_params(game_id)
+    if not follow_live:
         params |= {"q": qtr_pick, "clock": clock_str}
     for name, (e, rank) in zip(("at", "max"), st.session_state["_cursor_anchor"]):
         params[name] = f"{e!r}:{rank}"
@@ -414,7 +403,9 @@ else:
 # watched is never in it (its live score would spoil it). A fragment, so it
 # keeps itself current on a replay too, where nothing else reruns the page,
 # without rerunning the page; fast only while a game is on or about to start.
-# Clicking a card opens that game (ticker_pick() in the sidebar).
+# Each card is a link to this page with its game picked (_url_params): a tap
+# reloads the page into that game, from kickoff (Q1 15:00), or at the live edge
+# with Follow live on. A card links only to a game in this season's list.
 _TICKER_SECS, _TICKER_IDLE_SECS = 30, 300
 _ticker_every = None
 if not hide_ticker:
@@ -425,8 +416,14 @@ if not hide_ticker:
 @st.fragment(run_every=_ticker_every)
 def _ticker() -> None:
     others = league.ticker(game_row)
-    if any(g.state == "in" for g in others):
-        ticker(others)
+    if not any(g.state == "in" for g in others):
+        return
+    links = {}
+    for g in others:
+        row = league.ticker_game(season_games, g) if g.season in (None, season) else None
+        if row is not None:
+            links[g.event_id] = "?" + urlencode(_url_params(row["game_id"]), quote_via=quote)
+    st.markdown(ticker_html(others, links), unsafe_allow_html=True)
 
 
 if not hide_ticker:
