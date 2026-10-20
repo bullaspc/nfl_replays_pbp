@@ -7,7 +7,8 @@ clock, timeouts) is compared with that snap. Then every three-and-out late in
 a half (runs on 1st to 3rd down, then a punt, inside the last 6 minutes) is
 replayed with `three_and_out()` and its "ball back with" clock, for the
 timeouts the defense really used, compared with the receiving team's first
-snap.
+snap. Last, for each drive a trailing team ran until the clock ran out,
+`plays_left()` from its first snap is compared with the snaps it got.
 
     python tools/validate_game_management.py 2025 [path] [n_games]
 """
@@ -33,7 +34,7 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
     pbp = pd.read_parquet(path or PBP_URL.format(y=season), columns=core.PBP_COLS)
     pbp = pbp[pbp["qtr"] <= 4].sort_values(["game_id", "play_id"])
     games = pbp["game_id"].unique()[:n_games]
-    rows, tao = [], []
+    rows, tao, drill = [], [], []
     for gid in games:
         g = pbp[pbp["game_id"] == gid].reset_index(drop=True)
         snap_i = g.index[g["play_type"].isin(SNAPS) & g["down"].notna()]
@@ -76,6 +77,22 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
             tbl = core.three_and_out(est, core.NFL_CLOCK)
             pick = tbl.iloc[(tbl["Timeouts used"] - used).abs().argsort()[:1]]
             tao.append(float(pick["Ball back with"].iloc[0]) - _half_secs(back.iloc[0]))
+        # Drives a trailing team ran until the clock ran out: plays_left()
+        # from its first snap vs the snaps it got.
+        for _, d in g[g["drive"].notna()].groupby("drive"):
+            sc = d[d["play_type"].isin(["pass", "run", "qb_spike"]) & d["down"].notna()]
+            nxt = g.iloc[d.index[-1] + 1:d.index[-1] + 2]
+            if (sc.empty or sc.iloc[0]["qtr"] not in (2, 4) or nxt.empty
+                    or not str(nxt["desc"].iloc[0]).startswith("END QUARTER")
+                    or d["sp"].sum() > 0 or d["interception"].sum() + d["fumble_lost"].sum() > 0):
+                continue
+            est = core.next_snap(g.iloc[:sc.index[0]], core.NFL_CLOCK)
+            if est is None or est.half_secs is None or est.half_secs > core.SCENARIO_SECS:
+                continue
+            if est.score[est.posteam] >= est.score[est.defteam]:
+                continue
+            stops = core.clock_stops(est, est.posteam, est.half_secs, est.timeouts[est.posteam], core.NFL_CLOCK)
+            drill.append(core.plays_left(est.half_secs, stops) - len(sc))
     df = pd.DataFrame(rows)
     print(f"{season}: {len(games)} games, {len(df)} snaps")
     for c in ("posteam", "down", "ydstogo", "timeouts"):
@@ -89,6 +106,10 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
     if len(t):
         print(f"three-and-outs: {len(t)}  ball-back |err| median {np.median(t):.0f}s  "
               f"within 15s {(t <= 15).mean():.0%}  mean signed err {np.mean(tao):+.0f}s")
+    if drill:
+        e = np.abs(drill)
+        print(f"trailing drives to 0:00: {len(e)}  plays |err| median {np.median(e):.0f}  "
+              f"within 2 {(e <= 2).mean():.0%}  mean signed err {np.mean(drill):+.1f}")
 
 
 if __name__ == "__main__":

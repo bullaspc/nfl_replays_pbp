@@ -34,8 +34,8 @@ from replay_core import (
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
-    FG_RANGE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
-    snap_wp_state, three_and_out, timeouts_left,
+    FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
+    clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
 )
 from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
@@ -874,11 +874,12 @@ if _snap is not None:
             _trail = _D if _lead > 0 else _P
             _notes.append(f"**{_trail}** trails by {abs(_lead)}: {scores_needed(abs(_lead))}.")
         if _lead < 0:
-            _warn = (league.clock.two_minute(_snap.season) and _snap.qtr in (2, 4)
-                     and _h > 120)
-            _stops = _snap.timeouts.get(_P) or 0
-            _notes.append(f"**{_P}** has {fmt_clock(_h)} and {_stops} timeout{'s' if _stops != 1 else ''}"
-                          + (" plus the two-minute warning" if _warn else "") + " to stop the clock.")
+            _tos_p = _snap.timeouts.get(_P) or 0
+            _stops = clock_stops(_snap, _P, _h, _tos_p, league.clock)
+            _notes.append(f"**{_P}** has {fmt_clock(_h)} and {_tos_p} timeout{'s' if _tos_p != 1 else ''}"
+                          + (" plus the two-minute warning" if _stops > _tos_p else "")
+                          + f" to stop the clock: about **{plays_left(_h, _stops)} plays** at a "
+                            "hurry-up pace.")
         for _note in _notes:
             st.markdown(f"- {_note}")
 
@@ -895,6 +896,8 @@ if _snap is not None:
                 f"{_D} timeouts used": _tao["Timeouts used"],
                 "Clock left": _tao["Ball back with"].map(lambda v: fmt_clock(v) if v > 0 else "0:00, time runs out"),
                 f"{_D} timeouts left": _tao["Timeouts left"],
+                f"{_D} plays": _tao["Plays"].where(_tao["Ball back with"] > 0).map(
+                    lambda v: "—" if pd.isna(v) else f"≈ {int(v)}"),
             })
             _wps = None if hide_wp else _scenario_wp(_tao.filter(like="_").to_dict("records"))
             if _wps is not None:
@@ -911,7 +914,10 @@ if _snap is not None:
                           if _fg else f"a {NET_PUNT}-yard net punt")
                        + ("; the two-minute warning stops the clock once"
                           if league.clock.two_minute(_snap.season) and _snap.qtr in (2, 4) and _h > 120 else "")
-                       + (". Win probability: nflfastR's model, 1st & 10 after the kick." if _wps else "."))
+                       + (". Win probability: nflfastR's model, 1st & 10 after the kick." if _wps else ".")
+                       + f" Plays: a hurry-up pace, {HURRY_STOP_SHARE:.0%} of plays stopping the clock "
+                         f"(≈ {HURRY_PLAY_SECS}s each) and the rest ≈ {HURRY_PLAY_SECS + HURRY_RUNOFF_SECS}s, "
+                         "each timeout or the two-minute warning saving one runoff.")
     elif _h is not None:
         st.caption(f"Clock scenarios show up in the last {SCENARIO_SECS // 60} minutes of each half.")
 elif not revealed.empty:

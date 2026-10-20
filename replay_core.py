@@ -1396,7 +1396,8 @@ def three_and_out(snap: Snap, rules: ClockRules) -> pd.DataFrame:
     """If the offense runs on each down left before 4th and then kicks (a
     punt, or a field goal in range), when the other team gets the ball back,
     one row per number of timeouts it spends stopping the clock, most first.
-    Columns: Timeouts used, Ball back with (seconds), Timeouts left; plus the
+    Columns: Timeouts used, Ball back with (seconds), Timeouts left, Plays
+    (about how many it can run then, `plays_left()`); plus the
     other team's state then for a win probability model (`wp_state`)."""
     if snap.half_secs is None or snap.down > 4:
         return pd.DataFrame()
@@ -1419,9 +1420,38 @@ def three_and_out(snap: Snap, rules: ClockRules) -> pd.DataFrame:
             yl = 80.0 if snap.yardline_100 - NET_PUNT < 20 else 100 - (snap.yardline_100 - NET_PUNT)
             lead = 0
         rows.append({"Timeouts used": used, "Ball back with": left, "Timeouts left": tos - used,
+                     "Plays": plays_left(left, clock_stops(snap, snap.defteam, left, tos - used, rules)),
                      **wp_state(snap, snap.defteam, left, tos - used,
                                 snap.timeouts.get(snap.posteam), yl, -lead)})
     return pd.DataFrame(rows)
+
+
+# A trailing offense's pace late in a half, from 2024 NFL plays (trailing by
+# 1-16, last 5:00 of the 4th or 2:00 of the 2nd): 44% of its plays stop the
+# clock (incomplete, out of bounds, spike, flag) and take ~6s snap to snap; a
+# play with the clock running takes 24s, or ~7s when a timeout stops it.
+HURRY_PLAY_SECS = 6
+HURRY_RUNOFF_SECS = 18
+HURRY_STOP_SHARE = 0.44
+
+
+def plays_left(half_secs: float, stops: int) -> int:
+    """About how many snaps a hurrying offense gets in `half_secs` with
+    `stops` clock stoppages of its own (timeouts, the two-minute warning):
+    each saves the runoff after one play the clock would run on. Never more
+    than if every play stopped the clock."""
+    if half_secs is None or half_secs <= 0:
+        return 0
+    per_play = HURRY_PLAY_SECS + (1 - HURRY_STOP_SHARE) * HURRY_RUNOFF_SECS
+    n = min((half_secs + stops * HURRY_RUNOFF_SECS) / per_play, half_secs / HURRY_PLAY_SECS)
+    return max(int(n), 1)
+
+
+def clock_stops(snap: Snap, team: str, half_secs: float, tos: int | None, rules: ClockRules) -> int:
+    """`team`'s clock stoppages with `half_secs` left: its timeouts, plus the
+    two-minute warning while it's still to come."""
+    warn = rules.two_minute(snap.season) and snap.qtr in (2, 4) and half_secs > TWO_MINUTES
+    return (tos or 0) + int(warn)
 
 
 def first_downs_to_kneel(snap: Snap, rules: ClockRules, max_first_downs: int = 3) -> int | None:
