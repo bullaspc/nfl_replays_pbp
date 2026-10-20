@@ -7,6 +7,9 @@ knows which league it's looking at. No Streamlit: everything is a plain
 function of DataFrames, importable from tools and tests.
 """
 
+import re
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -31,6 +34,7 @@ PBP_COLS = [
     "third_down_converted", "third_down_failed",
     "fourth_down_converted", "fourth_down_failed",
     "goal_to_go", "yardline_100", "drive",
+    "home_timeouts_remaining", "away_timeouts_remaining",
     "penalty", "penalty_team", "penalty_yards",
     # defensive player columns
     "solo_tackle_1_player_name", "solo_tackle_2_player_name",
@@ -1146,6 +1150,374 @@ def wp_crossings(revealed: pd.DataFrame, elapsed_min: pd.Series) -> list[float]:
         elif w[i] == 0 and w[i - 1] != 0:
             out.append(float(t[i]))
     return out
+
+
+# ---------- Game management ----------
+# Where the game stands for the clock: timeouts left, the next snap, and what
+# the end of a half could look like from here: if the offense goes
+# three-and-out, how much time the other team gets the ball back with; whether
+# the leader can kneel it out. All of it is estimated from the plays revealed
+# so far, never from the play after them, which isn't revealed.
+
+# Clock runoff, from 2024 NFL plays: a leading offense's run in the 4th
+# quarter to its next snap takes 41s (median), kneel to kneel 37s, a punt's
+# snap to the next snap 9s.
+RUN_SECS = 5        # snap to whistle, a run in bounds
+KNEEL_SECS = 2
+PUNT_SECS = 9
+FG_SECS = 11        # the kick and the kickoff after it
+KICKOFF_SECS = 6
+RUNOFF_SECS = 37    # whistle to the next snap with the clock running
+TWO_MINUTES = 120
+SCENARIO_SECS = 360  # the scenarios show in the last 6 minutes of each half
+FG_RANGE = 37       # yardline_100 a three-and-out kicks a field goal from (a 54-yarder)
+NET_PUNT = 42
+TIMEOUTS_PER_HALF = 3
+
+_TIMEOUT = re.compile(r"\s*Timeout\b", re.I)
+_HALF_END = re.compile(r"\s*END (QUARTER 2|HALF)\b|\s*End of (the )?(2nd Quarter|1st Half|Half)\b", re.I)
+_GAME_END = re.compile(r"\s*END (QUARTER 4|GAME|OVERTIME)\b|\s*End of (4th Quarter|Game|Regulation|Overtime)\b", re.I)
+_OOB = re.compile(r"\b(ran|pushed|run|sacked|forced) ob\b|out of bounds", re.I)
+# The spot a kick or turnover ends at: "... to the ARI 30", "pushed ob at BUF 45".
+_SPOT = re.compile(r"\b(?:to|at) (?:the )?([A-Z][A-Za-z&]{1,5}) ?(\d{1,2})\b")
+
+
+@dataclass(frozen=True)
+class ClockRules:
+    """The league's clock rules the game-management estimates follow."""
+    two_minute_from: int            # first season the clock stops at 2:00 of each half
+    oob_stop_secs: tuple[int, int]  # out of bounds stops the clock inside this much of the 1st / 2nd half
+    first_down_stop_secs: int       # a first down stops the clock inside this much of a half
+    touchbacks: tuple[tuple[int, int], ...]  # (from season, yardline_100) of a kickoff touchback
+    missed_fg_back: int             # a missed field goal goes back to the kick's spot, this far behind the line
+
+    def two_minute(self, season) -> bool:
+        return pd.notna(season) and int(season) >= self.two_minute_from
+
+    def touchback(self, season) -> int:
+        s = int(season) if pd.notna(season) else 9999
+        return [yl for start, yl in self.touchbacks if s >= start][-1]
+
+
+# NFL: out of bounds stops the clock inside 2:00 of the 1st half and 5:00 of
+# the 2nd; kickoff touchbacks to the 25, then the 30 (2024), the 35 (2025).
+NFL_CLOCK = ClockRules(0, (120, 300), 0, ((0, 75), (2024, 70), (2025, 65)), 7)
+# College: out of bounds always stops it, first downs inside 2:00 of a half
+# (2023 on), the two-minute timeout came in 2024. Missed kicks go back to the
+# line of scrimmage.
+CFB_CLOCK = ClockRules(2024, (1800, 1800), 120, ((0, 75),), 0)
+
+
+@dataclass
+class Snap:
+    """The next snap, estimated from the plays revealed so far."""
+    posteam: str
+    defteam: str
+    qtr: int
+    half_secs: float | None     # clock left in the half (in OT, the period); None if untimed
+    running: bool               # the clock is running into this snap
+    down: int
+    ydstogo: float
+    yardline_100: float
+    timeouts: dict              # team → timeouts left (None if unknown)
+    score: dict                 # team → points
+    kickoff: bool               # the offense first receives a kickoff (after a score)
+    season: float
+    home: str
+    receives_2h: str | None     # who receives the 2nd-half kickoff
+
+
+def timeouts_left(revealed: pd.DataFrame, home: str, away: str) -> dict:
+    """Each team's timeouts left after the last revealed play: the feed's
+    count on the last row that has one, 3 each at the start of a half. None
+    for a team when it isn't known (no rows yet, or overtime about to start)."""
+    if revealed.empty:
+        return {home: TIMEOUTS_PER_HALF, away: TIMEOUTS_PER_HALF}
+    last = str(revealed["desc"].iloc[-1] or "")
+    if _HALF_END.match(last):
+        return {home: TIMEOUTS_PER_HALF, away: TIMEOUTS_PER_HALF}
+    if _GAME_END.match(last):
+        return {home: None, away: None}
+    t = revealed[["home_timeouts_remaining", "away_timeouts_remaining"]].dropna()
+    if t.empty:
+        return {home: TIMEOUTS_PER_HALF, away: TIMEOUTS_PER_HALF}
+    h, a = t.iloc[-1]
+    return {home: int(h), away: int(a)}
+
+
+def _end_spot(desc: str, team: str, other: str) -> float | None:
+    """Where `desc`'s play ended, as yardline_100 for `team`, from its last
+    "to/at TEAM NN" spot; None if the text names none."""
+    spots = _SPOT.findall(desc or "")
+    if not spots:
+        return None
+    side, n = spots[-1][0].upper(), int(spots[-1][1])
+    if n == 50:
+        return 50.0
+    if side == team.upper():
+        return float(100 - n)
+    if side == other.upper():
+        return float(n)
+    return None
+
+
+def next_snap(revealed: pd.DataFrame, rules: ClockRules) -> Snap | None:
+    """The next snap's offense, down, distance, spot and clock, estimated from
+    the last revealed play (its result, a timeout or a quarter break after it).
+    After a score it is the receiving team's first snap after the kickoff, at
+    a touchback. None before any play, once the half or game is over, or when
+    the last play leaves it unclear."""
+    if revealed.empty:
+        return None
+    desc = revealed["desc"].fillna("").astype(str)
+    if _HALF_END.match(desc.iloc[-1]) or _GAME_END.match(desc.iloc[-1]):
+        return None
+    snaps = revealed["play_type"].notna() & revealed["posteam"].notna() & ~desc.str.match(_TIMEOUT)
+    if not snaps.any():
+        return None
+    pos = int(np.flatnonzero(snaps.to_numpy())[-1])
+    s = revealed.iloc[pos]
+    home, away = s["home_team"], s["away_team"]
+    off, dfn = s["posteam"], s["defteam"]
+    if pd.isna(dfn):
+        dfn = away if off == home else home
+    season = s["season"]
+    scores = revealed[["total_home_score", "total_away_score"]].ffill().fillna(0)
+    score = {home: int(scores["total_home_score"].iloc[-1]), away: int(scores["total_away_score"].iloc[-1])}
+    before = scores.iloc[pos - 1] if pos > 0 else pd.Series({"total_home_score": 0, "total_away_score": 0})
+    gained = {home: score[home] - before["total_home_score"], away: score[away] - before["total_away_score"]}
+    first_def = revealed["defteam"].dropna()
+    receives_2h = first_def.iloc[0] if not first_def.empty else None
+
+    ptype = s["play_type"]
+    yl = float(s["yardline_100"]) if pd.notna(s["yardline_100"]) else 75.0
+    desc_s = desc.iloc[pos]
+    flag = lambda c: pd.notna(s.get(c)) and float(s.get(c)) == 1  # noqa: E731
+    secs = {"run": RUN_SECS, "pass": RUN_SECS, "qb_kneel": KNEEL_SECS, "qb_spike": 1,
+            "punt": PUNT_SECS, "field_goal": 5, "kickoff": KICKOFF_SECS}.get(ptype, 0)
+    gsr = s["game_seconds_remaining"]
+    if pd.isna(gsr):
+        half = None   # untimed college overtime
+    else:
+        g = float(gsr) - secs
+        half = g - 1800 if s["qtr"] <= 2 else g
+        if half <= 0:
+            return None
+    two_min = rules.two_minute(season) and s["qtr"] in (2, 4)
+    stopped_after = pos < len(revealed) - 1   # a timeout or a quarter break since
+
+    def change(team, other, yardline, extra=0.0, kickoff=False):
+        h = None if half is None else max(half - extra, 1.0)
+        return team, other, 1, 10.0, yardline, h, False, kickoff
+
+    tb = float(rules.touchback(season))
+    scorer = home if gained[home] > 0 else (away if gained[away] > 0 else None)
+    try_row = ptype == "extra_point" or pd.notna(s.get("two_point_conv_result"))
+    if scorer is not None and (flag("touchdown") or try_row or flag("safety")
+                               or s.get("field_goal_result") == "made"):
+        # The scorer kicks off (after a safety, the team scored on does).
+        recv = scorer if flag("safety") else (away if scorer == home else home)
+        res = change(recv, home if recv == away else away, tb, KICKOFF_SECS, kickoff=True)
+    elif flag("touchdown") or try_row:
+        return None   # the score isn't in yet
+    elif ptype == "kickoff":
+        recv, kick = (dfn, off) if flag("fumble_lost") else (off, dfn)
+        spot = _end_spot(desc_s, recv, kick)
+        res = change(recv, kick, spot if spot is not None else tb)
+    elif ptype == "punt":
+        recv, kick = (off, dfn) if flag("fumble_lost") else (dfn, off)
+        spot = _end_spot(desc_s, recv, kick)
+        if spot is None:
+            spot = 80.0 if yl - NET_PUNT < 20 else 100 - (yl - NET_PUNT)
+        res = change(recv, kick, spot)
+    elif flag("interception") or flag("fumble_lost"):
+        spot = _end_spot(desc_s, dfn, off)
+        res = change(dfn, off, spot if spot is not None else 100 - yl)
+    elif ptype == "field_goal":
+        res = change(dfn, off, 100 - max(yl + rules.missed_fg_back, 20))
+    else:
+        if pd.isna(s["down"]) or pd.isna(s["ydstogo"]):
+            return None
+        down, togo = int(s["down"]), float(s["ydstogo"])
+        if ptype == "no_play":
+            pen = float(s["penalty_yards"]) if pd.notna(s.get("penalty_yards")) else 0.0
+            yards = pen if s.get("penalty_team") == dfn else (-pen if s.get("penalty_team") == off else 0.0)
+            new_down = 1 if flag("first_down") else down
+        else:
+            yards = float(s["yards_gained"]) if pd.notna(s["yards_gained"]) else 0.0
+            new_down = 1 if flag("first_down") else down + 1
+        new_yl = min(max(yl - yards, 1.0), 99.0)
+        if new_down > 4:   # turned over on downs
+            res = change(dfn, off, 100 - new_yl)
+        else:
+            new_togo = min(10.0, new_yl) if new_down == 1 else max(togo - yards, 1.0)
+            incomplete = (ptype == "pass" and not flag("complete_pass") and not flag("sack")
+                          and not flag("interception"))
+            oob = bool(_OOB.search(desc_s)) and half is not None and \
+                half <= rules.oob_stop_secs[0 if s["qtr"] <= 2 else 1]
+            first = new_down == 1 and half is not None and half <= rules.first_down_stop_secs
+            at_warning = two_min and half is not None and half + secs > TWO_MINUTES >= half
+            running = not (incomplete or ptype in ("qb_spike", "no_play") or oob or first
+                           or flag("penalty") or at_warning or stopped_after or half is None)
+            res = (off, dfn, new_down, new_togo, new_yl, half, running, False)
+    team, other, down, togo, yardline, h, running, kickoff = res
+    qtr = int(s["qtr"])
+    if h is not None and qtr <= 4:
+        qtr = (1 if h > 900 else 2) if qtr <= 2 else (3 if h > 900 else 4)
+    return Snap(team, other, qtr, h, running and not stopped_after, int(down), float(togo),
+                float(yardline), timeouts_left(revealed, home, away), score, kickoff,
+                season, home, receives_2h)
+
+
+def _burn(secs_left: float, running: bool, stop_tos: int, plays: list[float],
+          two_min: bool) -> tuple[float, int]:
+    """Clock left after the offense snaps `plays` (each play's seconds) and
+    lets the clock run between them, while the other side spends up to
+    `stop_tos` timeouts stopping it, and the two-minute warning stops it once
+    if `two_min`. Returns (seconds left after the last play, timeouts spent)."""
+    h, used = secs_left, 0
+    for p in plays:
+        if running:
+            if used < stop_tos:
+                used += 1
+            else:
+                nxt = h - RUNOFF_SECS
+                h = TWO_MINUTES if two_min and h > TWO_MINUTES >= nxt else nxt
+        if h <= 0:
+            return 0.0, used
+        start, h = h, h - p
+        running = not (two_min and start > TWO_MINUTES >= h)
+        if h <= 0:
+            return 0.0, used
+    return h, used
+
+
+def three_and_out(snap: Snap, rules: ClockRules) -> pd.DataFrame:
+    """If the offense runs on each down left before 4th and then kicks (a
+    punt, or a field goal in range), when the other team gets the ball back,
+    one row per number of timeouts it spends stopping the clock, most first.
+    Columns: Timeouts used, Ball back with (seconds), Timeouts left, Plays
+    (about how many it can run then, `plays_left()`); plus the
+    other team's state then for a win probability model (`wp_state`)."""
+    if snap.half_secs is None or snap.down > 4:
+        return pd.DataFrame()
+    fg = snap.yardline_100 <= FG_RANGE
+    runs = max(4 - snap.down, 0)
+    two_min = rules.two_minute(snap.season) and snap.qtr in (2, 4)
+    tos = snap.timeouts.get(snap.defteam) or 0
+    rows, seen = [], set()
+    for k in range(tos, -1, -1):
+        left, used = _burn(snap.half_secs, snap.running, k, [RUN_SECS] * runs + [FG_SECS if fg else PUNT_SECS],
+                           two_min)
+        if (left, used) in seen:
+            continue
+        seen.add((left, used))
+        if left <= 0:   # the clock runs out first: no kick
+            yl, lead = 75.0, 0
+        elif fg:
+            yl, lead = float(rules.touchback(snap.season)), 3
+        else:
+            yl = 80.0 if snap.yardline_100 - NET_PUNT < 20 else 100 - (snap.yardline_100 - NET_PUNT)
+            lead = 0
+        rows.append({"Timeouts used": used, "Ball back with": left, "Timeouts left": tos - used,
+                     "Plays": plays_left(left, clock_stops(snap, snap.defteam, left, tos - used, rules)),
+                     **wp_state(snap, snap.defteam, left, tos - used,
+                                snap.timeouts.get(snap.posteam), yl, -lead)})
+    return pd.DataFrame(rows)
+
+
+# A trailing offense's pace late in a half, from 2024 NFL plays (trailing by
+# 1-16, last 5:00 of the 4th or 2:00 of the 2nd): 44% of its plays stop the
+# clock (incomplete, out of bounds, spike, flag) and take ~6s snap to snap; a
+# play with the clock running takes 24s, or ~7s when a timeout stops it.
+HURRY_PLAY_SECS = 6
+HURRY_RUNOFF_SECS = 18
+HURRY_STOP_SHARE = 0.44
+
+
+def plays_left(half_secs: float, stops: int) -> int:
+    """About how many snaps a hurrying offense gets in `half_secs` with
+    `stops` clock stoppages of its own (timeouts, the two-minute warning):
+    each saves the runoff after one play the clock would run on. Never more
+    than if every play stopped the clock."""
+    if half_secs is None or half_secs <= 0:
+        return 0
+    per_play = HURRY_PLAY_SECS + (1 - HURRY_STOP_SHARE) * HURRY_RUNOFF_SECS
+    n = min((half_secs + stops * HURRY_RUNOFF_SECS) / per_play, half_secs / HURRY_PLAY_SECS)
+    return max(int(n), 1)
+
+
+def clock_stops(snap: Snap, team: str, half_secs: float, tos: int | None, rules: ClockRules) -> int:
+    """`team`'s clock stoppages with `half_secs` left: its timeouts, plus the
+    two-minute warning while it's still to come."""
+    warn = rules.two_minute(snap.season) and snap.qtr in (2, 4) and half_secs > TWO_MINUTES
+    return (tos or 0) + int(warn)
+
+
+def first_downs_to_kneel(snap: Snap, rules: ClockRules, max_first_downs: int = 3) -> int | None:
+    """How many more first downs the offense needs before it can kneel out
+    the half: 0 if it can kneel now, with the defense spending all its
+    timeouts. None if it would need more than `max_first_downs`."""
+    if snap.half_secs is None:
+        return None
+    two_min = rules.two_minute(snap.season) and snap.qtr in (2, 4)
+    tos = snap.timeouts.get(snap.defteam) or 0
+    for n in range(max_first_downs + 1):
+        # Runs to convert each first down (on 3rd down), then kneels on 1st to 4th.
+        plays = [KNEEL_SECS] * (5 - snap.down) if n == 0 else \
+            [RUN_SECS] * (max(4 - snap.down, 1) + 3 * (n - 1)) + [KNEEL_SECS] * 4
+        if _burn(snap.half_secs, snap.running, tos, plays, two_min)[0] <= 0:
+            return n
+    return None
+
+
+def scores_needed(behind: int) -> str:
+    """What it takes to tie or win, `behind` points down."""
+    if behind <= 0:
+        return ""
+    if behind <= 2:
+        return "a field goal wins it"
+    if behind == 3:
+        return "a field goal ties, a touchdown wins"
+    if behind <= 6:
+        return "needs a touchdown"
+    if behind == 7:
+        return "a touchdown ties, with a two-point try to win"
+    if behind == 8:
+        return "a touchdown and a two-point try tie it"
+    n = int(np.ceil(behind / 8))
+    return f"needs {n} scores"
+
+
+def wp_state(snap: Snap, team: str, half_secs: float, tos: int | None, opp_tos: int | None,
+             yardline_100: float, diff_change: int = 0) -> dict:
+    """`team` with the ball 1st & 10 at `yardline_100` with `half_secs` left,
+    as the columns nflfastR's win probability model reads (prefixed `_`, so a
+    table can carry them hidden). `diff_change` adds to its score margin."""
+    other = next(t for t in snap.score if t != team)
+    first_half = snap.qtr <= 2
+    game = half_secs + (1800 if first_half else 0) if snap.qtr <= 4 else np.nan
+    return {"_posteam": team, "_home": float(team == snap.home), "_qtr": snap.qtr,
+            "_half_seconds_remaining": half_secs, "_game_seconds_remaining": game,
+            "_score_differential": snap.score[team] - snap.score[other] + diff_change,
+            "_down": 1.0, "_ydstogo": 10.0, "_yardline_100": yardline_100,
+            "_posteam_timeouts_remaining": tos, "_defteam_timeouts_remaining": opp_tos,
+            "_receive_2h_ko": float(first_half and team == snap.receives_2h)}
+
+
+def snap_wp_state(snap: Snap) -> dict:
+    """The next snap itself, as `wp_state()` columns."""
+    st = wp_state(snap, snap.posteam, snap.half_secs if snap.half_secs is not None else np.nan,
+                  snap.timeouts.get(snap.posteam), snap.timeouts.get(snap.defteam), snap.yardline_100)
+    st.update({"_down": float(snap.down), "_ydstogo": snap.ydstogo})
+    return st
+
+
+def fmt_clock(secs: float | None) -> str:
+    if secs is None or pd.isna(secs):
+        return "—"
+    s = int(round(max(secs, 0)))
+    return f"{s // 60}:{s % 60:02d}"
 
 
 # ---------- Play labels ----------

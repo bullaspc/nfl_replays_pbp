@@ -34,12 +34,14 @@ from replay_core import (
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
+    FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
+    clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
 )
 from views import (
     build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
-    style_sr_table, style_stat_table, ticker_html, time_bar_html,
+    style_sr_table, style_stat_table, ticker_html, time_bar_html, timeout_pips,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -803,6 +805,123 @@ if not revealed.empty:
         st.caption("No drive data available.")
 else:
     st.caption("No plays revealed yet.")
+
+# ---------- Game management ----------
+# Timeouts, win probability and the end-of-half clock. The next snap is
+# estimated from the last revealed play (next_snap), never read from the play
+# after it, which isn't revealed.
+st.subheader("Game management")
+
+
+def _scenario_wp(states: list[dict]) -> list[float] | None:
+    """The offense's win probability in each wp_state(), from the league's
+    model; None where it has none (college) or a state is in overtime."""
+    if not states or any(s["_qtr"] > 4 for s in states):
+        return None
+    wp = league.scenario_wp(pd.DataFrame(states).rename(columns=lambda c: c[1:]))
+    return None if wp is None else [float(w) for w in wp]
+
+
+_snap = next_snap(revealed, league.clock)
+_tos = timeouts_left(revealed, home, away)
+_wp_team = {}
+if not hide_wp and not revealed.empty:
+    _now = _scenario_wp([snap_wp_state(_snap)]) if _snap is not None and _snap.half_secs is not None else None
+    if _now is not None:
+        _wp_team = {_snap.posteam: _now[0], _snap.defteam: 1 - _now[0]}
+    elif revealed["home_wp"].notna().any():
+        _hwp = float(revealed["home_wp"].dropna().iloc[-1])
+        _wp_team = {home: _hwp, away: 1 - _hwp}
+for col, team in zip(st.columns(2), (away, home)):
+    with col:
+        _ball = " 🏈" if _snap is not None and _snap.posteam == team else ""
+        if team in _wp_team:
+            st.metric(f"{team}{_ball} win probability", f"{_wp_team[team]:.0%}")
+        else:
+            st.markdown(f"**{team}**{_ball}")
+        _t = _tos.get(team)
+        st.caption(f"Timeouts {timeout_pips(_t, max(3, _t or 0))}"
+                   + (f" · {_t} left" if _t is not None else ""))
+
+if _snap is not None:
+    _P, _D, _h = _snap.posteam, _snap.defteam, _snap.half_secs
+    if _snap.kickoff:
+        _where = "receives the kickoff"
+    else:
+        _togo = "Goal" if _snap.ydstogo >= _snap.yardline_100 else int(_snap.ydstogo)
+        _where = f"{_snap.down} & {_togo} at {field_pos_label({'yardline_100': _snap.yardline_100})}"
+    _bits = [f"Next snap: **{_P}** {_where}"]
+    if _h is not None:
+        _qclock = _h - 900 if _snap.qtr in (1, 3) else _h
+        _bits.append(f"{fmt_clock(_qclock)} left in {period_label(_snap.qtr)}")
+        _bits.append("clock running" if _snap.running else "clock stopped")
+    st.caption(" · ".join(_bits) + " (estimated from the last play)")
+
+    _late = _h is not None and _h <= SCENARIO_SECS and _snap.qtr in (2, 4, 5, 6, 7, 8)
+    if _late:
+        _lead = _snap.score[_P] - _snap.score[_D]
+        _end = "the half" if _snap.qtr == 2 else "the game"
+        _notes = []
+        if _lead > 0:
+            _n = first_downs_to_kneel(_snap, league.clock)
+            if _n == 0:
+                _notes.append(f"**{_P}** can kneel out {_end}, even with {_D} using every timeout.")
+            elif _n == 1:
+                _notes.append(f"One more first down lets **{_P}** kneel out {_end}.")
+            elif _n is not None:
+                _notes.append(f"**{_P}** needs {_n} more first downs to kneel out {_end}.")
+        if _snap.qtr >= 4 and _lead != 0:
+            _trail = _D if _lead > 0 else _P
+            _notes.append(f"**{_trail}** trails by {abs(_lead)}: {scores_needed(abs(_lead))}.")
+        if _lead < 0:
+            _tos_p = _snap.timeouts.get(_P) or 0
+            _stops = clock_stops(_snap, _P, _h, _tos_p, league.clock)
+            _notes.append(f"**{_P}** has {fmt_clock(_h)} and {_tos_p} timeout{'s' if _tos_p != 1 else ''}"
+                          + (" plus the two-minute warning" if _stops > _tos_p else "")
+                          + f" to stop the clock: about **{plays_left(_h, _stops)} plays** at a "
+                            "hurry-up pace.")
+        for _note in _notes:
+            st.markdown(f"- {_note}")
+
+        _tao = three_and_out(_snap, league.clock) if _lead >= 0 else pd.DataFrame()
+        if not _tao.empty:
+            _fg = _snap.yardline_100 <= FG_RANGE
+            _runs = max(4 - _snap.down, 0)
+            _kick = "kicks a field goal" if _fg else "punts"
+            _how = ("goes three-and-out running the ball and " + _kick if _runs == 3
+                    else f"runs {_runs} more time{'s' if _runs > 1 else ''} without a first down and {_kick}"
+                    if _runs else _kick)
+            st.markdown(f"If **{_P}** {_how}, **{_D}** gets the ball back with:")
+            _tbl = pd.DataFrame({
+                f"{_D} timeouts used": _tao["Timeouts used"],
+                "Clock left": _tao["Ball back with"].map(lambda v: fmt_clock(v) if v > 0 else "0:00, time runs out"),
+                f"{_D} timeouts left": _tao["Timeouts left"],
+                f"{_D} plays": _tao["Plays"].where(_tao["Ball back with"] > 0).map(
+                    lambda v: "—" if pd.isna(v) else f"≈ {int(v)}"),
+            })
+            _wps = None if hide_wp else _scenario_wp(_tao.filter(like="_").to_dict("records"))
+            if _wps is not None:
+                # Time runs out before the kick: the game is decided (or goes
+                # to overtime); at the half there's nothing to show.
+                _over = (_tao["Ball back with"] <= 0).to_numpy()
+                _wps = [(None if _snap.qtr == 2 else 0.0 if _tao["_score_differential"].iloc[i] < 0 else 0.5)
+                        if _over[i] else w for i, w in enumerate(_wps)]
+                _tbl[f"{_D} win probability"] = ["—" if w is None else f"{w:.0%}" for w in _wps]
+            stat_table(_tbl, hide_index=True)
+            st.caption(f"≈ {RUNOFF_SECS + RUN_SECS}s a run with the clock running "
+                       f"(a leading offense's pace, 2024 NFL), "
+                       + ("the field goal good and a touchback on the kickoff"
+                          if _fg else f"a {NET_PUNT}-yard net punt")
+                       + ("; the two-minute warning stops the clock once"
+                          if league.clock.two_minute(_snap.season) and _snap.qtr in (2, 4) and _h > 120 else "")
+                       + (". Win probability: nflfastR's model, 1st & 10 after the kick." if _wps else ".")
+                       + f" Plays: a hurry-up pace, {HURRY_STOP_SHARE:.0%} of plays stopping the clock "
+                         f"(≈ {HURRY_PLAY_SECS}s each) and the rest ≈ {HURRY_PLAY_SECS + HURRY_RUNOFF_SECS}s, "
+                         "each timeout or the two-minute warning saving one runoff.")
+    elif _h is not None:
+        st.caption(f"Clock scenarios show up in the last {SCENARIO_SECS // 60} minutes of each half.")
+elif not revealed.empty:
+    st.caption("Nothing to estimate: the half is over, or the last play hasn't been scored yet.")
 
 # ---------- Explosive plays ----------
 if not revealed.empty:
