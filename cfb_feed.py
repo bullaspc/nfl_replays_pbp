@@ -57,6 +57,7 @@ RAW_COLS = [
     "sack_player_name", "sack_player_name2", "interception_player_name",
     "pass_breakup_player_name", "fumble_forced_player_name",
     "pointAfterAttempt.text", "status_type_completed",
+    "start.homeTeamTimeouts", "start.awayTeamTimeouts", "end.homeTeamTimeouts", "end.awayTeamTimeouts",
 ]
 
 # Player-leader columns the college feed doesn't have: it has no QB hits (it
@@ -609,6 +610,12 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["pass_defense_1_player_name"] = df["pass_breakup_player_name"].where(live)
     out["forced_fumble_player_1_player_name"] = df["fumble_forced_player_name"].where(live)
     _crew_columns(out, text, scrimmage)
+
+    # Timeouts left before the play, and on a timeout's own row after it, as
+    # nflfastR has them.
+    for side in ("home", "away"):
+        out[f"{side}_timeouts_remaining"] = _num(df[f"start.{side}TeamTimeouts"]).where(
+            ~timeout, _num(df[f"end.{side}TeamTimeouts"]))
 
     out["total_home_score"], out["total_away_score"] = _clean_scores(df)
     out["home_wp"] = _num(df["home_wp_before"])

@@ -405,5 +405,16 @@ def add_wp(pbp: pd.DataFrame, models: dict, fg_table: pd.DataFrame) -> pd.DataFr
     return pd.concat(parts)
 
 
+def wp_for_states(states: pd.DataFrame, models: dict) -> np.ndarray:
+    """nflfastR's (non-spread) win probability for the offense in made-up
+    regulation states: posteam's side, clock, score margin, down, distance,
+    spot and timeouts, under WP_FEATURES' names except Diff_Time_Ratio, which
+    is derived here as add_wp() does. For "what if" states, not plays."""
+    df = states.copy()
+    elapsed_share = (3600 - df["game_seconds_remaining"]) / 3600
+    df["Diff_Time_Ratio"] = df["score_differential"] / np.exp(-4 * elapsed_share)
+    return _wp_preds(df, models["wp_model"])
+
+
 def add_ep_wp(pbp: pd.DataFrame, models: dict, fg_table: pd.DataFrame) -> pd.DataFrame:
     return add_wp(add_ep(pbp, models, fg_table), models, fg_table)

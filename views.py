@@ -584,6 +584,13 @@ def hex_or_none(v):
     return v if isinstance(v, str) and v.startswith("#") else None
 
 
+def timeout_pips(n: int | None, total: int = 3) -> str:
+    """Timeouts left as dots, filled for each one left: ●●○."""
+    if n is None:
+        return "—"
+    return "●" * n + "○" * max(total - n, 0)
+
+
 def logo_img(team: str, logos: dict[str, str]) -> str:
     url = logos.get(team)
     return f"<img src='{url}' alt='{team}' style='height:clamp(36px,9vw,64px);width:auto'>" if url else ""

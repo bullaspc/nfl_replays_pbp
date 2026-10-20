@@ -61,6 +61,7 @@ class League:
     untimed_ot: bool = False    # OT has no clock: the sidebar seeds OT at its start
     run_gaps: bool = False      # the play text names a run's gap, not just its side
     espn_id_col: str = "game_id"  # the games() column with ESPN's event id
+    clock: core.ClockRules = core.NFL_CLOCK  # what Game management's clock estimates follow
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -89,6 +90,12 @@ class League:
         """Player-leader columns (top_players/top_defenders `drop=`) the data
         behind `pbp` doesn't have."""
         raise NotImplementedError
+
+    def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
+        """The offense's win probability in made-up states (core.wp_state()
+        columns, without their `_`), for Game management's what-ifs; None
+        if the league has no model to run on them."""
+        return None
 
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
@@ -319,6 +326,12 @@ class NFLLeague(League):
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return frozenset({"Hurries"})  # nflfastR has QB hits instead
 
+    def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
+        models, _, _ = load_nflfastr_models()
+        if models is None or states.empty:
+            return None
+        return nflfastr_models.wp_for_states(states, models)
+
 
 # ---------- College football ----------
 # Published games only, from sportsdataverse (see cfb_feed). Like nflverse, it
@@ -447,7 +460,7 @@ COLLEGE = CollegeLeague(
     first_season=cfb_feed.FIRST_SEASON,
     # ~3h20m. One college season has about as many team-games as three NFL ones.
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
-    group_label="Conference", untimed_ot=True)
+    group_label="Conference", untimed_ot=True, clock=core.CFB_CLOCK)
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
 
 
