@@ -13,7 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SR_METRICS, SR_SUBTOTALS, down_distance,
+                         PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         SR_METRICS, SR_SUBTOTALS, down_distance,
                          field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
@@ -202,12 +203,14 @@ def style_defense_table(df: pd.DataFrame):
     return df.style.format("{:g}", subset=df.select_dtypes("number").columns)
 
 
-def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None):
+def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None,
+                       min_plays: int | None = None):
     """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`)
     colored by percentile vs `baselines[kind]`; players with fewer than
-    `PLAYER_MIN_PLAYS` plays, like the baseline's, stay plain."""
+    `min_plays` (default `PLAYER_MIN_PLAYS`, the baseline's) stay plain."""
     arrs = (baselines or {}).get(kind, {})
-    qualified = df[PLAYER_VOLUME_COL[kind]] >= PLAYER_MIN_PLAYS[kind]
+    min_plays = PLAYER_MIN_PLAYS[kind] if min_plays is None else min_plays
+    qualified = df[PLAYER_VOLUME_COL[kind]] >= min_plays
 
     def _colors(col):
         arr = arrs.get(col.name, np.array([]))
@@ -218,6 +221,60 @@ def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = Non
                              na_rep="—")
     rate_cols = [c for c in PLAYER_RATE_COLS[kind] if c in df.columns]
     return styled.apply(_colors, subset=rate_cols) if rate_cols else styled
+
+
+def style_season_table(df: pd.DataFrame, ranks: pd.DataFrame):
+    """The Season stats team table (teams as rows, replay_core.SEASON_COLS
+    as columns): formatted as Team stats and Line play are, every cell
+    colored by its rank among the table's teams (`ranks`, 0–100, 100 =
+    best) except the volumes (`SEASON_VOLUME`)."""
+    fmt = {col: _season_format(col) for col in df.columns}
+    styled = df.style.format(fmt, na_rep="—")
+    colored = [c for c in df.columns if c not in SEASON_VOLUME and c in ranks.columns]
+    if colored:
+        styled = styled.apply(lambda col: [percentile_color(p) for p in ranks.loc[col.index, col.name]],
+                              subset=colored)
+    return (
+        styled
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
+def style_team_season(values: pd.Series, ranks: pd.Series, places: pd.Series):
+    """One team's column of the season table as a card: rows are the stats,
+    Value formatted and colored as `style_season_table` does, and Rank its
+    place among the teams ("5th of 32")."""
+    shown = pd.DataFrame({"Value": [_season_format(c)(v) for c, v in values.items()],
+                          "Rank": places.reindex(values.index).fillna("")},
+                         index=pd.Index(values.index, name="Stat"))
+    colors = ["" if c in SEASON_VOLUME else percentile_color(ranks.get(c, np.nan))
+              for c in values.index]
+    return (
+        shown.style
+        .apply(lambda col: colors, subset=["Value"])
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
+def _season_format(col: str):
+    """A formatter for one season table column, as `style_season_table`'s."""
+    if col == "TOP":
+        return fmt_top
+    if col in _RATE_ROWS or (col.endswith("%") and col not in LINE_COUNT_ROWS):
+        f = "{:.1%}"
+    elif col in _EPA_ROWS:
+        f = "{:+.2f}"
+    elif col == "aDoT" or col in SEASON_PER_GAME:
+        f = "{:.1f}"
+    else:
+        f = "{:.0f}"
+    return lambda v: "—" if pd.isna(v) else f.format(v)
 
 
 # ---------- Drives ----------

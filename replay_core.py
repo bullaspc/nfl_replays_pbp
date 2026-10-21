@@ -160,7 +160,9 @@ LOWER_IS_BETTER = {"Turnovers", "Penalties", "Penalty Yds"}
 def _top_seconds(td: pd.DataFrame) -> float:
     """Time of possession in seconds, estimated from drive×quarter clock diffs."""
     top = 0.0
-    for _, grp in td.groupby(["drive", "qtr"], dropna=True):
+    # Drive numbers restart every game, so a season's plays group by game too.
+    keys = ["game_id", "drive", "qtr"] if "game_id" in td.columns else ["drive", "qtr"]
+    for _, grp in td.groupby(keys, dropna=True):
         gsr = grp["game_seconds_remaining"].dropna()
         if len(gsr) >= 2:
             top += max(0.0, float(gsr.max() - gsr.min()))
@@ -178,92 +180,96 @@ def percentile_of(value: float, sorted_arr: np.ndarray) -> float:
         return float("nan")
     return float(np.searchsorted(sorted_arr, value, side="right") / len(sorted_arr) * 100)
 
+TEAM_STAT_ROWS = [
+    "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
+    "Pass Yds", "Rush Yds", "Total Yds",
+    "CMP%", "aDoT",
+    "Pass EPA/play", "Rush EPA/play", "EPA/play",
+    "Pass SR", "Rush SR",
+    "1st Down %", "3rd Down %", "RZ TD%",
+    "Turnovers", "Penalties", "Penalty Yds", "TOP",
+]
+
+
+def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
+    """One team's Team stats (`TEAM_STAT_ROWS` order) over `plays`: its
+    offense with side="posteam", or what its defense allowed with
+    side="defteam". Penalties are always the team's own."""
+    td = plays[plays[side] == team]
+
+    pass_mask = td["pass_attempt"].fillna(0) == 1
+    rush_mask = td["rush_attempt"].fillna(0) == 1
+    scrimmage_mask = pass_mask | rush_mask
+
+    pass_plays = int(pass_mask.sum())
+    rush_plays = int(rush_mask.sum())
+    total_plays = int(scrimmage_mask.sum())
+
+    pass_yds = int(td["passing_yards"].fillna(0).sum())
+    rush_yds = int(td["rushing_yards"].fillna(0).sum())
+
+    cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
+    adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
+
+    pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
+    rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
+    total_epa = td.loc[scrimmage_mask, "epa"].fillna(0).sum()
+
+    pass_sr = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
+    rush_sr = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
+
+    first_downs = td.loc[scrimmage_mask, "first_down"].fillna(0).sum()
+
+    third_conv = td["third_down_converted"].fillna(0).sum()
+    third_fail = td["third_down_failed"].fillna(0).sum()
+
+    rz_mask = scrimmage_mask & (td["yardline_100"].fillna(100) <= 20)
+    rz_plays = int(rz_mask.sum())
+    rz_td = td.loc[rz_mask, "touchdown"].fillna(0).sum()
+
+    tos = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
+    comp_rush = int(cmp) + rush_plays
+    top = _top_seconds(td)
+
+    # Penalties are charged against the team penalized (penalty_team),
+    # which may differ from possession — so this is computed on the
+    # full play set, not the posteam-filtered `td`.
+    pen_mask = plays["penalty_team"] == team
+    penalties = int(pen_mask.sum())
+    penalty_yds = int(plays.loc[pen_mask, "penalty_yards"].fillna(0).sum())
+
+    return [
+        total_plays,
+        pass_plays,
+        rush_plays,
+        comp_rush,
+        pass_yds,
+        rush_yds,
+        pass_yds + rush_yds,
+        _rate(cmp, pass_plays),
+        adot if not pd.isna(adot) else float("nan"),
+        _rate(pass_epa, pass_plays),
+        _rate(rush_epa, rush_plays),
+        _rate(total_epa, total_plays),
+        _rate(pass_sr, pass_plays),
+        _rate(rush_sr, rush_plays),
+        _rate(first_downs, total_plays),
+        _rate(third_conv, third_conv + third_fail),
+        _rate(rz_td, rz_plays),
+        tos,
+        penalties,
+        penalty_yds,
+        top,
+    ]
+
+
 def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     """Advanced offensive team stats, returned as a transposed comparison table.
 
     Rows are stat names; columns are [away, home] team abbreviations.
     """
-    stats: dict[str, list] = {}
-
-    for team in [away, home]:
-        td = revealed[revealed["posteam"] == team]
-
-        pass_mask = td["pass_attempt"].fillna(0) == 1
-        rush_mask = td["rush_attempt"].fillna(0) == 1
-        scrimmage_mask = pass_mask | rush_mask
-
-        pass_plays = int(pass_mask.sum())
-        rush_plays = int(rush_mask.sum())
-        total_plays = int(scrimmage_mask.sum())
-
-        pass_yds = int(td["passing_yards"].fillna(0).sum())
-        rush_yds = int(td["rushing_yards"].fillna(0).sum())
-
-        cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
-        adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
-
-        pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
-        rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
-        total_epa = td.loc[scrimmage_mask, "epa"].fillna(0).sum()
-
-        pass_sr = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
-        rush_sr = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
-
-        first_downs = td.loc[scrimmage_mask, "first_down"].fillna(0).sum()
-
-        third_conv = td["third_down_converted"].fillna(0).sum()
-        third_fail = td["third_down_failed"].fillna(0).sum()
-
-        rz_mask = scrimmage_mask & (td["yardline_100"].fillna(100) <= 20)
-        rz_plays = int(rz_mask.sum())
-        rz_td = td.loc[rz_mask, "touchdown"].fillna(0).sum()
-
-        tos = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
-        comp_rush = int(cmp) + rush_plays
-        top = _top_seconds(td)
-
-        # Penalties are charged against the team penalized (penalty_team),
-        # which may differ from possession — so this is computed on the
-        # full revealed slice, not the posteam-filtered `td`.
-        pen_mask = revealed["penalty_team"] == team
-        penalties = int(pen_mask.sum())
-        penalty_yds = int(revealed.loc[pen_mask, "penalty_yards"].fillna(0).sum())
-
-        col = [
-            total_plays,
-            pass_plays,
-            rush_plays,
-            comp_rush,
-            pass_yds,
-            rush_yds,
-            pass_yds + rush_yds,
-            _rate(cmp, pass_plays),
-            adot if not pd.isna(adot) else float("nan"),
-            _rate(pass_epa, pass_plays),
-            _rate(rush_epa, rush_plays),
-            _rate(total_epa, total_plays),
-            _rate(pass_sr, pass_plays),
-            _rate(rush_sr, rush_plays),
-            _rate(first_downs, total_plays),
-            _rate(third_conv, third_conv + third_fail),
-            _rate(rz_td, rz_plays),
-            tos,
-            penalties,
-            penalty_yds,
-            top,
-        ]
-        stats[team] = col
-
-    index = [
-        "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
-        "Pass Yds", "Rush Yds", "Total Yds",
-        "CMP%", "aDoT",
-        "Pass EPA/play", "Rush EPA/play", "EPA/play",
-        "Pass SR", "Rush SR",
-        "1st Down %", "3rd Down %", "RZ TD%",
-        "Turnovers", "Penalties", "Penalty Yds", "TOP",
-    ]
-    return pd.DataFrame(stats, index=pd.Index(index, name="Stat"))
+    stats = {team: _team_col(revealed, team) for team in [away, home]}
+    return pd.DataFrame(stats, index=pd.Index(TEAM_STAT_ROWS, name="Stat"))
 
 def stat_percentiles(df: pd.DataFrame, baselines: dict,
                      lower_is_better: set = LOWER_IS_BETTER) -> pd.DataFrame:
@@ -400,9 +406,9 @@ def _designed_runs(td: pd.DataFrame) -> pd.Series:
             & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
 
 
-def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
-    """Line play numbers for one offense's plays `td` (posteam == team).
-    Downs only, so two-point tries don't count. Dropbacks are pass attempts
+def _line_stats(td: pd.DataFrame) -> dict[str, float]:
+    """Line play numbers for offensive plays `td` (one offense's, or what one
+    defense faced). Downs only, so two-point tries don't count. Dropbacks are pass attempts
     plus sacks (nflfastR's pass_attempt); QB hits include sacks; designed
     runs leave out kneels and scrambles; snaps are pass, run and no-play
     rows, and the penalty rate counts the offense's own holding, false start
@@ -415,7 +421,7 @@ def _line_stats(td: pd.DataFrame, team) -> dict[str, float]:
     run = _designed_runs(td)
     yds = td["yards_gained"]
     snaps = on_down & td["play_type"].isin(["pass", "run", "no_play"])
-    flags = (snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == team)
+    flags = (snaps & (td["penalty"].fillna(0) == 1) & (td["penalty_team"] == td["posteam"])
              & desc.str.contains(OL_PENALTY))
     n_drop, n_run, n_snaps = int(drop.sum()), int(run.sum()), int(snaps.sum())
     return {
@@ -436,7 +442,7 @@ def line_play_stats(revealed: pd.DataFrame, home: str, away: str,
     are `LINE_ROWS` (less any in `drop`), columns [away, home]. The other
     team's column is the same numbers from its defensive front's side."""
     df = pd.DataFrame(
-        {team: _line_stats(revealed[revealed["posteam"] == team], team) for team in [away, home]},
+        {team: _line_stats(revealed[revealed["posteam"] == team]) for team in [away, home]},
         index=pd.Index(LINE_ROWS, name="Stat"),
     )
     return df.drop(index=[r for r in df.index if r in drop])
@@ -446,7 +452,7 @@ def line_play_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
     """Per-stat line play distributions over every team-game in `raw`."""
     raw = raw[raw["posteam"].notna()]
     per_game = pd.DataFrame(
-        [_line_stats(grp, team) for (_, team), grp in raw.groupby(["game_id", "posteam"])]
+        [_line_stats(grp) for _, grp in raw.groupby(["game_id", "posteam"])]
     )
     if per_game.empty:
         return {}
@@ -569,51 +575,66 @@ SR_SUBTOTALS = [
 SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
 
 
+def _situation_row(plays: pd.DataFrame) -> dict[str, float]:
+    """`SR_METRICS` for one team's plays in one situation: success rate (EPA
+    > 0) and EPA/play on passes without spikes and runs without kneels."""
+    pass_plays = plays[(plays["pass_attempt"].fillna(0) == 1) & (plays["qb_spike"].fillna(0) == 0)]
+    rush_plays = plays[(plays["rush_attempt"].fillna(0) == 1) & (plays["qb_kneel"].fillna(0) == 0)]
+
+    def _sr(p) -> float:
+        return float("nan") if p.empty else (p["epa"].fillna(0) > 0).mean() * 100
+
+    def _epa_per_play(p) -> float:
+        return float("nan") if p.empty else p["epa"].fillna(0).mean()
+
+    return {
+        "Pass SR%": _sr(pass_plays),
+        "Pass EPA/play": _epa_per_play(pass_plays),
+        "Rush SR%": _sr(rush_plays),
+        "Rush EPA/play": _epa_per_play(rush_plays),
+        "_pass": len(pass_plays),
+        "_rush": len(rush_plays),
+    }
+
+
+def _situation_mask(plays: pd.DataFrame, downs, d_min, d_max) -> pd.Series:
+    return plays["down"].isin(downs) & plays["ydstogo"].fillna(0).between(d_min, d_max)
+
+
 def situational_success_rate(revealed: pd.DataFrame, home: str, away: str,
                              subtotals: bool = False) -> pd.DataFrame:
     """Success rate and EPA/play split by down group × distance × play type.
     With `subtotals`, the early-down and late-down totals (`SR_SUBTOTALS`)
     follow the situation rows."""
+    return situational_table(revealed, [away, home], subtotals)
+
+
+def situational_table(plays: pd.DataFrame, teams: list, subtotals: bool = False,
+                      side: str = "posteam"):
+    """`situational_success_rate` for any columns: `teams` are values of
+    `side` (posteam, or defteam for what a defense allowed), and a team of
+    None takes every play: the league over a season, labelled "League"."""
     situations = SR_SITUATIONS + (SR_SUBTOTALS if subtotals else [])
-    def _sr(plays) -> float:
-        if plays.empty:
-            return float("nan")
-        return (plays["epa"].fillna(0) > 0).mean() * 100
-
-    def _epa_per_play(plays) -> float:
-        if plays.empty:
-            return float("nan")
-        return plays["epa"].fillna(0).mean()
-
     rows = []
     counts: dict[tuple, dict[str, int]] = {}
     for label, downs, (d_min, d_max) in situations:
-        sit_mask = (
-            revealed["down"].isin(downs) &
-            revealed["ydstogo"].fillna(0).between(d_min, d_max)
-        )
-        for team in [away, home]:
-            tm = revealed[sit_mask & (revealed["posteam"] == team)]
-            pass_plays = tm[(tm["pass_attempt"].fillna(0) == 1) & (tm["qb_spike"].fillna(0) == 0)]
-            rush_plays = tm[(tm["rush_attempt"].fillna(0) == 1) & (tm["qb_kneel"].fillna(0) == 0)]
-            counts[(label, team)] = {"Pass": len(pass_plays), "Rush": len(rush_plays)}
-            rows.append({
-                "Situation": label,
-                "Team": team,
-                "Pass SR%": _sr(pass_plays),
-                "Pass EPA/play": _epa_per_play(pass_plays),
-                "Rush SR%": _sr(rush_plays),
-                "Rush EPA/play": _epa_per_play(rush_plays),
-            })
+        sit_mask = _situation_mask(plays, downs, d_min, d_max)
+        for team in teams:
+            tm = plays[sit_mask & ((plays[side] == team) if team is not None
+                                   else plays["posteam"].notna())]
+            r = _situation_row(tm)
+            name = "League" if team is None else team
+            counts[(label, name)] = {"Pass": r.pop("_pass"), "Rush": r.pop("_rush")}
+            rows.append({"Situation": label, "Team": name, **r})
 
     df = pd.DataFrame(rows)
-    metrics = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
+    metrics = SR_METRICS
     pivot = df.pivot(index="Situation", columns="Team", values=metrics)
     pivot.columns = [f"{team} {stat}" for stat, team in pivot.columns]
     col_order = []
-    for team in [away, home]:
+    for team in teams:
         for m in metrics:
-            col_order.append(f"{team} {m}")
+            col_order.append(f"{'League' if team is None else team} {m}")
     pivot = pivot[[c for c in col_order if c in pivot.columns]]
     # pivot sorts the rows; keep the situations alphabetical, subtotals last.
     subtotal_labels = [lbl for lbl, _, _ in SR_SUBTOTALS]
@@ -628,36 +649,10 @@ def situational_success_rate(revealed: pd.DataFrame, home: str, away: str,
 def situational_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarray]]:
     """Per-situation metric distributions over every team-game in `raw`."""
     raw = raw[raw["posteam"].notna()]
-
-    def _sr(plays) -> float:
-        if plays.empty:
-            return float("nan")
-        return (plays["epa"].fillna(0) > 0).mean() * 100
-
-    def _epa_per_play(plays) -> float:
-        if plays.empty:
-            return float("nan")
-        return plays["epa"].fillna(0).mean()
-
     result: dict[str, dict[str, np.ndarray]] = {}
     for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
-        sit_mask = (
-            raw["down"].isin(downs) &
-            raw["ydstogo"].fillna(0).between(d_min, d_max)
-        )
-        sit = raw[sit_mask]
-
-        rows = []
-        for (game_id, team), grp in sit[sit["posteam"].notna()].groupby(["game_id", "posteam"]):
-            pass_plays = grp[(grp["pass_attempt"].fillna(0) == 1) & (grp["qb_spike"].fillna(0) == 0)]
-            rush_plays = grp[(grp["rush_attempt"].fillna(0) == 1) & (grp["qb_kneel"].fillna(0) == 0)]
-            rows.append({
-                "Pass SR%":      _sr(pass_plays),
-                "Pass EPA/play": _epa_per_play(pass_plays),
-                "Rush SR%":      _sr(rush_plays),
-                "Rush EPA/play": _epa_per_play(rush_plays),
-            })
-
+        sit = raw[_situation_mask(raw, downs, d_min, d_max)]
+        rows = [_situation_row(grp) for _, grp in sit.groupby(["game_id", "posteam"])]
         if not rows:
             result[label] = {}
             continue
@@ -840,6 +835,143 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
     )
     g = g.drop(columns=[c for c in drop if c in g.columns])
     return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
+
+
+# ---------- Season ----------
+# The Season stats page: the same stats over many games. Counts are per game
+# (teams play different numbers of games), and every cell is ranked against
+# the other teams (or qualified players) in the same selection.
+SEASON_PER_GAME = {"Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
+                   "Total Yds", "Turnovers", "Penalties", "Penalty Yds", "TOP", *LINE_COUNT_ROWS}
+# Volumes: neither good nor bad, so never colored.
+SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps"}
+SEASON_COLS = ["Games", *TEAM_STAT_ROWS, *LINE_ROWS]
+# A defense's own penalties aren't "allowed"; they're in the offense table.
+SEASON_DEFENSE_SKIP = {"Penalties", "Penalty Yds"}
+
+
+def season_lower_is_better(side: str = "posteam") -> set:
+    """The season table's columns where lower is better: the Team stats and
+    Line play ones for an offense, every other one for a defense (what it
+    allowed, where forcing turnovers and sacks is good)."""
+    offense = LOWER_IS_BETTER | LINE_LOWER_IS_BETTER
+    if side == "posteam":
+        return offense
+    return set(SEASON_COLS) - offense - SEASON_VOLUME
+
+
+def season_team_table(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
+    """One row per team in `pbp` (a season's plays, or part of one): Games,
+    then Team stats and Line play (`SEASON_COLS`) for its offense, or with
+    side="defteam" what its defense allowed. Counts (`SEASON_PER_GAME`) are
+    per game."""
+    teams = sorted(pbp[side].dropna().unique())
+    games = pbp[pbp[side].notna()].groupby(side)["game_id"].nunique()
+    rows = {}
+    for team in teams:
+        stats = dict(zip(TEAM_STAT_ROWS, _team_col(pbp, team, side)))
+        stats.update(_line_stats(pbp[pbp[side] == team]))
+        n = int(games.get(team, 0))
+        rows[team] = {"Games": n, **{k: (v / n if k in SEASON_PER_GAME and n else v)
+                                     for k, v in stats.items()}}
+    df = pd.DataFrame.from_dict(rows, orient="index", columns=SEASON_COLS)
+    df.index.name = "Team"
+    if side != "posteam":
+        df = df.drop(columns=[c for c in SEASON_DEFENSE_SKIP if c in df.columns])
+    return df
+
+
+def season_ranks(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.DataFrame:
+    """0–100 percentile of every cell within its column, 100 = best (the
+    lowest in `lower_is_better`); NaN where the value is."""
+    pct = df.apply(pd.to_numeric, errors="coerce").rank(pct=True, method="average") * 100
+    for col in df.columns:
+        if col in lower_is_better:
+            pct[col] = 100.0 - pct[col] + 100.0 / max(df[col].notna().sum(), 1)
+    return pct
+
+
+def season_rank_label(df: pd.DataFrame, team: str, lower_is_better: set = frozenset()) -> pd.Series:
+    """`team`'s place in each column of `df`, 1 = best: "5th of 32"."""
+    out = {}
+    for col in df.columns:
+        s = pd.to_numeric(df[col], errors="coerce")
+        if col in SEASON_VOLUME or pd.isna(s.get(team)):
+            out[col] = ""
+            continue
+        r = s.rank(ascending=col in lower_is_better, method="min")
+        out[col] = f"{_ordinal(int(r[team]))} of {int(s.notna().sum())}"
+    return pd.Series(out)
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+SEASON_TABLE_ALL = 10**6  # top_players / top_defenders: every player
+
+
+def season_players(pbp: pd.DataFrame, kind: str, drop: frozenset = frozenset(),
+                   teams=None) -> pd.DataFrame:
+    """Every player's `top_players` line over `pbp`, one row per player and
+    team (a traded player has one per team), with Team and the Games he
+    had a play in. `teams` limits it to those offenses."""
+    teams = sorted(pbp["posteam"].dropna().unique()) if teams is None else teams
+    name = PLAYER_NAME_COL[kind]
+    plays = _player_plays(pbp, kind)
+    games = plays.groupby(["posteam", name])["game_id"].nunique()
+    frames = []
+    for team in teams:
+        g = top_players(pbp, team, kind, SEASON_TABLE_ALL, drop=drop)
+        if g.empty:
+            continue
+        g.insert(1, "Team", team)
+        g.insert(2, "G", [int(games.get((team, p), 0)) for p in g["Player"]])
+        frames.append(g)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).sort_values("Yds", ascending=False, ignore_index=True)
+
+
+def season_defenders(pbp: pd.DataFrame, drop: frozenset = frozenset(), teams=None) -> pd.DataFrame:
+    """Every defender's `top_defenders` line over `pbp`, with Team."""
+    teams = sorted(pbp["defteam"].dropna().unique()) if teams is None else teams
+    frames = []
+    for team in teams:
+        g = top_defenders(pbp, team, SEASON_TABLE_ALL, drop=drop)
+        if not g.empty:
+            g.insert(1, "Team", team)
+            frames.append(g)
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(out.columns[2], ascending=False, ignore_index=True)
+
+
+def season_situational_distributions(pbp: pd.DataFrame, teams=None) -> dict[str, dict[str, np.ndarray]]:
+    """`situational_distributions()` over team-seasons instead of team-games:
+    each offense in `teams` (every one if None) counts once, over all its
+    plays in `pbp`."""
+    if teams is not None:
+        pbp = pbp[pbp["posteam"].isin(teams)]
+    return situational_distributions(pbp.assign(game_id="season"))
+
+
+def season_player_distributions(players: dict[str, pd.DataFrame],
+                                min_plays: dict[str, int]) -> dict[str, dict[str, np.ndarray]]:
+    """The leaders' rates (`PLAYER_RATE_COLS`) over the season tables'
+    players with at least `min_plays[kind]` plays: `player_distributions()`'s
+    shape, for `style_player_table`."""
+    out = {}
+    for kind, df in players.items():
+        if df.empty:
+            out[kind] = {}
+            continue
+        q = df[df[PLAYER_VOLUME_COL[kind]] >= min_plays[kind]]
+        out[kind] = {c: np.sort(q[c].dropna().to_numpy(dtype=float))
+                     for c in PLAYER_RATE_COLS[kind] if c in q.columns}
+    return out
 
 
 # ---------- Drives ----------
