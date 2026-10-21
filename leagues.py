@@ -62,6 +62,7 @@ class League:
     run_gaps: bool = False      # the play text names a run's gap, not just its side
     espn_id_col: str = "game_id"  # the games() column with ESPN's event id
     clock: core.ClockRules = core.NFL_CLOCK  # what Game management's clock estimates follow
+    season_group_label: str = "Division"  # the Season stats page's team filter
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -96,6 +97,17 @@ class League:
         columns, without their `_`), for Game management's what-ifs; None
         if the league has no model to run on them."""
         return None
+
+    def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+        """Every finished game of `season` published so far (PBP_COLS), plus
+        `postseason` (bool), for the Season stats page. Raises
+        GameLoadError if the season isn't published."""
+        raise NotImplementedError
+
+    def season_teams(self, season: int, stamp: str) -> pd.Series:
+        """The teams the Season stats page ranks, abbreviation → group
+        (`season_group_label`): NFL divisions, FBS conferences."""
+        raise NotImplementedError
 
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
@@ -276,6 +288,27 @@ def _nfl_game(season: int, stamp: str, game_id: str) -> pd.DataFrame:
     return pbp[pbp["game_id"] == game_id].sort_values("play_id").reset_index(drop=True)
 
 
+@st.cache_data(ttl=3600)
+def load_team_divisions() -> dict[str, str]:
+    """Map team abbreviation → division (e.g. KC → AFC West)."""
+    try:
+        df = nflverse_teams()
+    except Exception:
+        return {}
+    return {a: d for a, d in zip(df["team_abbr"], df["team_division"]) if isinstance(d, str)}
+
+
+@st.cache_data(max_entries=2)
+def _nfl_season_pbp(season: int, stamp: str) -> pd.DataFrame:
+    pbp = load_pbp(season, stamp)
+    sched = load_schedule(season)
+    if not sched.empty and "game_type" in sched.columns:
+        post = set(sched.loc[sched["game_type"] != "REG", "game_id"])
+        return pbp.assign(postseason=pbp["game_id"].isin(post))
+    # No schedule: the regular season ran 16 weeks to 2020, 17 games since.
+    return pbp.assign(postseason=pbp["week"] > (17 if season <= 2020 else 18))
+
+
 @st.cache_data(ttl=86400, max_entries=1)
 def _nfl_baseline_pbp(season: int) -> pd.DataFrame | None:
     """The 3 NFL seasons before `season`."""
@@ -325,6 +358,17 @@ class NFLLeague(League):
 
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return frozenset({"Hurries"})  # nflfastR has QB hits instead
+
+    def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+        try:
+            return _nfl_season_pbp(season, stamp)
+        except ValueError as e:
+            raise GameLoadError(str(e)) from e
+
+    def season_teams(self, season: int, stamp: str) -> pd.Series:
+        divisions = load_team_divisions()
+        teams = sorted(self.season_pbp(season, stamp)["posteam"].dropna().unique())
+        return pd.Series({t: divisions.get(t, "") for t in teams}, dtype=object)
 
     def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
         models, _, _ = load_nflfastr_models()
@@ -396,6 +440,42 @@ def load_cfb_team_meta(season: int, stamp: str) -> tuple[dict, dict, dict]:
                               cfb_feed.read_team_info(season), load_cfb_schedule(season))
 
 
+@st.cache_data(max_entries=2)
+def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
+    """The season's finished games with an FBS team in them, mapped to the
+    app's layout, with `postseason`."""
+    raw = load_cfb_season(season, stamp)
+    done = raw.groupby("game_id")["status_type_completed"].transform(lambda s: s.eq(True).all())
+    raw = raw[done]
+    fbs = set(_cfb_season_teams(season, stamp).index)
+    raw = raw[raw["homeTeamAbbrev"].isin(fbs) | raw["awayTeamAbbrev"].isin(fbs)]
+    post = set(raw.loc[raw["seasonType"] == 3, "game_id"].astype(str))
+    pbp = cfb_feed.to_pbp(raw, core.PBP_COLS)
+    return pbp.assign(postseason=pbp["game_id"].astype(str).isin(post))
+
+
+@st.cache_data(max_entries=2)
+def _cfb_season_teams(season: int, stamp: str) -> pd.Series:
+    """FBS teams that have played a published game, abbreviation → conference."""
+    games, _ = list_cfb_games(season, stamp, "")
+    sched = load_cfb_schedule(season)
+    if games.empty:
+        return pd.Series(dtype=object)
+    games = games[games["source"] == "published"]
+    division = {}
+    if not sched.empty and {"home_division", "away_division"} <= set(sched.columns):
+        s = sched.assign(game_id=sched["game_id"].astype(str)).set_index("game_id")
+        division = {"home": games["game_id"].map(s["home_division"]),
+                    "away": games["game_id"].map(s["away_division"])}
+    out = {}
+    for side in ("home", "away"):
+        fbs = division[side].eq("fbs") if division else pd.Series(True, index=games.index)
+        for team, conf in zip(games.loc[fbs, f"{side}_team"], games.loc[fbs, f"{side}_conf"]):
+            if isinstance(team, str) and team:
+                out[team] = conf if isinstance(conf, str) else ""
+    return pd.Series(out, dtype=object).sort_index()
+
+
 @st.cache_data(ttl=86400, max_entries=1)
 def _cfb_baseline_pbp(season: int) -> pd.DataFrame:
     """The college season before `season`, FBS-vs-FBS games only, mapped to
@@ -449,6 +529,15 @@ class CollegeLeague(League):
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return cfb_feed.missing_leader_stats(pbp)
 
+    def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+        try:
+            return _cfb_season_pbp(season, stamp)
+        except Exception as e:
+            raise GameLoadError(f"No college play-by-play for the {season} season yet ({e}).") from e
+
+    def season_teams(self, season: int, stamp: str) -> pd.Series:
+        return _cfb_season_teams(season, stamp)
+
 
 NFL = NFLLeague(
     name="NFL", key="NFL", title="🏈 NFL Tape-Delay Replay", first_season=1999,
@@ -460,7 +549,8 @@ COLLEGE = CollegeLeague(
     first_season=cfb_feed.FIRST_SEASON,
     # ~3h20m. One college season has about as many team-games as three NFL ones.
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
-    group_label="Conference", untimed_ot=True, clock=core.CFB_CLOCK)
+    group_label="Conference", untimed_ot=True, clock=core.CFB_CLOCK,
+    season_group_label="Conference")
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
 
 
@@ -548,3 +638,68 @@ def stat_baselines(league: League, season: int) -> dict[str, np.ndarray]:
 def situational_baselines(league: League, season: int) -> dict[str, dict[str, np.ndarray]]:
     """Situational success-rate baselines for `season`, by situation and metric."""
     return _situational_baselines(league.name, season)
+
+
+# ---------- Season stats ----------
+# Which games the Season stats page counts: (regular season, postseason).
+SEASON_PARTS = {"Regular season": (True, False), "Postseason": (False, True),
+                "Both": (True, True)}
+
+
+def season_plays(league: League, season: int, stamp: str,
+                 weeks: tuple[int, int], part: str) -> pd.DataFrame:
+    """The season's plays in regular-season `weeks` (inclusive) and/or the
+    postseason, as `SEASON_PARTS[part]` says."""
+    pbp = league.season_pbp(season, stamp)
+    reg, post = SEASON_PARTS[part]
+    keep = pbp["postseason"] & post
+    if reg:
+        keep |= ~pbp["postseason"] & pbp["week"].between(*weeks)
+    return pbp[keep]
+
+
+@st.cache_data(max_entries=6, show_spinner=False)
+def _season_tables(league_name: str, season: int, stamp: str,
+                   weeks: tuple[int, int], part: str) -> dict:
+    league = LEAGUES[league_name]
+    pbp = season_plays(league, season, stamp, weeks, part)
+    ranked = list(league.season_teams(season, stamp).index)
+    missing = league.missing_stats(pbp)
+
+    def _rows(df: pd.DataFrame) -> pd.DataFrame:
+        return df[df.index.isin(ranked)] if ranked else df
+
+    return {
+        "offense": _rows(core.season_team_table(pbp)),
+        "defense": _rows(core.season_team_table(pbp, "defteam")),
+        **{kind: core.season_players(pbp, kind, missing, teams=ranked or None)
+           for kind in core.PLAYER_NAME_COL},
+        "defenders": core.season_defenders(pbp, missing, teams=ranked or None),
+        "situational": core.season_situational_distributions(pbp, ranked or None),
+        "missing": missing,
+    }
+
+
+def season_tables(league: League, season: int, stamp: str,
+                  weeks: tuple[int, int], part: str) -> dict:
+    """The Season stats page's tables for the selection, cached: "offense" /
+    "defense" (`core.season_team_table`, the ranked teams only), the
+    "passing" / "rushing" / "receiving" / "defenders" leaderboards, the
+    team-season "situational" success-rate distributions and the
+    leader columns the data lacks ("missing")."""
+    return _season_tables(league.name, season, stamp, tuple(weeks), part)
+
+
+@st.cache_data(max_entries=6, show_spinner=False)
+def _season_tendencies(league_name: str, season: int, stamp: str,
+                       weeks: tuple[int, int], part: str) -> dict:
+    league = LEAGUES[league_name]
+    return core.tendency_baselines(season_plays(league, season, stamp, weeks, part),
+                                   league.run_gaps)
+
+
+def season_tendencies(league: League, season: int, stamp: str,
+                      weeks: tuple[int, int], part: str) -> dict:
+    """League-wide tendencies over the selection (`core.tendency_baselines`),
+    what a team's split is compared against on the Season stats page."""
+    return _season_tendencies(league.name, season, stamp, tuple(weeks), part)

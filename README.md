@@ -10,6 +10,7 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 - **Win probability chart** — x-axis capped at your current position so the chart shape itself can't spoil the ending
 - **Per-game play-by-play** — paginated recent plays list with current drive summary
 - **Player leaders** — passing, rushing, receiving, and defensive stats per team
+- **Season stats page** — the same team and player stats over a whole season (any season, NFL 1999 on, college 2004 on), from the sidebar's page menu: a league table of every team's offense or defense (per game, colored by rank among the season's teams), a team deep-dive (ranks, situational success, tendencies, leaders) and league-wide player leaderboards, filtered by weeks, regular season / postseason and division or conference. It shows results, so it isn't spoiler-safe
 - **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
 
 ## Quick Start
@@ -51,6 +52,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | File | What it does |
 |---|---|
 | [nfl_replay_app.py](nfl_replay_app.py) | The Streamlit page: sidebar, play cursor, sections |
+| [pages/2_Season_stats.py](pages/2_Season_stats.py) | The Season stats page: team and player stats over a season |
 | [leagues.py](leagues.py) | Where each league's games come from, behind one `League` interface |
 | [replay_core.py](replay_core.py) | League-neutral logic: play timeline, cursor, every stat (no Streamlit) |
 | [views.py](views.py) | Table styling, the drive field figure, the time bar, the other-games ticker |
