@@ -79,12 +79,17 @@ with st.sidebar:
     groups = sorted(g for g in ranked_teams.unique() if g)
     picked = st.multiselect(league.season_group_label, groups, placeholder="All",
                             key=f"_ss_groups_{league.name}")
+    adjust = st.radio("Stats", list(leagues.SEASON_ADJUST), horizontal=True, key="_ss_adjust",
+                      help="Opponent-adjusted: each offense's numbers less the average strength "
+                           "of the defenses it faced, and each defense's less that of the "
+                           "offenses it faced, iterated until they settle (like SRS). Counts of "
+                           "plays, penalties, aDOT and defenders' stats stay as played.")
     st.caption(f"Data as of {stamp}")
 
 shown_teams = sorted(ranked_teams.index[ranked_teams.isin(picked)] if picked else ranked_teams.index)
 
 with st.spinner("Computing season stats…"):
-    tables = leagues.season_tables(league, season, stamp, weeks, part)
+    tables = leagues.season_tables(league, season, stamp, weeks, part, adjust)
 if tables["offense"].empty:
     st.info("No games in this selection.")
     st.stop()
@@ -94,6 +99,9 @@ games_max = int(tables["offense"]["Games"].max())
 sel_note = (f"weeks {weeks[0]}–{weeks[1]}" if leagues.SEASON_PARTS[part][0] else "")
 sel_note = {"Regular season": sel_note, "Postseason": "postseason",
             "Both": f"{sel_note} + postseason"}[part]
+adjusted = leagues.SEASON_ADJUST[adjust]
+if adjusted:
+    sel_note += " · opponent-adjusted"
 
 tab_teams, tab_team, tab_players = st.tabs(["Teams", "Team", "Players"])
 
@@ -123,7 +131,9 @@ with tab_teams:
         "(green = best, red = worst"
         + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
            if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
-        "colored: volume isn't good or bad. Sorted best first.")
+        "colored: volume isn't good or bad. Sorted best first."
+        + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
+           + " faced; play counts and penalties are as played." if adjusted else ""))
 
 # ---------- Team ----------
 with tab_team:
@@ -145,10 +155,17 @@ with tab_team:
 
     st.markdown("**Situational success rates**")
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
+    if team in tables["situational_team"].index:  # raw, or adjusted for the defenses faced
+        own = tables["situational_team"].loc[team]
+        for (label, metric), v in own.items():
+            if label in sr.index and f"{team} {metric}" in sr.columns:
+                sr.at[label, f"{team} {metric}"] = v
     stat_table(style_sr_table(sr, tables["situational"], counts))
     st.caption("Success rate and EPA/play by down and distance (pass plays include sacks; "
                "no spikes or kneels), plays in brackets. Colors rank the season against every "
-               "team's season: green = top, red = bottom.")
+               "team's season: green = top, red = bottom."
+               + (f" {team}'s numbers are adjusted for the defenses faced; the league's are as "
+                  "played." if adjusted else ""))
 
     st.markdown("**Tendencies**")
     tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
@@ -227,4 +244,6 @@ with tab_players:
         st.caption(f"Season totals ({sel_note}); dropbacks include sacks. SR%, aDOT and "
                    f"EPA/play colors rank each player among those with {min_plays}+ "
                    f"{PLAYER_VOLUME_COL[kind].lower()} · green = top · red = bottom. A traded "
-                   "player has a row per team.")
+                   "player has a row per team."
+                   + (" SR% and EPA/play are adjusted for the defenses each player's plays "
+                      "came against; counts and aDOT are as played." if adjusted else ""))

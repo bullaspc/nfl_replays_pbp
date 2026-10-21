@@ -949,13 +949,126 @@ def season_defenders(pbp: pd.DataFrame, drop: frozenset = frozenset(), teams=Non
     return out.sort_values(out.columns[2], ascending=False, ignore_index=True)
 
 
-def season_situational_distributions(pbp: pd.DataFrame, teams=None) -> dict[str, dict[str, np.ndarray]]:
-    """`situational_distributions()` over team-seasons instead of team-games:
-    each offense in `teams` (every one if None) counts once, over all its
-    plays in `pbp`."""
-    if teams is not None:
-        pbp = pbp[pbp["posteam"].isin(teams)]
-    return situational_distributions(pbp.assign(game_id="season"))
+def season_situational(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
+    """Every team's situational success over `pbp`: teams as rows (offenses,
+    or with side="defteam" what each defense allowed), columns (situation,
+    metric) over `SR_SITUATIONS` + `SR_SUBTOTALS` × `SR_METRICS`."""
+    pbp = pbp[pbp[side].notna() & pbp["posteam"].notna()]
+    cols = {}
+    for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
+        sit = pbp[_situation_mask(pbp, downs, d_min, d_max)]
+        rows = {team: _situation_row(grp) for team, grp in sit.groupby(side)}
+        for m in SR_METRICS:
+            cols[(label, m)] = pd.Series({t: r[m] for t, r in rows.items()}, dtype=float)
+    df = pd.DataFrame(cols)
+    df.index.name = "Team"
+    return df
+
+
+def situational_distributions_from(table: pd.DataFrame) -> dict[str, dict[str, np.ndarray]]:
+    """A `season_situational()` table as the {situation: {metric: sorted
+    values}} baselines `style_sr_table` colors by."""
+    out: dict[str, dict[str, np.ndarray]] = {}
+    for (label, m), col in table.items():
+        out.setdefault(label, {})[m] = np.sort(col.dropna().to_numpy(dtype=float))
+    return out
+
+
+# ---------- Opponent adjustment ----------
+# A season's numbers adjusted for the opponents faced, as SRS does for
+# points: an offense's value minus the average strength of the defenses it
+# played, a defense's minus that of the offenses it played, iterated until
+# both settle. A strength is a team's adjusted value minus the league mean,
+# shrunk toward 0 by games / (games + SHRINK_GAMES) so a team seen only once
+# or twice (a college team's FCS opponent) can't swing its opponents' numbers.
+SHRINK_GAMES = 2
+ADJUST_MAX_PASSES = 100
+ADJUST_TOL = 1e-9
+# Volumes, a team's own penalties and the depth a passer chooses aren't
+# down to the opponent.
+SEASON_ADJUST_SKIP = SEASON_VOLUME | {"Penalties", "Penalty Yds", "aDoT"}
+# The team column whose defensive strength adjusts each player rate, and the
+# scale between them (player SR% is in percent, team SR a fraction).
+PLAYER_ADJUST = {"passing": {"SR%": ("Pass SR", 100.0), "EPA/play": ("Pass EPA/play", 1.0)},
+                 "rushing": {"SR%": ("Rush SR", 100.0), "EPA/play": ("Rush EPA/play", 1.0)},
+                 "receiving": {"EPA/play": ("Pass EPA/play", 1.0)}}
+
+
+def season_games(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Each game's two teams: one row per team per game (team, opp)."""
+    g = pbp.groupby("game_id")[["home_team", "away_team"]].first().reset_index()
+    return pd.concat([
+        g.rename(columns={"home_team": "team", "away_team": "opp"}),
+        g.rename(columns={"away_team": "team", "home_team": "opp"}),
+    ], ignore_index=True)[["game_id", "team", "opp"]]
+
+
+def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
+                    skip: set = SEASON_ADJUST_SKIP):
+    """Opponent-adjusted copies of a season's offense table `off` (what each
+    team produced) and defense table `def_` (what each allowed), teams as
+    rows, over the schedule `games` (`season_games`). Columns in both tables
+    and not in `skip` are adjusted; the rest are left as they are. Returns
+    (off_adj, def_adj, off_strength, def_strength); a strength is how far a
+    team pushes its opponents' numbers, already shrunk."""
+    cols = [c for c in off.columns if c in def_.columns and c not in skip
+            and pd.api.types.is_numeric_dtype(off[c])]
+    o, d = off[cols].astype(float), def_[cols].astype(float)
+    m_off, m_def = o.mean(), d.mean()
+    n = games.groupby("team").size()
+
+    def _weight(idx) -> pd.Series:
+        g = n.reindex(idx).fillna(0)
+        return g / (g + SHRINK_GAMES)
+
+    w_off, w_def = _weight(o.index), _weight(d.index)
+
+    def _faced(strength: pd.DataFrame, teams) -> pd.DataFrame:
+        """Each team's average opponent strength over its games."""
+        s = strength.reindex(games["opp"]).set_axis(games["team"].to_numpy())
+        return s.groupby(level=0).mean().reindex(teams).fillna(0.0)
+
+    o_adj, d_adj = o.copy(), d.copy()
+    for _ in range(ADJUST_MAX_PASSES):
+        o_str = (o_adj - m_off).mul(w_off, axis=0)
+        d_str = (d_adj - m_def).mul(w_def, axis=0)
+        o_new = o - _faced(d_str, o.index)
+        d_new = d - _faced(o_str, d.index)
+        delta = max(float(np.nanmax(np.abs((o_new - o_adj).to_numpy()), initial=0)),
+                    float(np.nanmax(np.abs((d_new - d_adj).to_numpy()), initial=0)))
+        o_adj, d_adj = o_new, d_new
+        if delta < ADJUST_TOL:
+            break
+    # Keep the league's mean where it was: adjusting moves teams, not the league.
+    o_adj += m_off - o_adj.mean()
+    d_adj += m_def - d_adj.mean()
+    off_out, def_out = off.copy(), def_.copy()
+    off_out[cols], def_out[cols] = o_adj, d_adj
+    return (off_out, def_out, (o_adj - m_off).mul(w_off, axis=0),
+            (d_adj - m_def).mul(w_def, axis=0))
+
+
+def adjust_players(df: pd.DataFrame, pbp: pd.DataFrame, kind: str,
+                   def_strength: pd.DataFrame) -> pd.DataFrame:
+    """A `season_players()` table with its rates (`PLAYER_ADJUST`) less the
+    average strength of the defenses each player's plays came against,
+    weighted by his plays against each."""
+    if df.empty:
+        return df
+    name = PLAYER_NAME_COL[kind]
+    plays = _player_plays(pbp, kind)
+    per_def = plays.groupby(["posteam", name, "defteam"]).size().rename("n").reset_index()
+    out = df.copy()
+    key = pd.MultiIndex.from_arrays([out["Team"], out["Player"]])
+    for col, (team_col, scale) in PLAYER_ADJUST[kind].items():
+        if col not in out.columns or team_col not in def_strength.columns:
+            continue
+        s = per_def.assign(_s=per_def["defteam"].map(def_strength[team_col]).fillna(0.0) * scale)
+        faced = (s["_s"] * s["n"]).groupby([s["posteam"], s[name]]).sum() / \
+            s.groupby(["posteam", name])["n"].sum()
+        out[col] = (out[col] - faced.reindex(key).fillna(0.0).to_numpy()).round(
+            1 if col == "SR%" else 2)
+    return out
 
 
 def season_player_distributions(players: dict[str, pd.DataFrame],

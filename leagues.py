@@ -658,36 +658,59 @@ def season_plays(league: League, season: int, stamp: str,
     return pbp[keep]
 
 
+# How the Season stats page's numbers are taken: as played, or adjusted for
+# the opponents faced (core.opponent_adjust).
+SEASON_ADJUST = {"Raw": False, "Opponent-adjusted": True}
+
+
 @st.cache_data(max_entries=6, show_spinner=False)
 def _season_tables(league_name: str, season: int, stamp: str,
-                   weeks: tuple[int, int], part: str) -> dict:
+                   weeks: tuple[int, int], part: str, adjusted: bool) -> dict:
     league = LEAGUES[league_name]
     pbp = season_plays(league, season, stamp, weeks, part)
     ranked = list(league.season_teams(season, stamp).index)
     missing = league.missing_stats(pbp)
 
     def _rows(df: pd.DataFrame) -> pd.DataFrame:
-        return df[df.index.isin(ranked)] if ranked else df
+        return df[df.index.isin(ranked)] if ranked and not df.empty else df
 
+    # Every team plays a part in the adjustment, then only the ranked are kept.
+    offense, defense = core.season_team_table(pbp), core.season_team_table(pbp, "defteam")
+    situational = core.season_situational(pbp)
+    players = {kind: core.season_players(pbp, kind, missing, teams=ranked or None)
+               for kind in core.PLAYER_NAME_COL}
+    if adjusted:
+        games = core.season_games(pbp)
+        offense, defense, _, def_strength = core.opponent_adjust(offense, defense, games)
+        situational, *_ = core.opponent_adjust(
+            situational, core.season_situational(pbp, "defteam"), games, set())
+        players = {kind: core.adjust_players(df, pbp, kind, def_strength)
+                   for kind, df in players.items()}
+    situational = _rows(situational)
     return {
-        "offense": _rows(core.season_team_table(pbp)),
-        "defense": _rows(core.season_team_table(pbp, "defteam")),
-        **{kind: core.season_players(pbp, kind, missing, teams=ranked or None)
-           for kind in core.PLAYER_NAME_COL},
+        "offense": _rows(offense),
+        "defense": _rows(defense),
+        **players,
         "defenders": core.season_defenders(pbp, missing, teams=ranked or None),
-        "situational": core.season_situational_distributions(pbp, ranked or None),
+        "situational_team": situational,
+        "situational": core.situational_distributions_from(situational),
         "missing": missing,
     }
 
 
 def season_tables(league: League, season: int, stamp: str,
-                  weeks: tuple[int, int], part: str) -> dict:
+                  weeks: tuple[int, int], part: str, adjust: str = "Raw") -> dict:
     """The Season stats page's tables for the selection, cached: "offense" /
     "defense" (`core.season_team_table`, the ranked teams only), the
-    "passing" / "rushing" / "receiving" / "defenders" leaderboards, the
-    team-season "situational" success-rate distributions and the
-    leader columns the data lacks ("missing")."""
-    return _season_tables(league.name, season, stamp, tuple(weeks), part)
+    "passing" / "rushing" / "receiving" / "defenders" leaderboards, each
+    ranked offense's situational success ("situational_team",
+    `core.season_situational`) and their distributions ("situational"), and
+    the leader columns the data lacks ("missing"). With `adjust`
+    "Opponent-adjusted" (`SEASON_ADJUST`) the team tables, situational
+    success and player rates are adjusted for the opponents faced
+    (`core.opponent_adjust` / `core.adjust_players`); counts, penalties and
+    defenders aren't."""
+    return _season_tables(league.name, season, stamp, tuple(weeks), part, SEASON_ADJUST[adjust])
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
