@@ -646,16 +646,21 @@ SEASON_PARTS = {"Regular season": (True, False), "Postseason": (False, True),
                 "Both": (True, True)}
 
 
-def season_plays(league: League, season: int, stamp: str,
-                 weeks: tuple[int, int], part: str) -> pd.DataFrame:
+def season_plays(league: League, season: int, stamp: str, weeks: tuple[int, int], part: str,
+                 play_filter: core.PlayFilter = core.NO_FILTER) -> pd.DataFrame:
     """The season's plays in regular-season `weeks` (inclusive) and/or the
-    postseason, as `SEASON_PARTS[part]` says."""
+    postseason, as `SEASON_PARTS[part]` says, in the situations
+    `play_filter` names (`core.filter_plays_by`)."""
     pbp = league.season_pbp(season, stamp)
     reg, post = SEASON_PARTS[part]
     keep = pbp["postseason"] & post
     if reg:
         keep |= ~pbp["postseason"] & pbp["week"].between(*weeks)
-    return pbp[keep]
+    pbp = pbp[keep]
+    if play_filter == core.NO_FILTER:
+        return pbp
+    # The score before each play needs whole games, so it's taken first.
+    return core.filter_plays_by(pbp.assign(_margin=core.pre_play_margin(pbp)), play_filter)
 
 
 # How the Season stats page's numbers are taken: as played, or adjusted for
@@ -663,11 +668,17 @@ def season_plays(league: League, season: int, stamp: str,
 SEASON_ADJUST = {"Raw": False, "Opponent-adjusted": True}
 
 
+def _scrimmage(pbp: pd.DataFrame) -> int:
+    return int(((pbp["pass_attempt"] == 1) | (pbp["rush_attempt"] == 1)).sum())
+
+
 @st.cache_data(max_entries=6, show_spinner=False)
-def _season_tables(league_name: str, season: int, stamp: str,
-                   weeks: tuple[int, int], part: str, adjusted: bool) -> dict:
+def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
+                   part: str, play_filter: core.PlayFilter, venue: str | None,
+                   adjusted: bool) -> dict:
     league = LEAGUES[league_name]
-    pbp = season_plays(league, season, stamp, weeks, part)
+    pbp = season_plays(league, season, stamp, weeks, part, play_filter)
+    every = _scrimmage(season_plays(league, season, stamp, weeks, part))
     ranked = list(league.season_teams(season, stamp).index)
     missing = league.missing_stats(pbp)
 
@@ -675,54 +686,75 @@ def _season_tables(league_name: str, season: int, stamp: str,
         return df[df.index.isin(ranked)] if ranked and not df.empty else df
 
     # Every team plays a part in the adjustment, then only the ranked are kept.
+    # Opponent strengths always come from all of a team's games; a venue only
+    # picks which of its own games are shown (and adjusted).
     offense, defense = core.season_team_table(pbp), core.season_team_table(pbp, "defteam")
     situational = core.season_situational(pbp)
-    players = {kind: core.season_players(pbp, kind, missing, teams=ranked or None)
+    if venue:
+        v_offense = core.season_team_table(pbp, venue=venue)
+        v_defense = core.season_team_table(pbp, "defteam", venue)
+        v_situational = core.season_situational(pbp, venue=venue)
+    team_plays = core.venue_plays(pbp, venue)
+    players = {kind: core.season_players(team_plays, kind, missing, teams=ranked or None)
                for kind in core.PLAYER_NAME_COL}
     if adjusted:
         games = core.season_games(pbp)
-        offense, defense, _, def_strength = core.opponent_adjust(offense, defense, games)
-        situational, *_ = core.opponent_adjust(
+        offense, defense, off_strength, def_strength = core.opponent_adjust(offense, defense, games)
+        situational, _, _, sit_def = core.opponent_adjust(
             situational, core.season_situational(pbp, "defteam"), games, set())
-        players = {kind: core.adjust_players(df, pbp, kind, def_strength)
+        if venue:
+            v_games = core.venue_games(games, venue)
+            v_offense = core.apply_strength(v_offense, def_strength, v_games)
+            v_defense = core.apply_strength(v_defense, off_strength, v_games)
+            v_situational = core.apply_strength(v_situational, sit_def, v_games)
+        players = {kind: core.adjust_players(df, team_plays, kind, def_strength)
                    for kind, df in players.items()}
+    if venue:
+        offense, defense, situational = v_offense, v_defense, v_situational
     situational = _rows(situational)
     return {
         "offense": _rows(offense),
         "defense": _rows(defense),
         **players,
-        "defenders": core.season_defenders(pbp, missing, teams=ranked or None),
+        "defenders": core.season_defenders(core.venue_plays(pbp, venue, "defteam"), missing,
+                                           teams=ranked or None),
         "situational_team": situational,
         "situational": core.situational_distributions_from(situational),
         "missing": missing,
+        "play_share": _scrimmage(pbp) / every if every else 1.0,
     }
 
 
-def season_tables(league: League, season: int, stamp: str,
-                  weeks: tuple[int, int], part: str, adjust: str = "Raw") -> dict:
+def season_tables(league: League, season: int, stamp: str, weeks: tuple[int, int], part: str,
+                  adjust: str = "Raw", play_filter: core.PlayFilter = core.NO_FILTER,
+                  venue: str = "All") -> dict:
     """The Season stats page's tables for the selection, cached: "offense" /
     "defense" (`core.season_team_table`, the ranked teams only), the
     "passing" / "rushing" / "receiving" / "defenders" leaderboards, each
     ranked offense's situational success ("situational_team",
-    `core.season_situational`) and their distributions ("situational"), and
-    the leader columns the data lacks ("missing"). With `adjust`
+    `core.season_situational`) and their distributions ("situational"), the
+    leader columns the data lacks ("missing") and the share of the
+    selection's scrimmage plays `play_filter` keeps ("play_share"). `venue`
+    (`core.VENUES`) keeps each team's home or away games. With `adjust`
     "Opponent-adjusted" (`SEASON_ADJUST`) the team tables, situational
     success and player rates are adjusted for the opponents faced
-    (`core.opponent_adjust` / `core.adjust_players`); counts, penalties and
-    defenders aren't."""
-    return _season_tables(league.name, season, stamp, tuple(weeks), part, SEASON_ADJUST[adjust])
+    (`core.opponent_adjust` / `core.adjust_players`), opponent strengths
+    from all games (`core.apply_strength` for a venue); counts, penalties
+    and defenders aren't."""
+    return _season_tables(league.name, season, stamp, tuple(weeks), part, play_filter,
+                          core.VENUES[venue], SEASON_ADJUST[adjust])
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
-def _season_tendencies(league_name: str, season: int, stamp: str,
-                       weeks: tuple[int, int], part: str) -> dict:
+def _season_tendencies(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
+                       part: str, play_filter: core.PlayFilter) -> dict:
     league = LEAGUES[league_name]
-    return core.tendency_baselines(season_plays(league, season, stamp, weeks, part),
+    return core.tendency_baselines(season_plays(league, season, stamp, weeks, part, play_filter),
                                    league.run_gaps)
 
 
-def season_tendencies(league: League, season: int, stamp: str,
-                      weeks: tuple[int, int], part: str) -> dict:
+def season_tendencies(league: League, season: int, stamp: str, weeks: tuple[int, int],
+                      part: str, play_filter: core.PlayFilter = core.NO_FILTER) -> dict:
     """League-wide tendencies over the selection (`core.tendency_baselines`),
     what a team's split is compared against on the Season stats page."""
-    return _season_tendencies(league.name, season, stamp, tuple(weeks), part)
+    return _season_tendencies(league.name, season, stamp, tuple(weeks), part, play_filter)
