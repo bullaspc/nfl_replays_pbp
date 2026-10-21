@@ -17,9 +17,11 @@ import streamlit as st
 import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
-    SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, has_air_yards,
+    OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
+    has_air_yards, venue_plays,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
-    season_rank_label, season_ranks, situational_table,
+    season_qualified, season_rank_label, season_ranks, situational_distributions_from,
+    situational_table,
 )
 from views import (
     pass_tendency_figure, run_tendency_figure, stat_table, style_defense_table,
@@ -27,6 +29,8 @@ from views import (
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
+
+QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 
 # The team table's column groups (replay_core.SEASON_COLS is "All").
 TEAM_VIEWS = {
@@ -85,24 +89,69 @@ with st.sidebar:
                            "of the defenses it faced, and each defense's less that of the "
                            "offenses it faced, iterated until they settle (like SRS). Counts of "
                            "plays, penalties, aDOT and defenders' stats stay as played.")
+    st.subheader("Situation")
+    venue = st.radio("Venue", list(VENUES), horizontal=True, key="_ss_venue",
+                     help="Each team's own home or away games, for its offense and its defense.")
+    quarters = st.multiselect("Quarters", list(QUARTERS), placeholder="All", key="_ss_quarters",
+                              format_func=QUARTERS.get)
+    garbage = None
+    if st.checkbox("Exclude garbage time", key="_ss_garbage",
+                   help="Drops plays where the offense's win probability before the snap is "
+                        "below the cutoff or above 100% minus it."):
+        garbage = st.slider("Win probability cutoff (%)", 1, 25, 10, key="_ss_garbage_wp") / 100
+    clutch = None
+    if st.checkbox("Clutch time only", key="_ss_clutch",
+                   help="The last minutes of the 4th quarter and all of overtime, with the "
+                        "score within the margin before the snap."):
+        clutch = (st.slider("Minutes left in the 4th quarter", 1, 15, 15, key="_ss_clutch_min"),
+                  st.slider("Score within (points)", 0, 16, 8, key="_ss_clutch_pts"))
+    play_filter = PlayFilter(tuple(sorted(quarters)), garbage, clutch)
+    min_team_plays = int(st.number_input(
+        "Min plays per team", min_value=0, value=SEASON_MIN_PLAYS, step=5, key="_ss_min_team_plays",
+        help="Teams with fewer plays (offense) or plays faced (defense) in the selection aren't "
+             "shown or ranked: their rates would be mostly chance."))
     st.caption(f"Data as of {stamp}")
 
 shown_teams = sorted(ranked_teams.index[ranked_teams.isin(picked)] if picked else ranked_teams.index)
 
 with st.spinner("Computing season stats…"):
-    tables = leagues.season_tables(league, season, stamp, weeks, part, adjust)
+    tables = leagues.season_tables(league, season, stamp, weeks, part, adjust, play_filter, venue)
 if tables["offense"].empty:
-    st.info("No games in this selection.")
+    st.info("No plays in this selection.")
     st.stop()
 
-n_teams = len(tables["offense"])
+# Teams with too few plays in the selection are left out of the tables and the ranks.
+team_tables = {"offense": season_qualified(tables["offense"], min_team_plays),
+               "defense": season_qualified(tables["defense"], min_team_plays)}
+if team_tables["offense"].empty:
+    st.info(f"No team has {min_team_plays}+ plays in this selection.")
+    st.stop()
+sit_dists = situational_distributions_from(
+    tables["situational_team"][tables["situational_team"].index.isin(team_tables["offense"].index)])
 games_max = int(tables["offense"]["Games"].max())
 sel_note = (f"weeks {weeks[0]}–{weeks[1]}" if leagues.SEASON_PARTS[part][0] else "")
 sel_note = {"Regular season": sel_note, "Postseason": "postseason",
             "Both": f"{sel_note} + postseason"}[part]
+filter_notes = [
+    " + ".join(QUARTERS[q] for q in sorted(quarters)) if quarters else "",
+    f"no garbage time (WP {garbage:.0%}–{1 - garbage:.0%})" if garbage is not None else "",
+    f"clutch (last {clutch[0]} min of Q4 + OT, within {clutch[1]})" if clutch else "",
+    f"{venue.lower()} games" if VENUES[venue] else "",
+]
+sel_note = " · ".join(n for n in [sel_note, *filter_notes] if n)
 adjusted = leagues.SEASON_ADJUST[adjust]
 if adjusted:
     sel_note += " · opponent-adjusted"
+# Player minimums scale with the share of plays the filters keep.
+play_share = tables["play_share"]
+
+
+
+def _default_min(kind: str) -> int:
+    """The default player minimum: the per-game one × games, scaled by the
+    share of plays the filters keep."""
+    return max(1, round(PLAYER_MIN_PLAYS[kind] * games_max * play_share))
+
 
 tab_teams, tab_team, tab_players = st.tabs(["Teams", "Team", "Players"])
 
@@ -114,7 +163,7 @@ with tab_teams:
     view = c2.segmented_control("Stats", list(TEAM_VIEWS), default="Efficiency",
                                 key="_ss_view") or "Efficiency"
     side = SIDES[side_label]
-    full = tables["offense" if side == "posteam" else "defense"]
+    full = team_tables["offense" if side == "posteam" else "defense"]
     lower = season_lower_is_better(side)
     ranks = season_ranks(full, lower)
     cols = [c for c in (TEAM_VIEWS[view] or full.columns) if c in full.columns]
@@ -128,7 +177,8 @@ with tab_teams:
     stat_table(style_season_table(table, ranks))
     st.caption(
         f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
-        f"among the {n_teams} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
+        f"among the {len(full)} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
+        f"with {min_team_plays}+ plays "
         "(green = best, red = worst"
         + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
            if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
@@ -139,20 +189,22 @@ with tab_teams:
 # ---------- Team ----------
 with tab_team:
     team = st.selectbox("Team", shown_teams, key=f"_ss_team_{league.name}")
-    pbp = leagues.season_plays(league, season, stamp, weeks, part)
+    pbp = venue_plays(leagues.season_plays(league, season, stamp, weeks, part, play_filter),
+                      VENUES[venue])
     st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"))
     col_o, col_d = st.columns(2)
     for col, side_label in [(col_o, "Offense"), (col_d, "Defense (allowed)")]:
         side = SIDES[side_label]
-        full = tables["offense" if side == "posteam" else "defense"]
-        if team not in full.index:
-            continue
+        full = team_tables["offense" if side == "posteam" else "defense"]
         lower = season_lower_is_better(side)
         with col:
             st.markdown(f"**{side_label}**")
+            if team not in full.index:
+                st.caption(f"Fewer than {min_team_plays} plays in this selection: not ranked.")
+                continue
             stat_table(style_team_season(full.loc[team], season_ranks(full, lower).loc[team],
                                          season_rank_label(full, team, lower)))
-    st.caption(f"{sel_note} · per game where it's a count · rank among {n_teams} teams.")
+    st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays.")
 
     st.markdown("**Situational success rates**")
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
@@ -161,7 +213,7 @@ with tab_team:
         for (label, metric), v in own.items():
             if label in sr.index and f"{team} {metric}" in sr.columns:
                 sr.at[label, f"{team} {metric}"] = v
-    stat_table(style_sr_table(sr, tables["situational"], counts))
+    stat_table(style_sr_table(sr, sit_dists, counts))
     st.caption("Success rate and EPA/play by down and distance (pass plays include sacks; "
                "no spikes or kneels), plays in brackets. Colors rank the season against every "
                "team's season: green = top, red = bottom."
@@ -171,7 +223,8 @@ with tab_team:
     st.markdown("**Tendencies**")
     tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
                                       key="_ss_tend_downs", label_visibility="collapsed") or "All downs"
-    tend_base = leagues.season_tendencies(league, season, stamp, weeks, part).get(tend_downs, {})
+    tend_base = leagues.season_tendencies(league, season, stamp, weeks, part,
+                                         play_filter).get(tend_downs, {})
     air = has_air_yards(pbp)
     runs = run_tendencies(pbp, team, league.run_gaps, TENDENCY_DOWNS[tend_downs])
     passes = pass_tendencies(pbp, team, TENDENCY_DOWNS[tend_downs], air)
@@ -190,7 +243,7 @@ with tab_team:
                "with the whole league over the same games. Colors are EPA/play.")
 
     st.markdown("**Player leaders**")
-    player_min = {k: PLAYER_MIN_PLAYS[k] * games_max for k in PLAYER_MIN_PLAYS}
+    player_min = {k: _default_min(k) for k in PLAYER_MIN_PLAYS}
     player_dists = season_player_distributions({k: tables[k] for k in PLAYER_MIN_PLAYS}, player_min)
     col_a, col_b = st.columns(2)
     for col, kinds in [(col_a, [("passing", 3), ("rushing", 5)]),
@@ -222,7 +275,8 @@ def _leaderboard(kind: str, c2, c3) -> None:
         vol = PLAYER_VOLUME_COL[kind]
         min_plays = int(c2.number_input(
             f"Min {'dropbacks' if kind == 'passing' else 'carries' if kind == 'rushing' else 'targets'}",
-            min_value=0, value=PLAYER_MIN_PLAYS[kind] * games_max, step=5, key=f"_ss_min_{kind}_{games_max}"))
+            min_value=0, value=_default_min(kind), step=5,
+            key=f"_ss_min_{kind}_{_default_min(kind)}"))
         df = df[df[vol] >= min_plays]
     numeric = [c for c in df.columns if c not in ("Player", "Team")]
     sort_by = c3.selectbox("Sort by", numeric,
@@ -309,7 +363,20 @@ where it was. Play counts, a team's own penalties, aDOT and defenders' stats sta
 A player's SR% and EPA/play are adjusted by the strength of the defenses his plays came against,
 weighted by how many plays he had against each.
 
-**Limits.** No garbage-time or win-probability filter and no home-field term. The adjustment is
+**Filters** (sidebar, Situation). *Home / Away* keeps each team's own home or away games, for its
+offense and its defense (neutral-site games count for the team listed at home); with
+Opponent-adjusted on, opponent strengths still come from all games and only the team's venue games
+are adjusted, by the opponents it met there. *Quarters* keeps plays in the picked quarters (OT is
+every overtime period). *Exclude garbage time* drops plays where the offense's win probability
+before the snap is below the cutoff or above 100% minus it (default 10%–90%). *Clutch time* keeps
+the last minutes of the 4th quarter (default all 15) and overtime when the score before the snap is
+within the margin (default 8, one score). Filters act on plays, so Games counts the games with a
+play left in, per-game numbers and time of possession cover only the plays kept, and the default
+player minimums shrink with the share of plays kept. *Min plays per team* (default {SEASON_MIN_PLAYS})
+leaves out, and doesn't rank, a team with fewer plays (or plays faced, for a defense) in the
+selection, so a narrow filter isn't topped by a team's handful of snaps.
+
+**Limits.** No home-field term in the adjustment. The adjustment is
 additive, not a regression, and like any season stat it is noisy on small samples: early weeks,
 the postseason, or a team's few plays in one situation.
 """)

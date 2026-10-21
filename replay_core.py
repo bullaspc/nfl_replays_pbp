@@ -9,6 +9,7 @@ function of DataFrames, importable from tools and tests.
 
 import re
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -837,6 +838,59 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
     return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
 
 
+# ---------- Season filters ----------
+# Situations the Season stats page can narrow its plays to. Garbage time is
+# judged by the offense's win probability before the snap; clutch time is the
+# 4th quarter's last minutes or overtime with the score close before the snap.
+class PlayFilter(NamedTuple):
+    quarters: tuple[int, ...] = ()       # 1–4, 5 = every overtime period; () = all
+    garbage_wp: float | None = None      # drop plays with offense WP < x or > 1 − x
+    clutch: tuple[int, int] | None = None  # (minutes left in Q4, within points)
+
+
+NO_FILTER = PlayFilter()
+OT_QTR = 5
+# Each team's own home or away games.
+VENUES = {"All": None, "Home": "home_team", "Away": "away_team"}
+
+
+def pre_play_margin(pbp: pd.DataFrame) -> pd.Series:
+    """Home score minus away score before each play: the previous row's
+    totals within its game (the totals are after the play). `pbp` must hold
+    whole games, in order."""
+    margin = (pbp["total_home_score"] - pbp["total_away_score"]).astype(float)
+    margin = margin.groupby(pbp["game_id"]).ffill()
+    return margin.groupby(pbp["game_id"]).shift().fillna(0.0)
+
+
+def offense_wp(pbp: pd.DataFrame) -> pd.Series:
+    """The offense's win probability before the snap."""
+    return pbp["home_wp"].where(pbp["posteam"] == pbp["home_team"], 1 - pbp["home_wp"])
+
+
+def filter_plays_by(pbp: pd.DataFrame, f: PlayFilter) -> pd.DataFrame:
+    """`pbp`'s plays in the situations `f` names. Clutch needs the
+    `_margin` column (`pre_play_margin`, taken before filtering)."""
+    keep = pd.Series(True, index=pbp.index)
+    if f.quarters:
+        q = pbp["qtr"].clip(upper=OT_QTR)
+        keep &= q.isin(f.quarters)
+    if f.garbage_wp is not None:
+        wp = offense_wp(pbp)
+        keep &= wp.isna() | wp.between(f.garbage_wp, 1 - f.garbage_wp)
+    if f.clutch is not None:
+        minutes, points = f.clutch
+        late = ((pbp["qtr"] == 4) & (pbp["game_seconds_remaining"] <= minutes * 60)) | (pbp["qtr"] >= OT_QTR)
+        keep &= late & (pbp["_margin"].abs() <= points)
+    return pbp[keep]
+
+
+def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> pd.DataFrame:
+    """Plays where the team on `side` is at home (venue "home_team") or away
+    ("away_team"); all of them for None."""
+    return pbp if venue is None else pbp[pbp[side] == pbp[venue]]
+
+
 # ---------- Season ----------
 # The Season stats page: the same stats over many games. Counts are per game
 # (teams play different numbers of games), and every cell is ranked against
@@ -860,18 +914,23 @@ def season_lower_is_better(side: str = "posteam") -> set:
     return set(SEASON_COLS) - offense - SEASON_VOLUME
 
 
-def season_team_table(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
+def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
+                      venue: str | None = None) -> pd.DataFrame:
     """One row per team in `pbp` (a season's plays, or part of one): Games,
     then Team stats and Line play (`SEASON_COLS`) for its offense, or with
     side="defteam" what its defense allowed. Counts (`SEASON_PER_GAME`) are
-    per game."""
+    per game. `venue` ("home_team" / "away_team", `VENUES`) keeps each team's
+    own home or away games."""
     teams = sorted(pbp[side].dropna().unique())
-    games = pbp[pbp[side].notna()].groupby(side)["game_id"].nunique()
     rows = {}
     for team in teams:
-        stats = dict(zip(TEAM_STAT_ROWS, _team_col(pbp, team, side)))
-        stats.update(_line_stats(pbp[pbp[side] == team]))
-        n = int(games.get(team, 0))
+        plays = pbp if venue is None else pbp[pbp[venue] == team]
+        mine = plays[plays[side] == team]
+        if mine.empty:
+            continue
+        stats = dict(zip(TEAM_STAT_ROWS, _team_col(plays, team, side)))
+        stats.update(_line_stats(mine))
+        n = int(mine["game_id"].nunique())
         rows[team] = {"Games": n, **{k: (v / n if k in SEASON_PER_GAME and n else v)
                                      for k, v in stats.items()}}
     df = pd.DataFrame.from_dict(rows, orient="index", columns=SEASON_COLS)
@@ -879,6 +938,15 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
     if side != "posteam":
         df = df.drop(columns=[c for c in SEASON_DEFENSE_SKIP if c in df.columns])
     return df
+
+
+SEASON_MIN_PLAYS = 15  # a team needs this many plays in the selection to be ranked
+
+
+def season_qualified(df: pd.DataFrame, min_plays: int = SEASON_MIN_PLAYS) -> pd.DataFrame:
+    """The rows of a `season_team_table` with at least `min_plays` plays in
+    all (Plays is per game): fewer leave rates to chance."""
+    return df[(df["Plays"] * df["Games"]).round() >= min_plays]
 
 
 def season_ranks(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.DataFrame:
@@ -949,10 +1017,13 @@ def season_defenders(pbp: pd.DataFrame, drop: frozenset = frozenset(), teams=Non
     return out.sort_values(out.columns[2], ascending=False, ignore_index=True)
 
 
-def season_situational(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
+def season_situational(pbp: pd.DataFrame, side: str = "posteam",
+                       venue: str | None = None) -> pd.DataFrame:
     """Every team's situational success over `pbp`: teams as rows (offenses,
     or with side="defteam" what each defense allowed), columns (situation,
-    metric) over `SR_SITUATIONS` + `SR_SUBTOTALS` × `SR_METRICS`."""
+    metric) over `SR_SITUATIONS` + `SR_SUBTOTALS` × `SR_METRICS`. `venue`
+    keeps each team's home or away games (`venue_plays`)."""
+    pbp = venue_plays(pbp, venue, side)
     pbp = pbp[pbp[side].notna() & pbp["posteam"].notna()]
     cols = {}
     for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
@@ -995,12 +1066,37 @@ PLAYER_ADJUST = {"passing": {"SR%": ("Pass SR", 100.0), "EPA/play": ("Pass EPA/p
 
 
 def season_games(pbp: pd.DataFrame) -> pd.DataFrame:
-    """Each game's two teams: one row per team per game (team, opp)."""
+    """Each game's two teams: one row per team per game (team, opp, and
+    whether the team was at home)."""
     g = pbp.groupby("game_id")[["home_team", "away_team"]].first().reset_index()
     return pd.concat([
-        g.rename(columns={"home_team": "team", "away_team": "opp"}),
-        g.rename(columns={"away_team": "team", "home_team": "opp"}),
-    ], ignore_index=True)[["game_id", "team", "opp"]]
+        g.rename(columns={"home_team": "team", "away_team": "opp"}).assign(home=True),
+        g.rename(columns={"away_team": "team", "home_team": "opp"}).assign(home=False),
+    ], ignore_index=True)[["game_id", "team", "opp", "home"]]
+
+
+def venue_games(games: pd.DataFrame, venue: str | None) -> pd.DataFrame:
+    """`season_games` rows for each team's home (venue "home_team") or away
+    ("away_team") games; all of them for None."""
+    return games if venue is None else games[games["home"] == (venue == "home_team")]
+
+
+def faced(strength: pd.DataFrame, games: pd.DataFrame, teams) -> pd.DataFrame:
+    """Each team's average opponent strength over its `games`."""
+    s = strength.reindex(games["opp"]).set_axis(games["team"].to_numpy())
+    return s.groupby(level=0).mean().reindex(teams).fillna(0.0)
+
+
+def apply_strength(raw: pd.DataFrame, strength: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
+    """`raw` (teams as rows) less the average strength of the opponents each
+    team met in `games`, in the columns `strength` has: an `opponent_adjust`
+    on a subset of games (a venue) with strengths from all of them. The
+    subset's mean is kept."""
+    cols = [c for c in strength.columns if c in raw.columns]
+    out = raw.copy()
+    adj = raw[cols].astype(float) - faced(strength[cols], games, raw.index)
+    out[cols] = adj + (raw[cols].astype(float).mean() - adj.mean())
+    return out
 
 
 def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
@@ -1023,17 +1119,12 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 
     w_off, w_def = _weight(o.index), _weight(d.index)
 
-    def _faced(strength: pd.DataFrame, teams) -> pd.DataFrame:
-        """Each team's average opponent strength over its games."""
-        s = strength.reindex(games["opp"]).set_axis(games["team"].to_numpy())
-        return s.groupby(level=0).mean().reindex(teams).fillna(0.0)
-
     o_adj, d_adj = o.copy(), d.copy()
     for _ in range(ADJUST_MAX_PASSES):
         o_str = (o_adj - m_off).mul(w_off, axis=0)
         d_str = (d_adj - m_def).mul(w_def, axis=0)
-        o_new = o - _faced(d_str, o.index)
-        d_new = d - _faced(o_str, d.index)
+        o_new = o - faced(d_str, games, o.index)
+        d_new = d - faced(o_str, games, d.index)
         delta = max(float(np.nanmax(np.abs((o_new - o_adj).to_numpy()), initial=0)),
                     float(np.nanmax(np.abs((d_new - d_adj).to_numpy()), initial=0)))
         o_adj, d_adj = o_new, d_new
