@@ -940,6 +940,15 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
     return df
 
 
+SEASON_MIN_PLAYS = 15  # a team needs this many plays in the selection to be ranked
+
+
+def season_qualified(df: pd.DataFrame, min_plays: int = SEASON_MIN_PLAYS) -> pd.DataFrame:
+    """The rows of a `season_team_table` with at least `min_plays` plays in
+    all (Plays is per game): fewer leave rates to chance."""
+    return df[(df["Plays"] * df["Games"]).round() >= min_plays]
+
+
 def season_ranks(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.DataFrame:
     """0–100 percentile of every cell within its column, 100 = best (the
     lowest in `lower_is_better`); NaN where the value is."""
