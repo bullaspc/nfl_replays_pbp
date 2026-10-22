@@ -1299,7 +1299,9 @@ def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: s
     (the offense's), "<metric> D" (what the defense allowed) and "<metric>
     edge" (percentiles as `matchup_table`'s; NaN unless both sides have
     `SITUATION_MIN_PLAYS`), with `_`-prefixed percentiles and play counts
-    ("_<metric> O pct", "_<metric> O n", …)."""
+    ("_<metric> O pct", "_<metric> O n", …). Success rates are kept within
+    0–100%: opponent adjustment can push a cell of a few plays past either
+    end."""
     off_pct = season_ranks(off_sit)
     def_pct = season_ranks(def_sit, set(def_sit.columns))  # allowing less is better
     off_n, def_n = _situation_counts(plays, offense, "posteam"), _situation_counts(plays, defense, "defteam")
@@ -1319,6 +1321,10 @@ def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: s
                         f"_{m} O pct": p_off, f"_{m} D pct": p_def, f"_{m} O n": no, f"_{m} D n": nd})
         rows[sit] = row
     out = pd.DataFrame.from_dict(rows, orient="index")
+    for m in metrics:
+        if m.endswith("SR%"):
+            cols = [f"{m} O", f"{m} D"]
+            out[cols] = out[cols].clip(0, 100)
     out.index.name = "Situation"
     return out
 

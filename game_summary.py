@@ -779,13 +779,13 @@ def matchup_snapshot(ctx: MatchupContext) -> str:
     if ctx.line:
         parts.append(f"Betting line: {ctx.line}")
     parts.append(f"Season numbers: {ctx.selection}. Places are among the {ctx.n_teams} teams; "
-                 "counts and yards are per game.")
+                 "in the matchup tables, counts and yards are per game.")
     for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
         parts.append(f"When {off} has the ball: {off}'s offense against what {def_}'s defense "
                      f"allowed.\n{_csv(matchup_rows(ctx.matchups[off], off, def_))}")
     for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
-        parts.append(f"Down and distance when {off} has the ball: success rate (plays in "
-                     f"brackets). Early = 1st-2nd down, late = 3rd-4th; short 1-3 yds to go, "
+        parts.append(f"Down and distance when {off} has the ball: success rate (the "
+                     f"season's plays in brackets, not per game). Early = 1st-2nd down, late = 3rd-4th; short 1-3 yds to go, "
                      f"medium 4-6, long 7+. No edge where either side has too few plays.\n"
                      f"{_csv(situational_rows(ctx.situational[off], off, def_))}")
     for team in (ctx.away, ctx.home):
@@ -805,7 +805,7 @@ Ground rules:
 - Don't predict a final score. Say which team the numbers favor and how clearly; if there's a betting line, say whether the numbers agree with it (the line usually knows more than season stats do).
 - Season numbers over a few games, and down-and-distance cells with few plays, are noisy. Say so when it matters.
 
-Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA. Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers, 3rd-down rate and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
+Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA. Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
 
 Write Markdown, about 150 to 220 words:
 **Headline**: one sentence: who the numbers favor and why.

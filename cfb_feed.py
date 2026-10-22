@@ -207,8 +207,9 @@ def _schedule_games(sched: pd.DataFrame) -> pd.DataFrame:
     """The schedule with string game ids, UTC kickoffs and only games with an
     FBS team (the release covers those)."""
     s = sched.assign(game_id=sched["game_id"].astype(str), kickoff=_utc(sched["start_date"]))
-    fbs = s["fbs_participant"].fillna(False).astype(bool) if "fbs_participant" in s.columns else True
-    return s[fbs]
+    if "fbs_participant" not in s.columns:
+        return s
+    return s[s["fbs_participant"].fillna(False).astype(bool)]
 
 
 def _schedule_rows(s: pd.DataFrame, ids: pd.DataFrame, source: str) -> pd.DataFrame:

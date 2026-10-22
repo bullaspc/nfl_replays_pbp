@@ -105,7 +105,8 @@ with st.sidebar:
     weeks = (reg_weeks[0], reg_weeks[-1]) if reg_weeks else (0, 0)
     if len(reg_weeks) > 1:
         weeks = st.select_slider("Regular-season weeks", options=reg_weeks, value=weeks,
-                                 key=f"_mu_weeks_{league.name}_{season}")
+                                 # A newly published week resets it to the full range.
+                                 key=f"_mu_weeks_{league.name}_{season}_{reg_weeks[-1]}")
     garbage = None
     if st.checkbox("Exclude garbage time", key="_mu_garbage",
                    help="Drops plays where the offense's win probability before the snap is "
@@ -288,7 +289,7 @@ st.subheader("By down and distance")
 for off, def_ in ((away, home), (home, away)):  # stacked: seven columns each
     st.markdown(f"**When {off} has the ball** · O = {off} offense, D = {def_} defense allowed")
     stat_table(style_situational_matchup(situational[off], off, def_, tints))
-st.caption("Success rate (EPA > 0), plays in brackets. Early downs are 1st–2nd, late 3rd–4th; "
+st.caption("Success rate (EPA > 0), the season's plays in brackets. Early downs are 1st–2nd, late 3rd–4th; "
            "short is 1–3 yards to go, medium 4–6, long 7+. Passes include sacks but not spikes, "
            f"runs leave out kneels. No edge (—) unless both sides have {SITUATION_MIN_PLAYS}+ "
            "plays there.")
@@ -330,13 +331,14 @@ each team's schedule out, as on the Season stats page.
 defense's: "{away} 30" means {away}'s unit ranks 30 percentile points better than the one it faces.
 **Proj.** starts from the league average and adds how far the offense and the defense each sit from
 it (the same additive view of offense and defense the opponent adjustment uses), kept at
-{PROJ_SHRINK:.0%}: in NFL backtests (`tools/validate_matchup.py`: every week of 2024 and 2025 from the
-weeks before it), game results landed a quarter to two thirds of the way from the average to the
-full sum. Shrunk, Proj. came closer to the game than the offense's own number or the league
+{PROJ_SHRINK:.0%}: in NFL backtests (`tools/validate_matchup.py`: each regular-season week from week 4
+on in 2024 and 2025, from the weeks before it), game results landed a quarter to two thirds of the
+way from the average to the full sum. Shrunk, Proj. came closer to the game than the offense's own number or the league
 average for EPA/play, pass EPA/play and 1st-down rate in both seasons, and about as close for the
-rest. Turnovers, 3rd-down rate and the run game carry over least from one game to the next: an
-edge there says more about the season than about the game. The projected EPA/play margin picked
-62–67% of winners; the betting favorite 63–74%. It knows nothing of injuries or weather.
+rest. Turnovers, 3rd-down rate, sack rate and the run game carry over least from one game to the
+next: an edge there says more about the season than about the game. The projected EPA/play margin
+picked 61–67% of winners opponent-adjusted (62–67% as played); the betting favorite 63–74%. It
+knows nothing of injuries or weather.
 
 **Head to head** compares like with like. Δ is {away} − {home}; whether more is better depends on
 the stat, so the tint, not the sign, says who's better.
