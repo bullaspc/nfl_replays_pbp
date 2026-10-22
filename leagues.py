@@ -109,6 +109,14 @@ class League:
         (`season_group_label`): NFL divisions, FBS conferences."""
         raise NotImplementedError
 
+    def upcoming(self, season: int, stamp: str) -> pd.DataFrame:
+        """The season's games not played yet, for the Matchup page, in week
+        and kickoff order: game_id, week_label, game_date, home_team,
+        away_team, label, neutral, home_spread (the betting line, home team
+        favored by; NaN where the data has none), total (NaN likewise) and,
+        if group_label is set, groups."""
+        raise NotImplementedError
+
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
         (scoreboard.ticker), never `row`'s: its live score would spoil it."""
@@ -250,6 +258,22 @@ def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     return g.reset_index(drop=True)
 
 
+def upcoming_games(sched: pd.DataFrame, published: set) -> pd.DataFrame:
+    """The schedule's games without a result that aren't in the published
+    pbp, with `League.upcoming`'s columns. nflverse's spread_line is how
+    many points the home team is favored by."""
+    if sched.empty:
+        return pd.DataFrame(columns=["game_id", "week_label", "home_team", "away_team", "label"])
+    g = sched[sched["result"].isna() & ~sched["game_id"].isin(published)]
+    g = g.sort_values(["week", "gameday", "gametime"]).reset_index(drop=True)
+    day = pd.to_datetime(g["gameday"]).dt.strftime("%a")
+    return g.assign(
+        week_label="Week " + g["week"].astype(int).astype(str), game_date=g["gameday"],
+        neutral=g["location"].eq("Neutral"), home_spread=g["spread_line"], total=g["total_line"],
+        label=[f"{a} @ {h} ({d} {gd})" for a, h, d, gd in zip(g["away_team"], g["home_team"], day,
+                                                                 g["gameday"])])
+
+
 @st.cache_resource
 def load_nflfastr_models():
     """nflfastR's EP/WP boosters + FG table, or the error that stopped them."""
@@ -370,6 +394,13 @@ class NFLLeague(League):
         teams = sorted(self.season_pbp(season, stamp)["posteam"].dropna().unique())
         return pd.Series({t: divisions.get(t, "") for t in teams}, dtype=object)
 
+    def upcoming(self, season: int, stamp: str) -> pd.DataFrame:
+        try:
+            published = set(load_pbp(season, stamp)["game_id"])
+        except ValueError:  # nothing published yet: every game is still to come
+            published = set()
+        return upcoming_games(load_schedule(season), published)
+
     def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
         models, _, _ = load_nflfastr_models()
         if models is None or states.empty:
@@ -415,6 +446,14 @@ def list_cfb_games(season: int, stamp: str, today: str) -> tuple[pd.DataFrame, s
     Eastern) is a cache key: live games are listed from their kickoff date."""
     raw, err = _cfb_season_or_empty(season, stamp)
     return cfb_feed.list_games(raw, load_cfb_schedule(season), today), err
+
+
+@st.cache_data(max_entries=2)
+def list_cfb_upcoming(season: int, stamp: str, today: str) -> pd.DataFrame:
+    """Games not played yet (cfb_feed.upcoming_games). `today` (US Eastern)
+    is a cache key."""
+    raw, _ = _cfb_season_or_empty(season, stamp)
+    return cfb_feed.upcoming_games(raw, load_cfb_schedule(season), today)
 
 
 @st.cache_data(max_entries=8)
@@ -537,6 +576,15 @@ class CollegeLeague(League):
 
     def season_teams(self, season: int, stamp: str) -> pd.Series:
         return _cfb_season_teams(season, stamp)
+
+    def upcoming(self, season: int, stamp: str) -> pd.DataFrame:
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        g = list_cfb_upcoming(season, stamp, today)
+        if g.empty:
+            return g
+        # The college schedule has no betting lines.
+        return g.assign(groups=list(zip(g["home_conf"], g["away_conf"])), home_spread=np.nan,
+                        total=np.nan)
 
 
 NFL = NFLLeague(
@@ -689,28 +737,31 @@ def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, 
     # Opponent strengths always come from all of a team's games; a venue only
     # picks which of its own games are shown (and adjusted).
     offense, defense = core.season_team_table(pbp), core.season_team_table(pbp, "defteam")
-    situational = core.season_situational(pbp)
+    situational, sit_defense = core.season_situational(pbp), core.season_situational(pbp, "defteam")
     if venue:
         v_offense = core.season_team_table(pbp, venue=venue)
         v_defense = core.season_team_table(pbp, "defteam", venue)
         v_situational = core.season_situational(pbp, venue=venue)
+        v_sit_defense = core.season_situational(pbp, "defteam", venue)
     team_plays = core.venue_plays(pbp, venue)
     players = {kind: core.season_players(team_plays, kind, missing, teams=ranked or None)
                for kind in core.PLAYER_NAME_COL}
     if adjusted:
         games = core.season_games(pbp)
         offense, defense, off_strength, def_strength = core.opponent_adjust(offense, defense, games)
-        situational, _, _, sit_def = core.opponent_adjust(
-            situational, core.season_situational(pbp, "defteam"), games, set())
+        situational, sit_defense, sit_off, sit_def = core.opponent_adjust(
+            situational, sit_defense, games, set())
         if venue:
             v_games = core.venue_games(games, venue)
             v_offense = core.apply_strength(v_offense, def_strength, v_games)
             v_defense = core.apply_strength(v_defense, off_strength, v_games)
             v_situational = core.apply_strength(v_situational, sit_def, v_games)
+            v_sit_defense = core.apply_strength(v_sit_defense, sit_off, v_games)
         players = {kind: core.adjust_players(df, team_plays, kind, def_strength)
                    for kind, df in players.items()}
     if venue:
-        offense, defense, situational = v_offense, v_defense, v_situational
+        offense, defense = v_offense, v_defense
+        situational, sit_defense = v_situational, v_sit_defense
     situational = _rows(situational)
     return {
         "offense": _rows(offense),
@@ -719,6 +770,7 @@ def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, 
         "defenders": core.season_defenders(core.venue_plays(pbp, venue, "defteam"), missing,
                                            teams=ranked or None),
         "situational_team": situational,
+        "situational_defense": _rows(sit_defense),
         "situational": core.situational_distributions_from(situational),
         "missing": missing,
         "play_share": _scrimmage(pbp) / every if every else 1.0,
@@ -732,7 +784,8 @@ def season_tables(league: League, season: int, stamp: str, weeks: tuple[int, int
     "defense" (`core.season_team_table`, the ranked teams only), the
     "passing" / "rushing" / "receiving" / "defenders" leaderboards, each
     ranked offense's situational success ("situational_team",
-    `core.season_situational`) and their distributions ("situational"), the
+    `core.season_situational`) and their distributions ("situational"),
+    what each ranked defense allowed by situation ("situational_defense"), the
     leader columns the data lacks ("missing") and the share of the
     selection's scrimmage plays `play_filter` keeps ("play_share"). `venue`
     (`core.VENUES`) keeps each team's home or away games. With `adjust`
