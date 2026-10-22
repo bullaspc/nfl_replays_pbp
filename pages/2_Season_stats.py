@@ -18,14 +18,15 @@ import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
-    has_air_yards, venue_plays,
+    availability_summary, has_air_yards, injury_report, team_snaps, venue_plays,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
     situational_table,
 )
 from views import (
-    pass_tendency_figure, run_tendency_figure, stat_table, style_defense_table,
-    style_player_table, style_season_table, style_sr_table, style_team_season,
+    pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
+    style_defense_table, style_injury_report,
+    style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -263,6 +264,55 @@ with tab_team:
                     stat_table(style_player_table(df, kind, player_dists, player_min[kind]),
                                hide_index=True)
 
+    # Snap counts and the latest injury report. Snap counts are whole games,
+    # so they follow the selection's games (weeks, games, venue) but not its
+    # quarter, garbage-time or clutch filters.
+    avail = league.availability(season)
+    st.markdown("**Snap counts**")
+    if not avail.source:
+        st.caption(f"No snap counts or injury reports for {league.name} in this app's data.")
+    else:
+        sel_games = leagues.season_plays(league, season, stamp, weeks, part)
+        mine = sel_games[(sel_games["home_team"] == team) | (sel_games["away_team"] == team)]
+        if VENUES[venue]:
+            mine = mine[mine[VENUES[venue]] == team]
+        game_ids = mine["game_id"].unique()
+        snaps = team_snaps(avail.snaps, team, game_ids)
+        counted = avail.snaps.loc[(avail.snaps["team"] == team) & avail.snaps["game_id"].isin(game_ids),
+                                  "game_id"].nunique() if not avail.snaps.empty else 0
+        if snaps.empty:
+            st.caption("No snap counts for these games yet.")
+        else:
+            stat_table(style_snap_table(snaps), hide_index=True)
+            st.caption(f"Each player's snaps over the {counted} of {team}'s {len(game_ids)} selected "
+                       "games PFR has counted so far, and his share of the team's offensive, "
+                       "defensive and special-teams snaps in them. Whole games: the quarter, "
+                       "garbage-time and clutch filters don't apply.")
+
+        st.markdown("**Injury report**")
+        team_reports = (avail.injuries[avail.injuries["team"] == team] if not avail.injuries.empty
+                        else avail.injuries)
+        if avail.injuries.empty:
+            st.caption("The injury reports couldn't be loaded.")
+        elif team_reports.empty:
+            st.caption(f"No injury reports for {team} this season.")
+        else:
+            report_week = int(team_reports["week"].max())
+            report = injury_report(avail.injuries, team, report_week, team_snaps(avail.snaps, team),
+                                   avail.starters)
+            units = availability_summary(report)
+            if not units.empty:
+                stat_table(style_availability_summary(units), hide_index=True)
+            stat_table(style_injury_report(report), hide_index=True)
+            st.caption(
+                f"Week {report_week}, {team}'s latest report (as of {avail.as_of or 'the latest build'}). "
+                "**Status** is the game status on the final report: Out, Doubtful (rarely plays) or "
+                "Questionable (may play); before it there's only practice participation. **Snaps** "
+                "is his share of the team's snaps this season in the phase he plays most (O, D, "
+                "ST), **Starter** his slot on the latest depth chart; **Snaps out** adds up the "
+                "out-or-doubtful players' shares of the unit's phase (1.0 = one full-time player). "
+                f"From {avail.source}.")
+
 # ---------- Players ----------
 def _leaderboard(kind: str, c2, c3) -> None:
     """The Players tab's `kind` leaderboard, with its minimum and sort controls."""
@@ -368,6 +418,12 @@ weighted by how many plays he had against each. The adjustment adds and subtract
 player with only a few plays in a cell can land past what the stat can be (a success rate below
 0% or above 100%, fewer than 0 turnovers a game, more rushes and completions than plays, fewer QB
 hits than sacks): such a value is shown at the nearest one it can take.
+
+**Snap counts and injury reports** (Team tab, NFL). Snap counts are PFR's, per player and game:
+a player's share is his snaps over the team's snaps in the selected games, counted per phase
+(offense, defense, special teams). They're whole games, so only the weeks, games and venue apply.
+The injury report is the team's latest, the NFL's own as nflverse publishes it; each listed player
+has his share of the team's snaps this season and his slot on the latest depth chart.
 
 **Filters** (sidebar, Situation). *Home / Away* keeps each team's own home or away games, for its
 offense and its defense (neutral-site games count for the team listed at home); with

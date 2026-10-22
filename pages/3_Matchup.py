@@ -19,10 +19,12 @@ import streamlit as st
 import game_summary
 import leagues
 from replay_core import (EDGE_EVEN, MATCHUP_ROWS, PLAYER_MIN_PLAYS, PROJ_SHRINK, SEASON_MIN_PLAYS,
-                         SITUATION_MIN_PLAYS, PlayFilter, head_to_head, matchup_table,
-                         season_player_distributions, season_qualified, situational_matchup)
-from views import (MATCHUP_TINTS, logo_img, stat_table, style_defense_table, style_head_to_head,
-                   style_matchup_table, style_player_table, style_situational_matchup)
+                         SITUATION_MIN_PLAYS, PlayFilter, availability_summary, head_to_head,
+                         injury_report, matchup_table, season_player_distributions, season_qualified,
+                         situational_matchup, status_by_name, team_snaps)
+from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_availability_summary,
+                   style_defense_table, style_head_to_head, style_injury_report, style_matchup_table,
+                   style_player_table, style_situational_matchup)
 
 st.set_page_config(page_title="Matchup", layout="wide", page_icon="🆚")
 
@@ -152,6 +154,32 @@ if garbage is not None:
     sel_note += f" · no garbage time (WP {garbage:.0%}–{1 - garbage:.0%})"
 sel_note += " · opponent-adjusted" if leagues.SEASON_ADJUST[adjust] else " · as played"
 
+# Who's hurt: each team's injury report for the game's week, with each listed
+# player's share of his team's snaps this season, and the statuses by the
+# names the season tables use (for the Key players badges).
+avail = league.availability(season)
+game_week = int(game["week"])
+player_ids = leagues.season_player_ids(league, season, stamp)
+reports, report_units, statuses = {}, {}, {}
+for team in (away, home):
+    reports[team] = injury_report(avail.injuries, team, game_week, team_snaps(avail.snaps, team),
+                                  avail.starters)
+    report_units[team] = availability_summary(reports[team])
+    statuses[team] = status_by_name(reports[team], team, player_ids, avail.short_names)
+injury_note = (f"the week {game_week} reports, as of {avail.as_of or 'the latest build'}"
+               if not avail.injuries.empty else "")
+
+
+def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
+    """A leaders table with a Status column after Player, if any of its
+    players has a game status."""
+    status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
+    if not any(status):
+        return df
+    df = df.copy()
+    df.insert(1, "Status", [status_badge(s) for s in status] if badge else status)
+    return df
+
 kick = pd.Timestamp(game["game_date"])
 when = f"{week} · {kick:%a %b} {kick.day}" + (" · neutral site" if game.get("neutral") else "")
 spread, total = game.get("home_spread"), game.get("total")
@@ -210,16 +238,19 @@ else:
             df = tables[kind]
             for team in (away, home):
                 if not df.empty:
-                    _leaders[(team, "defense" if kind == "defenders" else kind)] = (
-                        df[df["Team"] == team].drop(columns="Team").head(n))
+                    _leaders[(team, "defense" if kind == "defenders" else kind)] = _with_status(
+                        df[df["Team"] == team].drop(columns="Team").head(n), team, badge=False)
+        _shown = ["Player", "Pos", "Status", "Snaps", "Starter", "Practice", "Injury"]
         _ctx = game_summary.MatchupContext(
             league=league.key, away=away, home=home, when=when.replace(" · ", ", "), line=line,
             selection=sel_note.replace(" · ", ", "), n_teams=n_teams,
-            matchups=matchups, situational=situational, leaders=_leaders)
+            matchups=matchups, situational=situational, leaders=_leaders,
+            injuries={t: reports[t][_shown] for t in (away, home)}, injury_units=report_units,
+            injury_note=injury_note)
         _future, _progress = game_summary.submit_preview(_ctx, _providers[_prov])
         st.session_state["_mu_job"] = {"future": _future, "progress": _progress,
                                        "key": preview_key, "started": time.time(),
-                                       "selection": sel_note}
+                                       "selection": sel_note, "injuries_as_of": avail.as_of}
         st.session_state.pop("_mu_error", None)
         del st.session_state["_mu_requested"]
         st.rerun()  # redraw the button as busy, and start the fragment polling
@@ -239,7 +270,8 @@ def _preview_result() -> None:
         else:
             st.session_state["_mu_previews"] = {
                 **st.session_state.get("_mu_previews", {}),
-                job["key"]: {"text": res.text, "model": res.model, "selection": job["selection"]}}
+                job["key"]: {"text": res.text, "model": res.model, "selection": job["selection"],
+                             "injuries_as_of": job["injuries_as_of"]}}
         del st.session_state["_mu_job"]
         st.rerun()  # a full run: the button frees up, and polling stops
     if job and job["key"] == preview_key:
@@ -256,10 +288,37 @@ def _preview_result() -> None:
             note = f"{preview['model']} · {preview['selection']}"
             if preview["selection"] != sel_note:
                 note += " · the numbers below have changed since: press Update preview to redo it"
+            elif preview.get("injuries_as_of", "") != avail.as_of:
+                note += " · the injury report has been updated since: press Update preview to redo it"
             st.caption(note)
 
 
 _preview_result()
+
+# ---------- Availability ----------
+st.subheader("Availability")
+if not avail.source:
+    st.caption(f"No injury reports or snap counts for {league.name} in this app's data.")
+elif avail.injuries.empty:
+    st.caption("The injury reports couldn't be loaded.")
+else:
+    for col, team in zip(st.columns(2), (away, home)):
+        with col:
+            st.markdown(f"**{team}** · week {game_week} injury report")
+            if reports[team].empty:
+                st.caption("Not filed yet: teams file the first one about three days before the game.")
+                continue
+            if not report_units[team].empty:
+                stat_table(style_availability_summary(report_units[team]), hide_index=True)
+            stat_table(style_injury_report(reports[team]), hide_index=True)
+    st.caption(
+        "**Status** is the game status on the final report, the day before the game (Wednesday for "
+        "a Thursday game): Out, Doubtful (rarely plays) or Questionable (may play); before it there's "
+        "only practice participation. **Snaps** is the player's share of his team's snaps this "
+        "season in the phase he plays most (O offense, D defense, ST special teams), **Starter** "
+        "his slot on the latest depth chart. **Snaps out** adds up the out-or-doubtful players' "
+        "shares of the unit's phase: 1.0 is one full-time player. "
+        f"From {avail.source}; reports as of {avail.as_of or 'the latest build'}.")
 
 # ---------- Matchups ----------
 st.subheader("Matchups")
@@ -312,12 +371,14 @@ for col, team in zip(st.columns(2), (away, home)):
             if df.empty:
                 st.caption("No data")
             elif kind == "defenders":
-                stat_table(style_defense_table(df), hide_index=True)
+                stat_table(style_defense_table(_with_status(df, team, badge=True)), hide_index=True)
             else:
-                stat_table(style_player_table(df, kind, player_dists, player_min[kind]),
+                stat_table(style_player_table(_with_status(df, team, badge=True), kind,
+                                              player_dists, player_min[kind]),
                            hide_index=True)
 st.caption("Season totals over the same games. SR%, aDOT and EPA/play are colored against the "
-           "season's players with enough plays, as on the Season stats page.")
+           "season's players with enough plays, as on the Season stats page. **Status** is the "
+           "player's game status on this week's injury report, where he has one.")
 
 # ---------- How to read this ----------
 st.divider()
@@ -348,7 +409,14 @@ the stat, so the tint, not the sign, says who's better.
 **Down and distance** splits the success rates by down and distance. Small samples are noisy, so
 a cell needs {SITUATION_MIN_PLAYS} plays on both sides for an edge.
 
-**Matchup preview.** On request, the matchup tables, down and distance and key players on this
-page are sent to the model (Kimi by default; Claude if that's the key set) with instructions to
-use only those numbers. It isn't told about injuries or news, and it doesn't predict a score.
+**Availability** is each team's injury report for the game's week, the NFL's own as nflverse
+publishes it, with each listed player's share of his team's snaps this season (PFR's snap counts)
+and his slot on the latest depth chart. The season numbers above include the games he played, so a
+starter who is out takes some of his unit's strength with him; the page says who and how much he
+plays, but doesn't adjust the numbers for it.
+
+**Matchup preview.** On request, the matchup tables, down and distance, key players and the injury
+reports on this page are sent to the model (Kimi by default; Claude if that's the key set) with
+instructions to use only those numbers and reports. It isn't told about news, and it doesn't
+predict a score.
 """)

@@ -10,8 +10,8 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 - **Win probability chart** — x-axis capped at your current position so the chart shape itself can't spoil the ending
 - **Per-game play-by-play** — paginated recent plays list with current drive summary
 - **Player leaders** — passing, rushing, receiving, and defensive stats per team
-- **Season stats page** — the same team and player stats over a whole season (any season, NFL 1999 on, college 2004 on), from the sidebar's page menu: a league table of every team's offense or defense (per game, colored by rank among the season's teams), a team deep-dive (ranks, situational success, tendencies, leaders) and league-wide player leaderboards, filtered by weeks, regular season / postseason, division or conference, home or away games, quarter, garbage time (by win probability) and clutch time. **Opponent-adjusted** stats take out the schedule: offenses are adjusted for the defenses they faced and defenses for the offenses, iterated like SRS (team tables, situational success and player rates). It shows results, so it isn't spoiler-safe
-- **Matchup page** — a preview of a game not played yet (the next week by default, NFL or college): each team's offense against the other's defense, stat by stat, with both sides' values and ranks among the season's teams, who has the **edge** (by how many percentile points) and a **projection** for the game; head-to-head deltas (offense vs offense, defense vs defense); success rates by down and distance; key players. Raw or opponent-adjusted, over any weeks, with or without garbage time. On request, **Kimi** (or Claude) writes a short preview from those tables only. Backtested on the 2024 and 2025 NFL seasons with `tools/validate_matchup.py`
+- **Season stats page** — the same team and player stats over a whole season (any season, NFL 1999 on, college 2004 on), from the sidebar's page menu: a league table of every team's offense or defense (per game, colored by rank among the season's teams), a team deep-dive (ranks, situational success, tendencies, leaders, every player's snap counts with his share of the team's offensive, defensive and special-teams snaps, and the latest injury report; NFL) and league-wide player leaderboards, filtered by weeks, regular season / postseason, division or conference, home or away games, quarter, garbage time (by win probability) and clutch time. **Opponent-adjusted** stats take out the schedule: offenses are adjusted for the defenses they faced and defenses for the offenses, iterated like SRS (team tables, situational success and player rates). It shows results, so it isn't spoiler-safe
+- **Matchup page** — a preview of a game not played yet (the next week by default, NFL or college): each team's offense against the other's defense, stat by stat, with both sides' values and ranks among the season's teams, who has the **edge** (by how many percentile points) and a **projection** for the game; head-to-head deltas (offense vs offense, defense vs defense); success rates by down and distance; key players. Raw or opponent-adjusted, over any weeks, with or without garbage time. An **Availability** section shows each team's injury report for the week (NFL: the league's official reports via nflverse), with each listed player's share of the team's snaps and whether he starts, summed up by unit ("OL: 2 out, 2 starting, 1.4 players' worth of snaps"), and Key players carry their status. On request, **Kimi** (or Claude) writes a short preview from those tables and reports only. Backtested on the 2024 and 2025 NFL seasons with `tools/validate_matchup.py`
 - **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
 
 ## Quick Start
@@ -38,7 +38,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 | Package | Purpose |
 |---|---|
 | `streamlit` | Web UI framework |
-| `nflreadpy` | NFL play-by-play, schedules and team colors from nflverse (the successor to `nfl_data_py`) |
+| `nflreadpy` | NFL play-by-play, schedules, team colors, injury reports, snap counts and depth charts from nflverse (the successor to `nfl_data_py`) |
 | `pandas`, `pyarrow` | Data manipulation, reading sportsdataverse parquet files |
 | `numpy` | Numeric helpers |
 | `plotly` | Win probability chart |
@@ -106,7 +106,7 @@ CLAUDE_MODEL = "claude-sonnet-5-5"
 CLAUDE_EFFORT = "medium"      # Claude only
 ```
 
-The **Matchup** page uses the same keys for its **Matchup preview**: one call with the page's tables (both matchups, down and distance, key players, the betting line), about 150–220 words on where the game will be decided. It's told to use only those numbers (no injuries or news) and not to predict a score.
+The **Matchup** page uses the same keys for its **Matchup preview**: one call with the page's tables (both matchups, down and distance, key players, the injury reports, the betting line), about 150–220 words on where the game will be decided. It's told to use only those numbers and reports (no news, and no injuries the reports don't list) and not to predict a score.
 
 With both keys set, a selector picks the model per summary. Claude requests also get prompt caching and, on Claude Sonnet 5.5 and newer, the server-side refusal fallback (`fallbacks: "default"`).
 
