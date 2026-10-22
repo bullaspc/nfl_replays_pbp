@@ -48,6 +48,22 @@ class LoadedGame:
     warning: str | None = None  # something the viewer should know (e.g. no models)
 
 
+@dataclass
+class Availability:
+    """Who's hurt and how much each player plays (replay_core's Availability
+    section); empty frames where a league has none."""
+    injuries: pd.DataFrame      # weekly injury reports, one row per player and week
+    snaps: pd.DataFrame         # snap counts per player and game, with gsis_id
+    starters: pd.Series         # gsis id → slot on the team's latest depth chart
+    short_names: pd.Series      # gsis id → short name ("T.Edwards")
+    source: str = ""            # where they come from, for captions; "" when the league has none
+    as_of: str = ""             # when the injury reports were last rebuilt
+
+
+NO_AVAILABILITY = Availability(pd.DataFrame(), pd.DataFrame(), pd.Series(dtype=object),
+                               pd.Series(dtype=object))
+
+
 @dataclass(frozen=True)
 class League:
     """What the page needs from a league. Subclasses fill in the methods."""
@@ -111,11 +127,16 @@ class League:
 
     def upcoming(self, season: int, stamp: str) -> pd.DataFrame:
         """The season's games not played yet, for the Matchup page, in week
-        and kickoff order: game_id, week_label, game_date, home_team,
+        and kickoff order: game_id, week, week_label, game_date, home_team,
         away_team, label, neutral, home_spread (the betting line, home team
         favored by; NaN where the data has none), total (NaN likewise) and,
         if group_label is set, groups."""
         raise NotImplementedError
+
+    def availability(self, season: int) -> Availability:
+        """The season's injury reports, snap counts and starters; empty
+        (`NO_AVAILABILITY`) where the league has none."""
+        return NO_AVAILABILITY
 
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
@@ -184,11 +205,12 @@ def load_team_nicknames() -> dict[str, str]:
 
 
 @st.cache_data(ttl=60)
-def nflverse_stamp() -> str:
-    """When nflverse last rebuilt its pbp files. Checked every minute, so a
-    newly published game shows up right away instead of on a fixed timer."""
+def nflverse_stamp(release: str = "pbp") -> str:
+    """When nflverse last rebuilt a release's files (pbp, injuries, …).
+    Checked every minute, so a newly published game shows up right away
+    instead of on a fixed timer."""
     try:
-        r = requests.get(f"{NFLVERSE_RELEASE}/pbp/timestamp.json", timeout=10)
+        r = requests.get(f"{NFLVERSE_RELEASE}/{release}/timestamp.json", timeout=10)
         r.raise_for_status()
         return str(r.json().get("last_updated", ""))
     except Exception:
@@ -343,6 +365,64 @@ def _nfl_baseline_pbp(season: int) -> pd.DataFrame | None:
     return None if df.empty else df
 
 
+# Injury reports, snap counts and depth charts (replay_core's Availability).
+# Each nflverse release has its own timestamp.json, so each file is downloaded
+# again only when it's rebuilt; one that can't be read is empty (and cached as
+# such until its stamp changes), and the pages say there's no report.
+@st.cache_data(ttl=86400)
+def _players() -> pd.DataFrame:
+    """nflverse's players: gsis id, PFR id and short name ("D.Maye")."""
+    try:
+        return nflreadpy.load_players().select(["gsis_id", "pfr_id", "short_name"]).to_pandas()
+    except Exception:
+        return pd.DataFrame(columns=["gsis_id", "pfr_id", "short_name"])
+
+
+@st.cache_data(max_entries=2)
+def load_injuries(season: int, stamp: str) -> pd.DataFrame:
+    """The NFL's weekly injury reports for `season`, as nflverse publishes them."""
+    try:
+        return nflreadpy.load_injuries([season]).to_pandas()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(max_entries=2)
+def load_snap_counts(season: int, stamp: str) -> pd.DataFrame:
+    """PFR's snap counts per player and game, with gsis_id (through nflverse's
+    players table; NaN for a player it doesn't link)."""
+    try:
+        snaps = nflreadpy.load_snap_counts([season]).to_pandas()
+    except Exception:
+        return pd.DataFrame()
+    p = _players().dropna(subset=["pfr_id", "gsis_id"]).drop_duplicates("pfr_id")
+    return snaps.assign(gsis_id=snaps["pfr_player_id"].map(p.set_index("pfr_id")["gsis_id"]))
+
+
+@st.cache_data(max_entries=2)
+def load_starters(season: int, stamp: str) -> pd.Series:
+    """gsis id → slot ("LT", "MLB", "RCB") for each team's first-team players
+    on its latest depth chart. Since 2025 nflverse keeps ESPN's daily charts
+    (dt, pos_abb, pos_rank); before, one per week (week, depth_team,
+    depth_position)."""
+    try:
+        dc = nflreadpy.load_depth_charts([season]).to_pandas()
+    except Exception:
+        return pd.Series(dtype=object)
+    if {"dt", "pos_rank", "pos_abb"} <= set(dc.columns):
+        first = dc[(dc["dt"] == dc.groupby("team")["dt"].transform("max")) & (dc["pos_rank"] == 1)]
+        slot = first["pos_abb"]
+    elif {"week", "depth_team", "depth_position"} <= set(dc.columns):
+        team = "club_code" if "club_code" in dc.columns else "team"
+        first = dc[(dc["week"] == dc.groupby(team)["week"].transform("max"))
+                   & (dc["depth_team"].astype(str) == "1")]
+        slot = first["depth_position"]
+    else:
+        return pd.Series(dtype=object)
+    return pd.Series(slot.to_numpy(), index=first["gsis_id"].to_numpy(), dtype=object).loc[
+        lambda s: ~s.index.duplicated() & pd.notna(s.index)]
+
+
 class NFLLeague(League):
     def stamp(self) -> str:
         return nflverse_stamp()
@@ -400,6 +480,17 @@ class NFLLeague(League):
         except ValueError:  # nothing published yet: every game is still to come
             published = set()
         return upcoming_games(load_schedule(season), published)
+
+    def availability(self, season: int) -> Availability:
+        injuries_stamp = nflverse_stamp("injuries")
+        p = _players().dropna(subset=["gsis_id", "short_name"]).drop_duplicates("gsis_id")
+        return Availability(
+            injuries=load_injuries(season, injuries_stamp),
+            snaps=load_snap_counts(season, nflverse_stamp("snap_counts")),
+            starters=load_starters(season, nflverse_stamp("depth_charts")),
+            short_names=p.set_index("gsis_id")["short_name"],
+            source="the NFL's injury reports, PFR snap counts and ESPN depth charts, via nflverse",
+            as_of="" if injuries_stamp.startswith("unknown") else injuries_stamp)
 
     def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
         models, _, _ = load_nflfastr_models()
@@ -800,6 +891,18 @@ def season_tables(league: League, season: int, stamp: str, weeks: tuple[int, int
     and defenders aren't."""
     return _season_tables(league.name, season, stamp, tuple(weeks), part, play_filter,
                           core.VENUES[venue], SEASON_ADJUST[adjust])
+
+
+@st.cache_data(max_entries=2, show_spinner=False)
+def _season_player_ids(league_name: str, season: int, stamp: str) -> pd.DataFrame:
+    return core.player_ids(LEAGUES[league_name].season_pbp(season, stamp))
+
+
+def season_player_ids(league: League, season: int, stamp: str) -> pd.DataFrame:
+    """(team, name, gsis_id) for the season's passers, rushers and receivers
+    (`core.player_ids`), to find a season table's players on an injury
+    report. Empty without ids (college)."""
+    return _season_player_ids(league.name, season, stamp)
 
 
 @st.cache_data(max_entries=6, show_spinner=False)

@@ -732,8 +732,15 @@ class MatchupContext:
     # the other team's defense
     matchups: dict[str, pd.DataFrame]
     situational: dict[str, pd.DataFrame]
-    # (team, "passing" | "rushing" | "receiving" | "defense") → season leaders
+    # (team, "passing" | "rushing" | "receiving" | "defense") → season leaders,
+    # with a Status column for players on the injury report
     leaders: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict)
+    # team → its injury report for the game's week (replay_core.injury_report,
+    # shown columns) and that report by unit (availability_summary); empty
+    # when there's none
+    injuries: dict[str, pd.DataFrame] = field(default_factory=dict)
+    injury_units: dict[str, pd.DataFrame] = field(default_factory=dict)
+    injury_note: str = ""           # which report and when; "" without reports
 
 
 def _fmt_season(stat: str, v) -> str:
@@ -794,6 +801,22 @@ def matchup_snapshot(ctx: MatchupContext) -> str:
             if df is not None and not df.empty:
                 parts.append(f"{team} {unit} leaders, season totals:\n"
                              f"{_csv(df, float_format='%.4g')}")
+    if ctx.injury_note:
+        parts.append(f"Injury reports: {ctx.injury_note}. Status is the game status on the final "
+                     "report before the game: Out, Doubtful (rarely plays) or Questionable (may play); "
+                     "blank means no game status (yet, or he's expected to play). Practice is the "
+                     "latest day's participation. Snaps is the player's share of his team's snaps "
+                     "this season in the phase he plays most (O offense, D defense, ST special "
+                     "teams); Starter is his slot on the latest depth chart. In the by-unit table, "
+                     "Snaps out adds up the out-or-doubtful players' shares of the unit's phase "
+                     "(1.0 = one full-time player).")
+        for team in (ctx.away, ctx.home):
+            rep = ctx.injuries.get(team)
+            if rep is None or rep.empty:
+                parts.append(f"{team} injury report: none filed yet.")
+                continue
+            parts.append(f"{team} injury report by unit:\n{_csv(ctx.injury_units.get(team))}\n"
+                         f"{team} injury report:\n{_csv(rep)}")
     return "\n\n".join(parts)
 
 
@@ -804,6 +827,7 @@ Ground rules:
 - Each team's offense meets the other's defense. Pick the two to four unit-against-unit matchups that matter most, with the biggest edges first: EPA/play and success rate, then turnovers, pass protection and pressure, run blocking (stuffs, explosive runs), 3rd downs and the red zone. Give the numbers and places behind each. Say where a strength meets a strength.
 - Don't predict a final score. Say which team the numbers favor and how clearly; if there's a betting line, say whether the numbers agree with it (the line usually knows more than season stats do).
 - Season numbers over a few games, and down-and-distance cells with few plays, are noisy. Say so when it matters.
+- If injury reports are given, weigh them: a starter who is Out or Doubtful takes his unit's season numbers with him, so say which matchup it changes and how much he plays (his snap share), e.g. two starting offensive linemen out against a strong pass rush. A Questionable player may play. Mention only players the reports list, and if there are no reports, don't bring up anyone's health.
 
 Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA. Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
 

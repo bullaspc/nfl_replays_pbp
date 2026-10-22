@@ -25,6 +25,9 @@ PBP_COLS = [
     "total_home_score", "total_away_score",
     "home_wp", "away_wp", "epa",
     "passer_player_name", "rusher_player_name", "receiver_player_name",
+    # nflverse's gsis ids, which the injury reports and snap counts use (NaN
+    # for live NFL and college games)
+    "passer_player_id", "rusher_player_id", "receiver_player_id",
     "passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
     "pass_touchdown", "rush_touchdown",
     "interception", "fumble_lost", "sack", "qb_hit",
@@ -1359,6 +1362,165 @@ def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: s
         rows[sit] = row
     out = pd.DataFrame.from_dict(rows, orient="index")
     out.index.name = "Situation"
+    return out
+
+
+# ---------- Availability ----------
+# Who's hurt and how much they play, for the Matchup page and the Season stats
+# Team tab: nflverse's weekly injury reports (the NFL's own, one row per player
+# and week: a game status on the final report before the game, practice
+# participation all week) and PFR's snap counts per player and game, linked by
+# gsis id. Snap counts are whole games: a page's quarter, garbage-time and
+# clutch filters don't apply to them.
+INJURY_STATUSES = ["Out", "Doubtful", "Questionable"]  # most serious first
+LIKELY_OUT = {"Out", "Doubtful"}  # a doubtful player rarely plays
+PRACTICE = {"Did Not Participate In Practice": "DNP", "Limited Participation in Practice": "Limited",
+            "Full Participation in Practice": "Full"}
+SNAP_PHASES = {"Off": "offense", "Def": "defense", "ST": "st"}
+# The injury reports' and PFR's positions, by unit, in the order units are shown.
+UNITS = {"QB": "QB", "RB": "RB", "HB": "RB", "FB": "RB", "WR": "WR", "TE": "TE",
+         "T": "OL", "G": "OL", "C": "OL", "OL": "OL",
+         "DE": "DL", "DT": "DL", "NT": "DL", "DL": "DL", "LB": "LB", "ILB": "LB", "OLB": "LB",
+         "MLB": "LB", "CB": "DB", "S": "DB", "FS": "DB", "SS": "DB", "DB": "DB",
+         "K": "ST", "P": "ST", "LS": "ST"}
+UNIT_ORDER = ["QB", "RB", "WR", "TE", "OL", "DL", "LB", "DB", "ST"]
+# The phase each unit's snaps are counted in.
+UNIT_PHASE = {**{u: "Off" for u in ("QB", "RB", "WR", "TE", "OL")},
+              **{u: "Def" for u in ("DL", "LB", "DB")}, "ST": "ST"}
+
+
+def player_ids(pbp: pd.DataFrame) -> pd.DataFrame:
+    """(team, name, gsis_id) for every passer, rusher and receiver in `pbp`, as
+    the play-by-play names them ("D.Maye"); a name two players share on one
+    team is left out. Empty without ids (live NFL and college games)."""
+    frames = [pbp[["posteam", f"{k}_player_name", f"{k}_player_id"]]
+              .set_axis(["team", "name", "gsis_id"], axis=1) for k in ("passer", "rusher", "receiver")]
+    ids = pd.concat(frames).dropna().drop_duplicates()
+    return ids[~ids.duplicated(["team", "name"], keep=False)].reset_index(drop=True)
+
+
+def team_snaps(snaps: pd.DataFrame, team: str, games=None) -> pd.DataFrame:
+    """`team`'s snap counts over `games` (game ids; every game if None), one
+    row per player, indexed by gsis id (PFR's id where nflverse has none):
+    Player, Pos, G (games he took a snap in) and, per phase (`SNAP_PHASES`),
+    his snaps and their share of the team's ("Off", "Off %", "Def", …),
+    most offensive and defensive snaps first. A team's snaps in a game are
+    read off its fullest-playing player (snaps ÷ share), exact when he played
+    them all and within PFR's rounding of the share otherwise."""
+    cols = ["Player", "Pos", "G"] + [c for p in SNAP_PHASES for c in (p, f"{p} %")]
+    if snaps.empty:  # a league without snap counts
+        return pd.DataFrame(columns=cols)
+    s = snaps[snaps["team"] == team]
+    if games is not None:
+        s = s[s["game_id"].isin(set(games))]
+    if s.empty:
+        return pd.DataFrame(columns=cols)
+    g = s.groupby(s["gsis_id"].fillna(s["pfr_player_id"]))
+    out = pd.DataFrame({"Player": g["player"].last(), "Pos": g["position"].last(),
+                        "G": g["game_id"].nunique()})
+    for label, phase in SNAP_PHASES.items():
+        n, pct = s[f"{phase}_snaps"], s[f"{phase}_pct"]
+        fullest = s.assign(_n=n, _p=pct)[pct > 0].sort_values("_p").groupby("game_id").tail(1)
+        total = float((fullest["_n"] / fullest["_p"]).round().sum())
+        out[label] = g[f"{phase}_snaps"].sum().astype(int)
+        out[f"{label} %"] = out[label] / total if total else np.nan
+    out.index.name = "gsis_id"
+    out = out.assign(_both=out["Off"] + out["Def"]).sort_values(["_both", "ST"], ascending=False,
+                                                               kind="stable")
+    return out[cols]
+
+
+def _snap_label(row) -> tuple[float, str]:
+    """A player's share in the phase he plays most: (0.89, "89% O")."""
+    shares = {"O": row.get("Off %"), "D": row.get("Def %"), "ST": row.get("ST %")}
+    shares = {k: v for k, v in shares.items() if pd.notna(v)}
+    if not shares:
+        return np.nan, ""
+    phase = max(shares, key=shares.get)
+    return shares[phase], f"{shares[phase]:.0%} {phase}"
+
+
+def injury_report(injuries: pd.DataFrame, team: str, week: int, snaps: pd.DataFrame | None = None,
+                  starters: pd.Series | None = None) -> pd.DataFrame:
+    """`team`'s injury report for `week`, one row per listed player: Player,
+    Pos, Unit (`UNITS`), Status (the game status, "" before the final report),
+    Snaps (his share of the team's snaps this season in the phase he plays
+    most, from `team_snaps()` output `snaps`), Starter (his slot on the
+    latest depth chart, `starters`: gsis id → slot), Practice ("DNP",
+    "Limited", "Full") and Injury, most serious status first, then most
+    snaps; with gsis_id, `_share` (that share) and `_unit_share` (his share
+    in his unit's phase, `UNIT_PHASE`)."""
+    cols = ["Player", "Pos", "Unit", "Status", "Snaps", "Starter", "Practice", "Injury"]
+    r = injuries[(injuries["team"] == team) & (injuries["week"] == week)] if not injuries.empty else injuries
+    if r.empty:
+        return pd.DataFrame(columns=cols + ["_share", "_unit_share", "gsis_id"])
+    injury = r["report_primary_injury"].fillna(r["practice_primary_injury"])
+    second = r["report_secondary_injury"].fillna(r["practice_secondary_injury"])
+    out = pd.DataFrame({
+        "Player": r["full_name"], "Pos": r["position"], "Unit": r["position"].map(UNITS).fillna(""),
+        "Status": r["report_status"].where(r["report_status"].isin(INJURY_STATUSES), ""),
+        "Injury": [", ".join(x for x in (a, b) if isinstance(x, str) and x) for a, b in zip(injury, second)],
+        "Practice": r["practice_status"].map(PRACTICE).fillna(r["practice_status"]).fillna(""),
+        "gsis_id": r["gsis_id"]})
+    shares = (snaps.reindex(out["gsis_id"]).apply(_snap_label, axis=1, result_type="expand")
+              if snaps is not None and not snaps.empty else None)
+    out["_share"] = shares[0].to_numpy() if shares is not None else np.nan
+    out["Snaps"] = shares[1].fillna("").to_numpy() if shares is not None else ""
+    if snaps is not None and not snaps.empty:
+        phase = snaps.reindex(out["gsis_id"])
+        out["_unit_share"] = [phase.iloc[i].get(f"{UNIT_PHASE[u]} %", np.nan) if u in UNIT_PHASE else np.nan
+                              for i, u in enumerate(out["Unit"])]
+    else:
+        out["_unit_share"] = np.nan
+    out["Starter"] = (out["gsis_id"].map(starters).fillna("") if starters is not None and not starters.empty
+                      else "")
+    rank = out["Status"].map({s: i for i, s in enumerate(INJURY_STATUSES)}).fillna(len(INJURY_STATUSES))
+    out = out.assign(_rank=rank).sort_values(["_rank", "_share"], ascending=[True, False],
+                                             na_position="last").drop(columns="_rank")
+    return out[cols + ["_share", "_unit_share", "gsis_id"]].reset_index(drop=True)
+
+
+def availability_summary(report: pd.DataFrame) -> pd.DataFrame:
+    """An `injury_report()` by unit (`UNIT_ORDER`, units with a game status
+    only): Out or doubtful (how many, and how many starters), Questionable,
+    and Snaps out: the out-or-doubtful players' shares of the unit's phase
+    (`UNIT_PHASE`: a DB's defensive snaps, not his special-teams ones) added
+    up, so 1.0 is one full-time player's worth."""
+    listed = report[report["Status"] != ""]
+    rows = []
+    for unit in UNIT_ORDER:
+        u = listed[listed["Unit"] == unit]
+        if u.empty:
+            continue
+        out = u[u["Status"].isin(LIKELY_OUT)]
+        starters = int((out["Starter"] != "").sum())
+        rows.append({"Unit": unit,
+                     "Out or doubtful": f"{len(out)}" + (f" ({starters} starting)" if starters else ""),
+                     "Questionable": int((u["Status"] == "Questionable").sum()),
+                     "Snaps out": round(float(out["_unit_share"].fillna(0).sum()), 1)})
+    return pd.DataFrame(rows, columns=["Unit", "Out or doubtful", "Questionable", "Snaps out"])
+
+
+def status_by_name(report: pd.DataFrame, team: str, ids: pd.DataFrame,
+                   short_names: pd.Series | None = None) -> dict[str, str]:
+    """{name as the season tables write it: game status} for `team`'s
+    players with one on `report` (`injury_report()`). Passers, rushers and
+    receivers are matched by gsis id through `ids` (`player_ids()`); anyone
+    else (defenders) by his short name ("T.Edwards", `short_names`: gsis id →
+    name), unless that name belongs to a teammate with touches."""
+    listed = report[report["Status"] != ""]
+    team_ids = ids[ids["team"] == team] if not ids.empty else ids
+    by_id = dict(zip(team_ids["gsis_id"], team_ids["name"])) if not team_ids.empty else {}
+    taken = set(by_id.values())
+    out = {}
+    for gid, status in zip(listed["gsis_id"], listed["Status"]):
+        name = by_id.get(gid)
+        if name is None and short_names is not None and not short_names.empty:
+            name = short_names.get(gid)
+            if name in taken:
+                continue
+        if isinstance(name, str) and name:
+            out[name] = status
     return out
 
 

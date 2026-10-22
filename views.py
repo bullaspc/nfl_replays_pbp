@@ -394,6 +394,41 @@ def style_situational_matchup(df: pd.DataFrame, offense: str, defense: str, tint
     return _centered(styled)
 
 
+# ---------- Availability ----------
+# Game statuses, most serious first, as translucent tints (the page's own text
+# color stays readable on both themes) and as badges for a player's name.
+STATUS_TINTS = {"Out": "rgba(220, 53, 69, 0.38)", "Doubtful": "rgba(253, 126, 20, 0.38)",
+                "Questionable": "rgba(255, 193, 7, 0.38)"}
+STATUS_BADGES = {"Out": "🔴 Out", "Doubtful": "🟠 Doubtful", "Questionable": "🟡 Questionable"}
+
+
+def status_badge(status: str | None) -> str:
+    return STATUS_BADGES.get(status, "")
+
+
+def style_injury_report(df: pd.DataFrame):
+    """A `replay_core.injury_report` without its helper columns (Unit,
+    `_share`, gsis_id), the Status cell tinted by how serious it is."""
+    shown = df.drop(columns=[c for c in df.columns if c.startswith("_") or c in ("gsis_id", "Unit")])
+    return _centered(shown.style.apply(
+        lambda col: [f"background-color: {STATUS_TINTS[v]}" if v in STATUS_TINTS else "" for v in col],
+        subset=["Status"]))
+
+
+def style_availability_summary(df: pd.DataFrame):
+    """A `replay_core.availability_summary` table: Snaps out to one decimal."""
+    return _centered(df.style.format({"Snaps out": "{:.1f}"}))
+
+
+def style_snap_table(df: pd.DataFrame):
+    """A `replay_core.team_snaps` table: snaps as counts and shares as
+    percents, blank where a player took none in that phase."""
+    fmt = {c: (lambda v: "" if pd.isna(v) or v == 0 else f"{v:.0%}") if c.endswith(" %")
+           else (lambda v: "" if pd.isna(v) or v == 0 else f"{int(v):,}")
+           for c in df.columns if c not in ("Player", "Pos", "G")}
+    return _centered(df.style.format(fmt))
+
+
 # ---------- Drives ----------
 _FIELD_GREEN = "#2f7a3b"
 _FIELD_GREEN_ALT = "#2a6f35"
