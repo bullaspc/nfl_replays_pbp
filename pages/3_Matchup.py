@@ -18,13 +18,15 @@ import streamlit as st
 
 import game_summary
 import leagues
-from replay_core import (EDGE_EVEN, MATCHUP_ROWS, PLAYER_MIN_PLAYS, PROJ_SHRINK, SEASON_MIN_PLAYS,
-                         SITUATION_MIN_PLAYS, PlayFilter, availability_summary, head_to_head,
-                         injury_report, matchup_table, season_player_distributions, season_qualified,
-                         situational_matchup, status_by_name, team_snaps)
+from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, MATCHUP_ROWS, PLAYER_MIN_PLAYS,
+                         PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
+                         availability_summary, head_to_head, injury_report, lineup_adjustment,
+                         lineup_change, lineup_groups, matchup_table, season_player_distributions,
+                         season_qualified, situational_matchup, status_by_name, team_snaps)
 from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_availability_summary,
-                   style_defense_table, style_head_to_head, style_injury_report, style_matchup_table,
-                   style_player_table, style_situational_matchup)
+                   style_defense_table, style_head_to_head, style_injury_report, style_lineup_change,
+                   style_lineup_groups, style_matchup_table, style_player_table,
+                   style_situational_matchup)
 
 st.set_page_config(page_title="Matchup", layout="wide", page_icon="🆚")
 
@@ -137,8 +139,6 @@ tints = dict(zip((away, home), MATCHUP_TINTS))
 tint_note = f"orange when {away} has it, blue when {home} does"
 # The college feed has no QB hits: its QB Hit % would only repeat Sack %.
 rows = [r for r in MATCHUP_ROWS if not (r == "QB Hit %" and "QB Hits" in tables["missing"])]
-matchups = {away: matchup_table(off_table, def_table, away, home, rows),
-            home: matchup_table(off_table, def_table, home, away, rows)}
 sel_plays = leagues.season_plays(league, season, stamp, weeks, "Both", play_filter)
 # Ranked among the same teams as the main tables.
 sit_off = tables["situational_team"][tables["situational_team"].index.isin(off_table.index)]
@@ -168,6 +168,32 @@ for team in (away, home):
     statuses[team] = status_by_name(reports[team], team, player_ids, avail.short_names)
 injury_note = (f"the week {game_week} reports, as of {avail.as_of or 'the latest build'}"
                if not avail.injuries.empty else "")
+
+# How each lineup differs from the one behind its season numbers (its games in
+# this selection): the week's report and roster, so also players on a reserve
+# list, who drop off the injury report, and starters coming back.
+_games = leagues.season_plays(league, season, stamp, weeks, "Both")
+lineups, lineup_net = {}, {}
+for team in (away, home):
+    _ids = _games.loc[(_games["home_team"] == team) | (_games["away_team"] == team), "game_id"].unique()
+    lineups[team] = lineup_change(avail.snaps, avail.injuries, avail.roster, team, game_week, _ids)
+    lineup_net[team] = lineup_groups(lineups[team])
+# Proj. moved by the players gone (replay_core.LINEUP_EFFECTS), where there are
+# snap counts and injury reports to tell who they are.
+has_lineup = not avail.snaps.empty and not avail.injuries.empty
+adjustments = ({away: lineup_adjustment(lineups[away], lineups[home]),
+                home: lineup_adjustment(lineups[home], lineups[away])} if has_lineup else {})
+matchups = {away: matchup_table(off_table, def_table, away, home, rows, adjustments.get(away)),
+            home: matchup_table(off_table, def_table, home, away, rows, adjustments.get(home))}
+# Before the final report there are no game statuses, so only roster moves count.
+no_status = [t for t in (away, home) if has_lineup and not (reports[t]["Status"] != "").any()]
+# What the injury report doesn't show: gone off the roster, or back.
+LINEUP_SHOWN = 0.1  # full-time players: smaller changes count in the totals only
+
+
+def _off_report(team: str) -> pd.DataFrame:
+    ch = lineups[team]
+    return ch[~ch["Why"].isin(LIKELY_OUT) & (ch["Change"].abs() >= LINEUP_SHOWN)]
 
 
 def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
@@ -246,7 +272,9 @@ else:
             selection=sel_note.replace(" · ", ", "), n_teams=n_teams,
             matchups=matchups, situational=situational, leaders=_leaders,
             injuries={t: reports[t][_shown] for t in (away, home)}, injury_units=report_units,
-            injury_note=injury_note)
+            injury_note=injury_note,
+            lineup_groups=lineup_net if not avail.snaps.empty else {},
+            lineup_players={t: _off_report(t).drop(columns="Unit").round(2) for t in (away, home)})
         _future, _progress = game_summary.submit_preview(_ctx, _providers[_prov])
         st.session_state["_mu_job"] = {"future": _future, "progress": _progress,
                                        "key": preview_key, "started": time.time(),
@@ -307,21 +335,33 @@ else:
             st.markdown(f"**{team}** · week {game_week} injury report")
             if reports[team].empty:
                 st.caption("Not filed yet: teams file the first one about three days before the game.")
-                continue
-            if not report_units[team].empty:
-                stat_table(style_availability_summary(report_units[team]), hide_index=True)
-            stat_table(style_injury_report(reports[team]), hide_index=True)
+            else:
+                if not report_units[team].empty:
+                    stat_table(style_availability_summary(report_units[team]), hide_index=True)
+                stat_table(style_injury_report(reports[team]), hide_index=True)
+            if not avail.snaps.empty:
+                st.markdown(f"**{team}** · lineup vs the season numbers")
+                stat_table(style_lineup_groups(lineup_net[team]), hide_index=True)
+                if not _off_report(team).empty:
+                    stat_table(style_lineup_change(_off_report(team)), hide_index=True)
     st.caption(
         "**Status** is the game status on the final report, the day before the game (Wednesday for "
         "a Thursday game): Out, Doubtful (rarely plays) or Questionable (may play); before it there's "
         "only practice participation. **Snaps** is the player's share of his team's snaps this "
         "season in the phase he plays most (O offense, D defense, ST special teams), **Starter** "
         "his slot on the latest depth chart. **Snaps out** adds up the out-or-doubtful players' "
-        "shares of the unit's phase: 1.0 is one full-time player. "
+        "shares of the unit's phase: 1.0 is one full-time player. **Lineup vs the season "
+        "numbers** is how far each group is from the players behind the numbers above, in "
+        "full-time players: one out now takes away his share of those games' snaps (**Was**; "
+        "half, if he missed half of them), one back adds the share he plays when he does "
+        "(**Now**) less what he had. Gone counts the report's Out and Doubtful and the roster's "
+        "reserve lists, releases and trades (players on injured reserve aren't on the report); "
+        f"the table lists what the report doesn't show, {LINEUP_SHOWN:.1f}+ players' worth. "
         f"From {avail.source}; reports as of {avail.as_of or 'the latest build'}.")
 
 # ---------- Matchups ----------
 st.subheader("Matchups")
+_epa = LINEUP_EFFECTS["EPA/play"]
 for col, (off, def_) in zip(st.columns(2), ((away, home), (home, away))):
     with col:
         st.markdown(f"**When {off} has the ball** · {off} offense vs {def_} defense")
@@ -332,7 +372,16 @@ st.caption(
     f"who ranks better and by how many percentile points, tinted {tint_note} "
     f"(\"Even\": within {EDGE_EVEN}). **Proj.** is a guess for this game: the league average plus "
     f"{PROJ_SHRINK:.0%} of the offense's and the defense's distances from it (games have landed "
-    "about that far back toward the average). Plays and aDoT are style, so they get no edge.")
+    "about that far back toward the average). Plays and aDoT are style, so they get no edge."
+    + (f" **w/ lineup** moves Proj. ({', '.join(LINEUP_EFFECTS)}) by the players gone from both "
+       "lineups (Availability, above), by what such losses have done to games since 2016: about "
+       f"{abs(_epa['QB']):.2f} EPA/play less for each full-time QB gone, {abs(_epa['OL']):.2f} for "
+       f"each lineman or skill player, and {_epa['Front']:.2f} more for each starter the defense "
+       "is missing. Players back aren't counted: they've made no measurable difference."
+       if has_lineup else "")
+    + (f" {' and '.join(no_status)} {'has' if len(no_status) == 1 else 'have'} no game statuses "
+       "on the report yet (they come on the final one, the day before the game), so w/ lineup "
+       "counts only roster moves." if no_status else ""))
 
 # ---------- Head to head ----------
 st.subheader("Head to head")
@@ -401,7 +450,7 @@ average for EPA/play, pass EPA/play and 1st-down rate in both seasons, and about
 rest. Turnovers, 3rd-down rate, sack rate and the run game carry over least from one game to the
 next: an edge there says more about the season than about the game. The projected EPA/play margin
 picked 61–67% of winners opponent-adjusted (62–67% as played); the betting favorite 63–74%. It
-knows nothing of injuries or weather.
+knows nothing of weather, and of injuries only through **w/ lineup**.
 
 **Head to head** compares like with like. Δ is {away} − {home}; whether more is better depends on
 the stat, so the tint, not the sign, says who's better.
@@ -412,8 +461,26 @@ a cell needs {SITUATION_MIN_PLAYS} plays on both sides for an edge.
 **Availability** is each team's injury report for the game's week, the NFL's own as nflverse
 publishes it, with each listed player's share of his team's snaps this season (PFR's snap counts)
 and his slot on the latest depth chart. The season numbers above include the games he played, so a
-starter who is out takes some of his unit's strength with him; the page says who and how much he
-plays, but doesn't adjust the numbers for it.
+starter who is out takes some of his unit's strength with him. **Lineup vs the season numbers**
+measures that against the players behind the numbers, not against a full-strength team: a starter
+out since week 2 has been missing from most of them already, so he takes away little.
+
+**w/ lineup** is what the players gone have done to games before. `tools/validate_injuries.py` set
+every opponent-adjusted Proj. from week 4 on, 2016–2025 (4,194 offense-games), against the game, and
+fitted the miss on how many full-time players each group was missing: the offense's QB, its line,
+its skill players, the defense's front seven and secondary. It doesn't need the replacements' own
+numbers (often there are none): an effect is how far results moved, on average, with a group that
+short, whoever filled in. A starting QB gone has cost his offense about {abs(_epa['QB']):.2f}
+EPA/play, each other full-time player about {abs(_epa['OL']):.2f}, and each full-time player a
+defense is missing has given the offense about {_epa['Front']:.2f}. Tested a season at a time on
+effects fitted on the other seasons, it came closer to the game than Proj. for EPA/play (RMSE
+0.1902 → 0.1875; 0.2015 → 0.1888 in the 471 games with a QB change), pass EPA/play (0.3096 →
+0.3061) and pass success rate (0.0962 → 0.0950), and the projected EPA/play margin picked 63.6% of
+winners instead of 62.4% (the betting favorite: 67.8%). The run game and sack rate didn't move, so
+they aren't adjusted.
+Players coming back aren't counted either: on their own, they made no measurable difference (a
+starting QB back: −0.02 ± 0.04 EPA/play against Proj.). The adjustment is small next to how far
+single games stray from any projection.
 
 **Matchup preview.** On request, the matchup tables, down and distance, key players and the injury
 reports on this page are sent to the model (Kimi by default; Claude if that's the key set) with

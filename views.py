@@ -346,13 +346,16 @@ def style_matchup_table(df: pd.DataFrame, offense: str, defense: str, tints: dic
     """A `replay_core.matchup_table`: the offense's value and what the
     defense allowed, each with its place and colored by its percentile,
     Edge ("KC 25": who ranks better, by how many percentile points) tinted
-    in that team's hue (`tints`), and Proj. and League as plain values."""
+    in that team's hue (`tints`), and Proj. (and w/ lineup, blank for the
+    stats it doesn't adjust) and League as plain values."""
     off_col, def_col = f"{offense} offense", f"{defense} defense"
     shown = pd.DataFrame({
         off_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Offense"], df["Off rank"])],
         def_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Defense"], df["Def rank"])],
         "Edge": [edge_label(e, offense, defense) for e in df["Edge"]],
         "Proj.": [_season_format(s)(v) for s, v in zip(df.index, df["Proj."])],
+        **({"w/ lineup": ["" if pd.isna(v) else _season_format(s)(v)
+                          for s, v in zip(df.index, df["w/ lineup"])]} if "w/ lineup" in df else {}),
         "League": [_season_format(s)(v) for s, v in zip(df.index, df["League"])],
     }, index=df.index)
 
@@ -418,6 +421,34 @@ def style_injury_report(df: pd.DataFrame):
 def style_availability_summary(df: pd.DataFrame):
     """A `replay_core.availability_summary` table: Snaps out to one decimal."""
     return _centered(df.style.format({"Snaps out": "{:.1f}"}))
+
+
+_LOSS, _GAIN = (220, 53, 69), (40, 167, 69)
+
+
+def _change_tint(v: float) -> str:
+    """Red for players fewer than the season numbers had, green for more,
+    stronger up to one full-time player."""
+    if pd.isna(v) or abs(v) < 0.05:
+        return ""
+    r, g, b = _LOSS if v < 0 else _GAIN
+    return f"background-color: rgba({r}, {g}, {b}, {0.12 + 0.33 * min(abs(v), 1.0):.2f})"
+
+
+def style_lineup_groups(groups: pd.Series):
+    """A `replay_core.lineup_groups` as a one-row table: each group's net
+    change in full-time players, signed and tinted."""
+    df = groups.to_frame().T
+    return _centered(smap(df.style.format(lambda v: "0.0" if abs(v) < 0.05 else f"{v:+.1f}"),
+                          _change_tint))
+
+
+def style_lineup_change(df: pd.DataFrame):
+    """A `replay_core.lineup_change` table: Was and Now as shares, Change
+    signed and tinted (without the Unit column)."""
+    shown = df.drop(columns=[c for c in ("Unit",) if c in df.columns])
+    return _centered(smap(shown.style.format({"Was": "{:.0%}", "Now": "{:.0%}", "Change": "{:+.2f}"}),
+                          _change_tint, subset=["Change"]))
 
 
 def style_snap_table(df: pd.DataFrame):
