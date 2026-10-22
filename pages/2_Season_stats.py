@@ -80,7 +80,8 @@ with st.sidebar:
     weeks = (reg_weeks[0], reg_weeks[-1]) if reg_weeks else (0, 0)
     if leagues.SEASON_PARTS[part][0] and len(reg_weeks) > 1:
         weeks = st.select_slider("Regular-season weeks", options=reg_weeks, value=weeks,
-                                 key=f"_ss_weeks_{league.name}_{season}")
+                                 # A newly published week resets it to the full range.
+                                 key=f"_ss_weeks_{league.name}_{season}_{reg_weeks[-1]}")
     groups = sorted(g for g in ranked_teams.unique() if g)
     picked = st.multiselect(league.season_group_label, groups, placeholder="All",
                             key=f"_ss_groups_{league.name}")
@@ -361,7 +362,10 @@ points. A team's strength is shrunk toward average by games ÷ (games + {SHRINK_
 seen in only a game or two can't swing its opponents' numbers, and the league average is kept
 where it was. Play counts, a team's own penalties, aDOT and defenders' stats stay as played.
 A player's SR% and EPA/play are adjusted by the strength of the defenses his plays came against,
-weighted by how many plays he had against each.
+weighted by how many plays he had against each. The adjustment adds and subtracts, so a team or
+player with only a few plays in a cell can land past what the stat can be (a success rate below
+0% or above 100%, fewer than 0 turnovers a game): such a value is shown at the nearest one it can
+take.
 
 **Filters** (sidebar, Situation). *Home / Away* keeps each team's own home or away games, for its
 offense and its defense (neutral-site games count for the team listed at home); with
