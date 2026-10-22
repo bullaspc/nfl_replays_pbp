@@ -1291,7 +1291,7 @@ def head_to_head(table: pd.DataFrame, away: str, home: str, side: str = "posteam
 
 
 def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: str,
-                  rows: list[str] = MATCHUP_ROWS) -> pd.DataFrame:
+                  rows: list[str] = MATCHUP_ROWS, lineup: pd.Series | None = None) -> pd.DataFrame:
     """`offense`'s offense (a row of the season offense table `off`)
     against `defense`'s defense (a row of `def_`, what each defense
     allowed), one row per stat in `rows` both tables have: Offense and
@@ -1300,7 +1300,9 @@ def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: 
     defense's, both 100 = best: above 0 the offense has the edge; NaN for
     style stats, `MATCHUP_STYLE`) and Proj. (the league average plus the
     offense's and the defense's distances from it, times `PROJ_SHRINK`: a
-    guess at the stat in this game), plus `_off_pct` / `_def_pct`."""
+    guess at the stat in this game), plus `_off_pct` / `_def_pct`. With
+    `lineup` (`lineup_adjustment()`), also "w/ lineup": Proj. plus it, for
+    the stats it has (NaN for the rest)."""
     off_lower, def_lower = season_lower_is_better("posteam"), season_lower_is_better("defteam")
     off_pct, def_pct = season_ranks(off, off_lower), season_ranks(def_, def_lower)
     off_places, def_places = season_places(off, off_lower), season_places(def_, def_lower)
@@ -1316,7 +1318,10 @@ def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: 
                     "League": league, "Edge": p_off - p_def,
                     "Proj.": league + PROJ_SHRINK * ((o - league) + (d - league)),
                     "_off_pct": p_off, "_def_pct": p_def})
-    return pd.DataFrame(out).set_index("Stat")
+    out = pd.DataFrame(out).set_index("Stat")
+    if lineup is not None:
+        out.insert(out.columns.get_loc("Proj.") + 1, "w/ lineup", out["Proj."] + lineup.reindex(out.index))
+    return out
 
 
 def _situation_counts(plays: pd.DataFrame, team: str, side: str) -> dict[str, dict[str, int]]:
@@ -1623,6 +1628,34 @@ def lineup_groups(change: pd.DataFrame, part: str = "net") -> pd.Series:
     c = change["Change"]
     c = c.clip(upper=0) if part == "lost" else c.clip(lower=0) if part == "back" else c
     return pd.Series({g: float(c[change["Unit"].isin(units)].sum()) for g, units in LINEUP_GROUPS.items()})
+
+
+# How far each full-time player gone (lineup_groups(change, "lost")) has moved
+# a stat from Proj., on average: the offense's own QB, OL and skill players
+# lower it, the defense's front seven and secondary raise it. Fitted by
+# tools/validate_injuries.py on 2016–2025's offense-games from week 4 on
+# (4,194, opponent-adjusted Proj.), whoever filled in. Players back aren't
+# counted: fitted apart, they moved nothing measurable, and adding them made
+# no projection better. Only the stats where the adjustment came closer to
+# the game, a season at a time out of sample (RMSE): EPA/play 0.1902 → 0.1875
+# (0.2015 → 0.1888 in the 471 games with the QB half a player or more off),
+# pass EPA/play 0.3096 → 0.3061, pass success rate 0.0962 → 0.0950. Run EPA
+# and sack rate didn't move.
+LINEUP_EFFECTS = {
+    "EPA/play": {"QB": -0.0968, "OL": -0.018, "Skill": -0.0199, "Front": 0.018, "DB": 0.0185},
+    "Pass EPA/play": {"QB": -0.1472, "OL": -0.0268, "Skill": -0.0266, "Front": 0.0314, "DB": 0.0263},
+    "Pass SR": {"QB": -0.0428, "OL": -0.0079, "Skill": -0.0103, "Front": 0.0092, "DB": 0.0101},
+}
+
+
+def lineup_adjustment(offense: pd.DataFrame, defense: pd.DataFrame) -> pd.Series:
+    """How far the players gone move an offense's Proj., per stat in
+    `LINEUP_EFFECTS`: its own QB, OL and skill players (`offense`, its
+    `lineup_change()`) and the defense's front and secondary (`defense`,
+    the other team's)."""
+    own, opp = lineup_groups(offense, "lost"), lineup_groups(defense, "lost")
+    gone = {g: -(own[g] if UNIT_PHASE[units[0]] == "Off" else opp[g]) for g, units in LINEUP_GROUPS.items()}
+    return pd.Series({stat: sum(e * gone[g] for g, e in eff.items()) for stat, eff in LINEUP_EFFECTS.items()})
 
 
 # ---------- Drives ----------

@@ -21,10 +21,14 @@ its numbers, whoever filled in.
 The fit is tested out of sample, a season at a time: each season's
 adjustments come from the effects fitted on the other seasons, and are
 compared with the projection plus its average miss alone (so the
-adjustment isn't credited with fixing a bias it didn't), for all five
-groups and for the QB alone. Then the projected
-EPA/play margin, with and without the adjustment, picks winners next to
-the betting line's favorite.
+adjustment isn't credited with fixing a bias it didn't), for the net
+change, the players gone only, gone and back apart, and the QB's losses
+alone, and for the form the page uses: players gone only, without the
+fit's intercept (`replay_core.LINEUP_EFFECTS`: the effects fitted on every
+season are printed at the end, to paste there). The page adjusts the stats
+where that form beats Proj. out of sample. Then the projected EPA/play
+margin, with and without the adjustment, picks winners next to the betting
+line's favorite.
 
     python tools/validate_injuries.py [first_season=2016] [last_season=2025] [first_week=4]
 
@@ -51,6 +55,7 @@ LOST = [f"{f} lost" for f in FEATURES]                                     # pla
 BACK = [f"{f} back" for f in FEATURES]                                     # players back only
 VARIANTS = {"net change": FEATURES, "losses only": LOST, "losses and returns apart": LOST + BACK,
             "QB losses only": ["own QB lost"]}
+PAGE = "losses only, no intercept (the page's)"
 
 
 def _season_data(season: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -128,7 +133,7 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
           .loc[["mean", "5%", "50%", "95%"]].round(2).T.to_string())
     print(f"Games with a group at least half a full-time player off: {big.mean():.0%}\n")
 
-    adjusted = {}
+    adjusted, page_effects = {}, {}
     for stat in TARGETS:
         d = df.dropna(subset=[f"actual {stat}", f"proj {stat}"])
         y = (d[f"actual {stat}"] - d[f"proj {stat}"]).to_numpy()
@@ -140,7 +145,7 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
                             "± 2 SE": 2 * se[1:]}, index=split).round(4).to_string())
         # Out of sample, a season at a time.
         bias_only = pd.Series(np.nan, index=d.index)
-        with_lineup = {k: pd.Series(np.nan, index=d.index) for k in VARIANTS}
+        with_lineup = {k: pd.Series(np.nan, index=d.index) for k in [*VARIANTS, PAGE]}
         for s in seasons:
             test, train = d["season"] == s, d["season"] != s
             if not test.any() or not train.any():
@@ -151,6 +156,8 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
                 b, _ = _ols(d.loc[train, feats].to_numpy(), yt)
                 with_lineup[k][test] = (d.loc[test, f"proj {stat}"] + b[0]
                                         + d.loc[test, feats].to_numpy() @ b[1:])
+                if k == "losses only":
+                    with_lineup[PAGE][test] = d.loc[test, f"proj {stat}"] + d.loc[test, feats].to_numpy() @ b[1:]
         a = d[f"actual {stat}"]
         res = pd.DataFrame({"Proj.": _errors(a, d[f"proj {stat}"]),
                             "Proj. + its average miss": _errors(a, bias_only),
@@ -164,6 +171,9 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
         print(f"... and the {int(sub.sum())} games with the QB half a player or more off:")
         print(res_big.round(4).to_string(), "\n")
         adjusted[stat] = with_lineup
+        b, se = _ols(d[LOST].to_numpy(), y)
+        page_effects[stat] = {f.replace(" lost", ""): (round(float(-c), 4), round(float(2 * e), 4))
+                              for f, c, e in zip(LOST, b[1:], se[1:])}
 
     # The two cases with the biggest effect, in plain numbers.
     epa = df.dropna(subset=["actual EPA/play", "proj EPA/play"])
@@ -181,14 +191,19 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
     rows = pd.concat([rows] + [rows.assign(kind=k, proj=v.reindex(epa.index))
                                for k, v in adjusted["EPA/play"].items()])
     games = df.groupby("game_id")[["week", "home_team", "away_team", "spread_line", "result"]].first()
-    p = winner_picks(rows, games, kinds=("adjusted", *VARIANTS))
-    both = p[["adjusted", *VARIANTS]].notna().all(axis=1)
+    p = winner_picks(rows, games, kinds=("adjusted", *VARIANTS, PAGE))
+    both = p[["adjusted", *VARIANTS, PAGE]].notna().all(axis=1)
     print(f"\nWinner picked ({int(both.sum())} games with every projection):")
     for col, label in (("adjusted", "projected EPA/play margin"),
-                       *((k, f"projected EPA/play margin + lineup ({k})") for k in VARIANTS),
+                       *((k, f"projected EPA/play margin + lineup ({k})") for k in [*VARIANTS, PAGE]),
                        ("line", "betting line's favorite")):
         s = p.loc[both, col].dropna()
         print(f"  {label}: {s.mean():.1%} of {len(s)}")
+    print("\nThe page's effects (losses only, fitted on every season): change in the stat per "
+          "full-time player gone, ± 2 SE")
+    for stat, eff in page_effects.items():
+        print(f"  {stat!r}: {{" + ", ".join(f"{g!r}: {c}" for g, (c, _) in eff.items()) + "},  # ± "
+              + ", ".join(f"{e}" for _, e in eff.values()))
 
 
 if __name__ == "__main__":

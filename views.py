@@ -346,13 +346,16 @@ def style_matchup_table(df: pd.DataFrame, offense: str, defense: str, tints: dic
     """A `replay_core.matchup_table`: the offense's value and what the
     defense allowed, each with its place and colored by its percentile,
     Edge ("KC 25": who ranks better, by how many percentile points) tinted
-    in that team's hue (`tints`), and Proj. and League as plain values."""
+    in that team's hue (`tints`), and Proj. (and w/ lineup, blank for the
+    stats it doesn't adjust) and League as plain values."""
     off_col, def_col = f"{offense} offense", f"{defense} defense"
     shown = pd.DataFrame({
         off_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Offense"], df["Off rank"])],
         def_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Defense"], df["Def rank"])],
         "Edge": [edge_label(e, offense, defense) for e in df["Edge"]],
         "Proj.": [_season_format(s)(v) for s, v in zip(df.index, df["Proj."])],
+        **({"w/ lineup": ["" if pd.isna(v) else _season_format(s)(v)
+                          for s, v in zip(df.index, df["w/ lineup"])]} if "w/ lineup" in df else {}),
         "League": [_season_format(s)(v) for s, v in zip(df.index, df["League"])],
     }, index=df.index)
 
