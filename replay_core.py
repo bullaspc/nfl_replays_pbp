@@ -1615,11 +1615,14 @@ def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFr
     return pd.DataFrame(rows, columns=LINEUP_COLS).sort_values("Change", kind="stable").reset_index(drop=True)
 
 
-def lineup_groups(change: pd.DataFrame) -> pd.Series:
-    """A `lineup_change()` summed by `LINEUP_GROUPS`: the net change in each
-    group's snaps, in full-time players (−1.4: 1.4 fewer than the numbers had)."""
-    return pd.Series({g: float(change.loc[change["Unit"].isin(units), "Change"].sum())
-                      for g, units in LINEUP_GROUPS.items()})
+def lineup_groups(change: pd.DataFrame, part: str = "net") -> pd.Series:
+    """A `lineup_change()` summed by `LINEUP_GROUPS`, in full-time players:
+    the net change in each group's snaps (−1.4: 1.4 fewer than the numbers
+    had), or with `part` "lost" only the players gone, "back" only those
+    back."""
+    c = change["Change"]
+    c = c.clip(upper=0) if part == "lost" else c.clip(lower=0) if part == "back" else c
+    return pd.Series({g: float(c[change["Unit"].isin(units)].sum()) for g, units in LINEUP_GROUPS.items()})
 
 
 # ---------- Drives ----------

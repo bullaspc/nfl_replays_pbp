@@ -46,8 +46,11 @@ from validate_matchup import offense_games, read_season, winner_picks  # noqa: E
 TARGETS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Sack %"]
 GROUPS = list(core.LINEUP_GROUPS)        # QB, OL, Skill, Front, DB
 OWN, OPP = ["QB", "OL", "Skill"], ["Front", "DB"]
-FEATURES = [f"own {g}" for g in OWN] + [f"opp {g}" for g in OPP]
-VARIANTS = {"all groups": FEATURES, "QB only": ["own QB"]}
+FEATURES = [f"own {g}" for g in OWN] + [f"opp {g}" for g in OPP]          # net changes
+LOST = [f"{f} lost" for f in FEATURES]                                     # players gone only
+BACK = [f"{f} back" for f in FEATURES]                                     # players back only
+VARIANTS = {"net change": FEATURES, "losses only": LOST, "losses and returns apart": LOST + BACK,
+            "QB losses only": ["own QB lost"]}
 
 
 def _season_data(season: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -68,7 +71,7 @@ def collect(season: int, first_week: int) -> pd.DataFrame:
     game's teams, betting line and result, each TARGETS stat's actual and
     Proj., and the lineup changes (FEATURES)."""
     cache = os.environ.get("VALIDATE_CACHE")
-    path = Path(cache) / f"injuries_{season}_{first_week}.pkl" if cache else None
+    path = Path(cache) / f"lineups_{season}_{first_week}.pkl" if cache else None
     if path is not None and path.exists():
         return pd.read_pickle(path)
     rows, games = offense_games(read_season(season), first_week, kinds=("adjusted",), stats=TARGETS)
@@ -81,12 +84,14 @@ def collect(season: int, first_week: int) -> pd.DataFrame:
     groups = {}
     for team, week in set(zip(wide["team"], wide["week"])) | set(zip(wide["opp"], wide["week"])):
         before = snaps.loc[(snaps["team"] == team) & (snaps["week"] < week), "game_id"].unique()
-        groups[(team, week)] = (core.lineup_groups(core.lineup_change(snaps, injuries, roster, team, week, before))
-                                if len(before) else pd.Series(np.nan, index=GROUPS))
-    for g in OWN:
-        wide[f"own {g}"] = [groups[(t, w)][g] for t, w in zip(wide["team"], wide["week"])]
-    for g in OPP:
-        wide[f"opp {g}"] = [groups[(t, w)][g] for t, w in zip(wide["opp"], wide["week"])]
+        change = core.lineup_change(snaps, injuries, roster, team, week, before) if len(before) else None
+        groups[(team, week)] = {part: (core.lineup_groups(change, part) if change is not None
+                                       else pd.Series(np.nan, index=GROUPS))
+                                for part in ("net", "lost", "back")}
+    for side, names, key in (("own", OWN, "team"), ("opp", OPP, "opp")):
+        for g in names:
+            for part, suffix in (("net", ""), ("lost", " lost"), ("back", " back")):
+                wide[f"{side} {g}{suffix}"] = [groups[(t, w)][part][g] for t, w in zip(wide[key], wide["week"])]
     wide["season"] = season
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,19 +123,21 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
     df = df[covered]
     big = (df[FEATURES].abs() >= 0.5).any(axis=1)
     print("How far lineups were from the ones behind the season numbers (full-time players; "
-          "− = fewer):")
-    print(df[FEATURES].describe(percentiles=[.05, .5, .95]).loc[["mean", "5%", "50%", "95%"]].round(2)
-          .to_string())
+          "− = fewer), net and the players gone and back apart:")
+    print(df[FEATURES + LOST + BACK].describe(percentiles=[.05, .5, .95])
+          .loc[["mean", "5%", "50%", "95%"]].round(2).T.to_string())
     print(f"Games with a group at least half a full-time player off: {big.mean():.0%}\n")
 
     adjusted = {}
     for stat in TARGETS:
         d = df.dropna(subset=[f"actual {stat}", f"proj {stat}"])
         y = (d[f"actual {stat}"] - d[f"proj {stat}"]).to_numpy()
-        beta, se = _ols(d[FEATURES].to_numpy(), y)
-        print(f"== {stat}: effect on the game's miss (actual − Proj.) of one full-time player FEWER "
-              f"than the season numbers had (n = {len(d)})")
-        print(pd.DataFrame({"effect": -beta[1:], "± 2 SE": 2 * se[1:]}, index=FEATURES).round(4).to_string())
+        split = LOST + BACK
+        beta, se = _ols(d[split].to_numpy(), y)
+        print(f"== {stat}: how much the game's miss (actual − Proj.) moves per full-time player of "
+              f"change (lost: per player gone; back: per player back), n = {len(d)}")
+        print(pd.DataFrame({"per player gone (−) or back (+)": [(-b if c in LOST else b) for b, c in zip(beta[1:], split)],
+                            "± 2 SE": 2 * se[1:]}, index=split).round(4).to_string())
         # Out of sample, a season at a time.
         bias_only = pd.Series(np.nan, index=d.index)
         with_lineup = {k: pd.Series(np.nan, index=d.index) for k in VARIANTS}
