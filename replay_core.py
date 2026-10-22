@@ -959,16 +959,24 @@ def season_ranks(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.Dat
     return pct
 
 
+def season_places(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.DataFrame:
+    """Each team's place in each column of `df`, 1 = best (ties share the
+    better place); NaN where the value is."""
+    return pd.DataFrame({col: pd.to_numeric(df[col], errors="coerce")
+                         .rank(ascending=col in lower_is_better, method="min")
+                         for col in df.columns}, index=df.index)
+
+
 def season_rank_label(df: pd.DataFrame, team: str, lower_is_better: set = frozenset()) -> pd.Series:
     """`team`'s place in each column of `df`, 1 = best: "5th of 32"."""
+    places = season_places(df, lower_is_better)
     out = {}
     for col in df.columns:
-        s = pd.to_numeric(df[col], errors="coerce")
-        if col in SEASON_VOLUME or pd.isna(s.get(team)):
+        place = places.at[team, col]
+        if col in SEASON_VOLUME or pd.isna(place):
             out[col] = ""
             continue
-        r = s.rank(ascending=col in lower_is_better, method="min")
-        out[col] = f"{_ordinal(int(r[team]))} of {int(s.notna().sum())}"
+        out[col] = f"{_ordinal(int(place))} of {int(places[col].notna().sum())}"
     return pd.Series(out)
 
 
@@ -1175,6 +1183,143 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
         q = df[df[PLAYER_VOLUME_COL[kind]] >= min_plays[kind]]
         out[kind] = {c: np.sort(q[c].dropna().to_numpy(dtype=float))
                      for c in PLAYER_RATE_COLS[kind] if c in q.columns}
+    return out
+
+
+# ---------- Matchup ----------
+# The Matchup page sets two teams' season tables (season_team_table, ranked
+# among the season's teams) against each other for a game not played yet.
+# Head to head compares like with like (offense with offense, defense with
+# defense); a matchup sets one team's offense against the other's defense.
+MATCHUP_ROWS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "CMP%", "aDoT",
+                "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Sack %", "QB Hit %", "Stuff %",
+                "Explosive Run %", "Total Yds", "Pass Yds", "Rush Yds", "Plays"]
+# Shown but never given an edge: how much a team plays and how deep it
+# throws are its style, not good or bad.
+MATCHUP_STYLE = SEASON_VOLUME | {"aDoT"}
+EDGE_EVEN = 5  # percentile points: a smaller edge is shown as even
+# How much of the offense's and the defense's distance from the league
+# average Proj. keeps. tools/validate_matchup.py fits how far games landed
+# from the average, per stat, against the unshrunk sum: 0.23–0.66 in 2024
+# and 2025 for every stat but 2025's turnovers (0.06); EPA/play 0.52 and
+# 0.64. Half, for every stat.
+PROJ_SHRINK = 0.5
+# The order the down-and-distance rows are shown in, and the plays each side
+# needs in a situation for it to get an edge.
+MATCHUP_SITUATIONS = ["Early · Short", "Early · Medium", "Early · Long", "Early · Total",
+                      "Late · Short", "Late · Medium", "Late · Long", "Late · Total"]
+SITUATION_MIN_PLAYS = 10
+
+
+def edge_label(edge: float, plus: str, minus: str) -> str:
+    """An edge in percentile points as who has it: "KC 25" (`plus` when
+    above 0, `minus` below), "Even" under `EDGE_EVEN`, "" for none."""
+    if pd.isna(edge):
+        return ""
+    if abs(edge) < EDGE_EVEN:
+        return "Even"
+    return f"{plus if edge > 0 else minus} {abs(edge):.0f}"
+
+
+def _place(places: pd.DataFrame, team: str, col: str) -> str:
+    p = places.at[team, col] if col in places.columns else np.nan
+    return "" if pd.isna(p) else _ordinal(int(p))
+
+
+def head_to_head(table: pd.DataFrame, away: str, home: str, side: str = "posteam",
+                 rows: list[str] = MATCHUP_ROWS) -> pd.DataFrame:
+    """Two teams' rows of a season team table (`side` posteam: offenses,
+    defteam: what each defense allowed), one row per stat in `rows` that
+    the table has: Away and Home (values), their places among the table's
+    teams ("5th"), Δ (away − home, in the stat's units) and `_away_pct` /
+    `_home_pct` (percentile among the teams, 100 = best; NaN for style
+    stats, `MATCHUP_STYLE`)."""
+    lower = season_lower_is_better(side)
+    pct, places = season_ranks(table, lower), season_places(table, lower)
+    out = []
+    for stat in [r for r in rows if r in table.columns]:
+        a, h = table.at[away, stat], table.at[home, stat]
+        style = stat in MATCHUP_STYLE
+        out.append({"Stat": stat, "Away": a, "Away rank": "" if style else _place(places, away, stat),
+                    "Home": h, "Home rank": "" if style else _place(places, home, stat),
+                    "Δ": a - h,
+                    "_away_pct": np.nan if style else pct.at[away, stat],
+                    "_home_pct": np.nan if style else pct.at[home, stat]})
+    return pd.DataFrame(out).set_index("Stat")
+
+
+def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: str,
+                  rows: list[str] = MATCHUP_ROWS) -> pd.DataFrame:
+    """`offense`'s offense (a row of the season offense table `off`)
+    against `defense`'s defense (a row of `def_`, what each defense
+    allowed), one row per stat in `rows` both tables have: Offense and
+    Defense (values), their places among the tables' teams, League (the
+    average of both tables' teams), Edge (the offense's percentile less the
+    defense's, both 100 = best: above 0 the offense has the edge; NaN for
+    style stats, `MATCHUP_STYLE`) and Proj. (the league average plus the
+    offense's and the defense's distances from it, times `PROJ_SHRINK`: a
+    guess at the stat in this game), plus `_off_pct` / `_def_pct`."""
+    off_lower, def_lower = season_lower_is_better("posteam"), season_lower_is_better("defteam")
+    off_pct, def_pct = season_ranks(off, off_lower), season_ranks(def_, def_lower)
+    off_places, def_places = season_places(off, off_lower), season_places(def_, def_lower)
+    out = []
+    for stat in [r for r in rows if r in off.columns and r in def_.columns]:
+        o, d = off.at[offense, stat], def_.at[defense, stat]
+        league = (off[stat].mean() + def_[stat].mean()) / 2
+        style = stat in MATCHUP_STYLE
+        p_off = np.nan if style else off_pct.at[offense, stat]
+        p_def = np.nan if style else def_pct.at[defense, stat]
+        out.append({"Stat": stat, "Offense": o, "Off rank": "" if style else _place(off_places, offense, stat),
+                    "Defense": d, "Def rank": "" if style else _place(def_places, defense, stat),
+                    "League": league, "Edge": p_off - p_def,
+                    "Proj.": league + PROJ_SHRINK * ((o - league) + (d - league)),
+                    "_off_pct": p_off, "_def_pct": p_def})
+    return pd.DataFrame(out).set_index("Stat")
+
+
+def _situation_counts(plays: pd.DataFrame, team: str, side: str) -> dict[str, dict[str, int]]:
+    """`team`'s pass and run plays (as `_situation_row` counts them) in
+    each situation: its offense's, or with side="defteam" those its defense
+    faced."""
+    td = plays[plays[side] == team]
+    out = {}
+    for label, downs, (d_min, d_max) in SR_SITUATIONS + SR_SUBTOTALS:
+        r = _situation_row(td[_situation_mask(td, downs, d_min, d_max)])
+        out[label] = {"Pass": r["_pass"], "Rush": r["_rush"]}
+    return out
+
+
+def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: str, defense: str,
+                        plays: pd.DataFrame,
+                        metrics: tuple[str, ...] = ("Pass SR%", "Rush SR%")) -> pd.DataFrame:
+    """Down and distance for one offense against one defense, from the
+    `season_situational` tables of offenses (`off_sit`) and of what
+    defenses allowed (`def_sit`) and the season's `plays` they came from: a
+    row per situation (`MATCHUP_SITUATIONS`), and per metric "<metric> O"
+    (the offense's), "<metric> D" (what the defense allowed) and "<metric>
+    edge" (percentiles as `matchup_table`'s; NaN unless both sides have
+    `SITUATION_MIN_PLAYS`), with `_`-prefixed percentiles and play counts
+    ("_<metric> O pct", "_<metric> O n", …)."""
+    off_pct = season_ranks(off_sit)
+    def_pct = season_ranks(def_sit, set(def_sit.columns))  # allowing less is better
+    off_n, def_n = _situation_counts(plays, offense, "posteam"), _situation_counts(plays, defense, "defteam")
+    rows = {}
+    for sit in MATCHUP_SITUATIONS:
+        row = {}
+        for m in metrics:
+            key, kind = (sit, m), m.split()[0]
+            has_o, has_d = key in off_sit.columns, key in def_sit.columns
+            p_off = off_pct.at[offense, key] if has_o else np.nan
+            p_def = def_pct.at[defense, key] if has_d else np.nan
+            no, nd = off_n[sit][kind], def_n[sit][kind]
+            enough = min(no, nd) >= SITUATION_MIN_PLAYS
+            row.update({f"{m} O": off_sit.at[offense, key] if has_o else np.nan,
+                        f"{m} D": def_sit.at[defense, key] if has_d else np.nan,
+                        f"{m} edge": p_off - p_def if enough else np.nan,
+                        f"_{m} O pct": p_off, f"_{m} D pct": p_def, f"_{m} O n": no, f"_{m} D n": nd})
+        rows[sit] = row
+    out = pd.DataFrame.from_dict(rows, orient="index")
+    out.index.name = "Situation"
     return out
 
 

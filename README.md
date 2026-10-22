@@ -11,6 +11,7 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 - **Per-game play-by-play** — paginated recent plays list with current drive summary
 - **Player leaders** — passing, rushing, receiving, and defensive stats per team
 - **Season stats page** — the same team and player stats over a whole season (any season, NFL 1999 on, college 2004 on), from the sidebar's page menu: a league table of every team's offense or defense (per game, colored by rank among the season's teams), a team deep-dive (ranks, situational success, tendencies, leaders) and league-wide player leaderboards, filtered by weeks, regular season / postseason, division or conference, home or away games, quarter, garbage time (by win probability) and clutch time. **Opponent-adjusted** stats take out the schedule: offenses are adjusted for the defenses they faced and defenses for the offenses, iterated like SRS (team tables, situational success and player rates). It shows results, so it isn't spoiler-safe
+- **Matchup page** — a preview of a game not played yet (the next week by default, NFL or college): each team's offense against the other's defense, stat by stat, with both sides' values and ranks among the season's teams, who has the **edge** (by how many percentile points) and a **projection** for the game; head-to-head deltas (offense vs offense, defense vs defense); success rates by down and distance; key players. Raw or opponent-adjusted, over any weeks, with or without garbage time. On request, **Kimi** (or Claude) writes a short preview from those tables only. Backtested on the 2024 and 2025 NFL seasons with `tools/validate_matchup.py`
 - **Other games ticker** — while other games are on, an ESPN-style strip above the score shows each one's score and clock, who has the ball (🏈), down and distance, and a bar of how far the drive has gone. It refreshes every 30 s. The game you're watching is never in it, and **Hide other games' scores** in the sidebar turns it off
 
 ## Quick Start
@@ -53,6 +54,7 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 |---|---|
 | [nfl_replay_app.py](nfl_replay_app.py) | The Streamlit page: sidebar, play cursor, sections |
 | [pages/2_Season_stats.py](pages/2_Season_stats.py) | The Season stats page: team and player stats over a season |
+| [pages/3_Matchup.py](pages/3_Matchup.py) | The Matchup page: two teams' season stats against each other for an upcoming game, and an AI preview |
 | [leagues.py](leagues.py) | Where each league's games come from, behind one `League` interface |
 | [replay_core.py](replay_core.py) | League-neutral logic: play timeline, cursor, every stat (no Streamlit) |
 | [views.py](views.py) | Table styling, the drive field figure, the time bar, the other-games ticker |
@@ -103,6 +105,8 @@ KIMI_MODEL = "kimi-k3"        # default; KIMI_BASE_URL defaults to https://api.m
 CLAUDE_MODEL = "claude-sonnet-5-5"
 CLAUDE_EFFORT = "medium"      # Claude only
 ```
+
+The **Matchup** page uses the same keys for its **Matchup preview**: one call with the page's tables (both matchups, down and distance, key players, the betting line), about 150–220 words on where the game will be decided. It's told to use only those numbers (no injuries or news) and not to predict a score.
 
 With both keys set, a selector picks the model per summary. Claude requests also get prompt caching and, on Claude Sonnet 5.5 and newer, the server-side refusal fallback (`fallbacks: "default"`).
 

@@ -6,6 +6,9 @@ stats the app builds from them. It knows nothing past the viewer's cursor. It
 starts from a snapshot (scoreboard, offense and defense tables) and calls tools
 to look at key plays, drives, splits and players before it writes.
 
+The Matchup page's preview of a game not played yet (preview()) is one call
+with the page's season tables and no tools.
+
 The model is called through the Anthropic Messages API, so any compatible
 endpoint works. The default is Kimi through Moonshot's /anthropic route; set
 SUMMARY_PROVIDER=claude to use Claude. This module doesn't import Streamlit;
@@ -21,8 +24,8 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
-from replay_core import (LINE_COUNT_ROWS, TENDENCY_DOWNS, has_air_yards, pass_tendencies, period_label,
-                          run_tendencies)
+from replay_core import (LINE_COUNT_ROWS, TENDENCY_DOWNS, edge_label, has_air_yards, pass_tendencies,
+                          period_label, run_tendencies)
 
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
@@ -89,6 +92,38 @@ def _create(client: anthropic.Anthropic, p: Provider, **kw):
     return client.messages.create(model=p.model, **kw)
 
 
+def _call(client: anthropic.Anthropic, p: Provider, **kw):
+    """_create(), with the API's errors as SummaryErrors saying what went wrong."""
+    try:
+        resp = _create(client, p, **kw)
+    except anthropic.AuthenticationError:
+        raise SummaryError(f"{p.label} rejected the API key.") from None
+    except anthropic.NotFoundError:
+        raise SummaryError(f"{p.base_url} has no model {p.model!r}. "
+                           f"Set {p.name.upper()}_MODEL.") from None
+    except anthropic.RateLimitError:
+        raise SummaryError(f"{p.label} is rate-limiting requests. "
+                           "Try again in a minute.") from None
+    except anthropic.APIStatusError as e:
+        raise SummaryError(f"{p.label} returned an error "
+                           f"({e.status_code}): {e.message}") from None
+    except anthropic.APIConnectionError:
+        raise SummaryError(f"Couldn't reach {p.base_url}.") from None
+    if resp.stop_reason == "refusal":
+        raise SummaryError("The model declined to write this summary.")
+    return resp
+
+
+def _final_text(resp) -> str:
+    """A reply's text, marked if it hit the length limit."""
+    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    if not text:
+        raise SummaryError(f"The model returned no text (stop reason: {resp.stop_reason}).")
+    if resp.stop_reason == "max_tokens":
+        text += "\n\n*(Cut off at the length limit.)*"
+    return text
+
+
 # ---------- What the agent can see ----------
 @dataclass
 class GameContext:
@@ -138,11 +173,11 @@ _LEAGUE = {
 }
 
 
-def _csv(df: pd.DataFrame | None, index: bool = False) -> str:
+def _csv(df: pd.DataFrame | None, index: bool = False, float_format: str = "%.3g") -> str:
     """Compact table text for the model."""
     if df is None or df.empty:
         return "(none)"
-    return df.to_csv(index=index, float_format="%.3g").strip()
+    return df.to_csv(index=index, float_format=float_format).strip()
 
 
 def game_status(revealed: pd.DataFrame) -> tuple[str, bool]:
@@ -650,32 +685,11 @@ def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = 
         progress.status = ("Reading the dashboard" if turn == 0
                            else "Writing the summary" if turn == MAX_TURNS - 1
                            else "Thinking it over")
-        try:
-            resp = _create(client, provider, max_tokens=16000, system=system_prompt(ctx.league),
-                           tools=tools, messages=messages)
-        except anthropic.AuthenticationError:
-            raise SummaryError(f"{provider.label} rejected the API key.") from None
-        except anthropic.NotFoundError:
-            raise SummaryError(f"{provider.base_url} has no model {provider.model!r}. "
-                               f"Set {provider.name.upper()}_MODEL.") from None
-        except anthropic.RateLimitError:
-            raise SummaryError(f"{provider.label} is rate-limiting requests. "
-                               "Try again in a minute.") from None
-        except anthropic.APIStatusError as e:
-            raise SummaryError(f"{provider.label} returned an error "
-                               f"({e.status_code}): {e.message}") from None
-        except anthropic.APIConnectionError:
-            raise SummaryError(f"Couldn't reach {provider.base_url}.") from None
-        if resp.stop_reason == "refusal":
-            raise SummaryError("The model declined to write this summary.")
+        resp = _call(client, provider, max_tokens=16000, system=system_prompt(ctx.league),
+                     tools=tools, messages=messages)
         calls = [b for b in resp.content if b.type == "tool_use"]
         if resp.stop_reason != "tool_use" or not calls:
-            text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            if not text:
-                raise SummaryError(f"The model returned no text (stop reason: {resp.stop_reason}).")
-            if resp.stop_reason == "max_tokens":
-                text += "\n\n*(Cut off at the length limit.)*"
-            return Summary(text, resp.model, used)
+            return Summary(_final_text(resp), resp.model, used)
         # Send the whole assistant turn back unchanged: thinking blocks included.
         messages.append({"role": "assistant", "content": resp.content})
         results = []
@@ -698,3 +712,127 @@ def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = 
         messages.append({"role": "user", "content": results})
     raise SummaryError("The model kept looking things up and never wrote the summary.")
 
+
+
+# ---------- Matchup preview ----------
+# A short preview of a game not played yet, from the Matchup page's season
+# tables: one model call, no tools. It has no spoiler gate to keep; it only
+# sees finished games.
+@dataclass
+class MatchupContext:
+    """What the preview may look at: the Matchup page's tables."""
+    league: str                     # "NFL" or "CFB"
+    away: str
+    home: str
+    when: str                       # "Week 7, Sun 2026-10-25", plus "neutral site"
+    line: str                       # "CHI favored by 3, total 50.5"; "" without one
+    selection: str                  # which games and how the season numbers are taken
+    n_teams: int                    # how many teams the places are among
+    # offense team → replay_core.matchup_table / situational_matchup against
+    # the other team's defense
+    matchups: dict[str, pd.DataFrame]
+    situational: dict[str, pd.DataFrame]
+    # (team, "passing" | "rushing" | "receiving" | "defense") → season leaders
+    leaders: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict)
+
+
+def _fmt_season(stat: str, v) -> str:
+    if pd.isna(v):
+        return "-"
+    if stat in _EPA_STATS:
+        return f"{v:+.2f}"
+    if stat in _PCT_STATS or stat.endswith("%"):
+        return f"{v:.1%}"
+    return f"{v:.1f}"  # aDoT and the per-game counts
+
+
+def matchup_rows(df: pd.DataFrame, offense: str, defense: str) -> pd.DataFrame:
+    """A replay_core.matchup_table as text, the way the page shows it."""
+    return pd.DataFrame([{
+        "Stat": stat,
+        f"{offense} offense": _fmt_season(stat, r["Offense"]), f"{offense} place": r["Off rank"],
+        f"{defense} defense allowed": _fmt_season(stat, r["Defense"]),
+        f"{defense} place": r["Def rank"],
+        "edge": edge_label(r["Edge"], offense, defense),
+        "proj": _fmt_season(stat, r["Proj."]), "league": _fmt_season(stat, r["League"]),
+    } for stat, r in df.iterrows()])
+
+
+def situational_rows(df: pd.DataFrame, offense: str, defense: str) -> pd.DataFrame:
+    """A replay_core.situational_matchup as text: success rates with their
+    plays in brackets, and the edges."""
+    rows = []
+    for sit, r in df.iterrows():
+        row = {"Situation": sit}
+        for m, kind in (("Pass SR%", "pass"), ("Rush SR%", "run")):
+            for side, who in (("O", f"{offense} {kind} SR"), ("D", f"{defense} {kind} SR allowed")):
+                v, n = r[f"{m} {side}"], r[f"_{m} {side} n"]
+                row[who] = "-" if pd.isna(v) else f"{v:.0f}% ({int(n)})"
+            row[f"{kind} edge"] = edge_label(r[f"{m} edge"], offense, defense)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def matchup_snapshot(ctx: MatchupContext) -> str:
+    """The Matchup page as text."""
+    parts = [f"Game: {ctx.away} (away) at {ctx.home} (home), {ctx.when}"]
+    if ctx.line:
+        parts.append(f"Betting line: {ctx.line}")
+    parts.append(f"Season numbers: {ctx.selection}. Places are among the {ctx.n_teams} teams; "
+                 "counts and yards are per game.")
+    for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
+        parts.append(f"When {off} has the ball: {off}'s offense against what {def_}'s defense "
+                     f"allowed.\n{_csv(matchup_rows(ctx.matchups[off], off, def_))}")
+    for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
+        parts.append(f"Down and distance when {off} has the ball: success rate (plays in "
+                     f"brackets). Early = 1st-2nd down, late = 3rd-4th; short 1-3 yds to go, "
+                     f"medium 4-6, long 7+. No edge where either side has too few plays.\n"
+                     f"{_csv(situational_rows(ctx.situational[off], off, def_))}")
+    for team in (ctx.away, ctx.home):
+        for unit in ("passing", "rushing", "receiving", "defense"):
+            df = ctx.leaders.get((team, unit))
+            if df is not None and not df.empty:
+                parts.append(f"{team} {unit} leaders, season totals:\n"
+                             f"{_csv(df, float_format='%.4g')}")
+    return "\n\n".join(parts)
+
+
+MATCHUP_PROMPT = """You are {analyst} writing a short preview of an upcoming game from the two teams' season stats. The fan sees the same tables next to your preview; your job is to say where the game will be decided.
+
+Ground rules:
+- Use only the numbers given. Don't bring in outside knowledge of these teams, players, injuries or news: it may be out of date, and the tables are the season so far.
+- Each team's offense meets the other's defense. Pick the two to four unit-against-unit matchups that matter most, with the biggest edges first: EPA/play and success rate, then turnovers, pass protection and pressure, run blocking (stuffs, explosive runs), 3rd downs and the red zone. Give the numbers and places behind each. Say where a strength meets a strength.
+- Don't predict a final score. Say which team the numbers favor and how clearly; if there's a betting line, say whether the numbers agree with it (the line usually knows more than season stats do).
+- Season numbers over a few games, and down-and-distance cells with few plays, are noisy. Say so when it matters.
+
+Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA. Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers, 3rd-down rate and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
+
+Write Markdown, about 150 to 220 words:
+**Headline**: one sentence: who the numbers favor and why.
+Three or four bullets: the matchups that will decide it, the biggest first, each with numbers.
+**Watch**: one sentence on the matchup to watch.
+
+Write only the preview, without a preamble or notes about the data."""
+
+
+def matchup_prompt(league: str) -> str:
+    t = _LEAGUE[league]
+    return MATCHUP_PROMPT.format(analyst=t["analyst"], model=t["model"])
+
+
+def preview(ctx: MatchupContext, provider: Provider, progress: Progress | None = None) -> Summary:
+    """Write the matchup preview: one call, no tools. Makes no Streamlit
+    calls, so it can run on a worker thread (submit_preview())."""
+    progress = progress or Progress()
+    progress.status, progress.calls = "Reading the matchup", 1
+    resp = _call(_client(provider), provider, max_tokens=16000, system=matchup_prompt(ctx.league),
+                 messages=[{"role": "user", "content": (
+                     matchup_snapshot(ctx) + f"\n\nPreview {ctx.away} at {ctx.home}.")}])
+    progress.status = "Done"
+    return Summary(_final_text(resp), resp.model, [])
+
+
+def submit_preview(ctx: MatchupContext, provider: Provider) -> tuple[Future, Progress]:
+    """Start preview() on the summaries' worker threads, as submit() does."""
+    progress = Progress(status="Reading the matchup")
+    return _POOL.submit(preview, ctx, provider, progress), progress

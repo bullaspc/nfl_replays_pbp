@@ -12,9 +12,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (EDGE_EVEN, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
-                         SR_METRICS, SR_SUBTOTALS, down_distance,
+                         SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
@@ -275,6 +275,123 @@ def _season_format(col: str):
     else:
         f = "{:.0f}"
     return lambda v: "—" if pd.isna(v) else f.format(v)
+
+
+# ---------- Matchup ----------
+# The Matchup page's tables are drawn as text: each value carries its place
+# ("+0.04 (10th)"), colored by percentile like the season tables, and the
+# Δ / Edge cell is tinted in the hue of the team with the edge. One hue per
+# side of the game, the replay charts' fallbacks: they show on both themes
+# and never look alike, as two teams' own colors can (two navies).
+MATCHUP_TINTS = ("#ff7f0e", "#1f77b4")  # away, home
+
+
+def _tint(color: str | None, edge: float) -> str:
+    """A background in `color`, stronger with the `edge` (percentile
+    points), light enough for either theme's text."""
+    h = hex_or_none(color)
+    if h is None or len(h) != 7 or pd.isna(edge) or abs(edge) < EDGE_EVEN:
+        return ""
+    r, g, b = (int(h[i:i + 2], 16) for i in (1, 3, 5))
+    return f"background-color: rgba({r}, {g}, {b}, {0.15 + 0.45 * min(abs(edge) / 100, 1.0):.2f})"
+
+
+def _ranked(stat: str, v, place: str) -> str:
+    s = _season_format(stat)(v)
+    return f"{s} ({place})" if place and s != "—" else s
+
+
+def _delta_format(stat: str, v) -> str:
+    """A difference in `stat`'s units, signed: rates in points of percent."""
+    if pd.isna(v):
+        return "—"
+    if stat in _RATE_ROWS or (stat.endswith("%") and stat not in LINE_COUNT_ROWS):
+        s = f"{v:+.1%}"
+    else:
+        s = f"{v:+.2f}" if stat in _EPA_ROWS else f"{v:+.1f}"
+    return s.lstrip("+-") if float(s.rstrip("%")) == 0 else s  # no "-0.0"
+
+
+def _centered(styled):
+    return (
+        styled
+        .set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
+        )
+    )
+
+
+def style_head_to_head(df: pd.DataFrame, away: str, home: str, tints: dict):
+    """A `replay_core.head_to_head` table: each team's value and place,
+    colored by its percentile among the season's teams, and Δ (away − home)
+    tinted in the hue (`tints`, team → color) of the team that ranks
+    better (none for style stats or a gap under `EDGE_EVEN`)."""
+    shown = pd.DataFrame({
+        away: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Away"], df["Away rank"])],
+        home: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Home"], df["Home rank"])],
+        "Δ": [_delta_format(s, v) for s, v in zip(df.index, df["Δ"])],
+    }, index=df.index)
+    gap = df["_away_pct"] - df["_home_pct"]
+
+    def _colors(col):
+        if col.name == "Δ":
+            return [_tint(tints.get(away if g > 0 else home), g) for g in gap]
+        return [percentile_color(p) for p in df["_away_pct" if col.name == away else "_home_pct"]]
+
+    return _centered(shown.style.apply(_colors))
+
+
+def style_matchup_table(df: pd.DataFrame, offense: str, defense: str, tints: dict):
+    """A `replay_core.matchup_table`: the offense's value and what the
+    defense allowed, each with its place and colored by its percentile,
+    Edge ("KC 25": who ranks better, by how many percentile points) tinted
+    in that team's hue (`tints`), and Proj. and League as plain values."""
+    off_col, def_col = f"{offense} offense", f"{defense} defense"
+    shown = pd.DataFrame({
+        off_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Offense"], df["Off rank"])],
+        def_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Defense"], df["Def rank"])],
+        "Edge": [edge_label(e, offense, defense) for e in df["Edge"]],
+        "Proj.": [_season_format(s)(v) for s, v in zip(df.index, df["Proj."])],
+        "League": [_season_format(s)(v) for s, v in zip(df.index, df["League"])],
+    }, index=df.index)
+
+    def _colors(col):
+        if col.name == off_col:
+            return [percentile_color(p) for p in df["_off_pct"]]
+        if col.name == def_col:
+            return [percentile_color(p) for p in df["_def_pct"]]
+        if col.name == "Edge":
+            return [_tint(tints.get(offense if e > 0 else defense), e) for e in df["Edge"]]
+        return [""] * len(col)
+
+    return _centered(shown.style.apply(_colors))
+
+
+def style_situational_matchup(df: pd.DataFrame, offense: str, defense: str, tints: dict,
+                              metrics: tuple[str, ...] = ("Pass SR%", "Rush SR%")):
+    """A `replay_core.situational_matchup`: per metric the offense's value
+    ("O") and what the defense allowed ("D"), each with its plays in
+    brackets and colored by percentile, then the edge as in
+    `style_matchup_table` ("—": too few plays for one)."""
+    shown, colors_by_col = {}, {}
+    for m in metrics:
+        kind = "Run" if m.startswith("Rush") else "Pass"
+        for side, team in (("O", offense), ("D", defense)):
+            col = f"{kind} {side}"
+            shown[col] = ["—" if pd.isna(v) else f"{v:.0f}% ({int(n)})"
+                          for v, n in zip(df[f"{m} {side}"], df[f"_{m} {side} n"])]
+            colors_by_col[col] = [percentile_color(p) for p in df[f"_{m} {side} pct"]]
+        edges = df[f"{m} edge"]
+        shown[f"{kind} edge"] = [edge_label(e, offense, defense) or "—" for e in edges]
+        colors_by_col[f"{kind} edge"] = [_tint(tints.get(offense if e > 0 else defense), e)
+                                         for e in edges]
+    shown = pd.DataFrame(shown, index=df.index)
+    styled = shown.style.apply(lambda col: colors_by_col[col.name])
+    subtotals = [lbl for lbl, _, _ in SR_SUBTOTALS if lbl in shown.index]
+    if subtotals:
+        styled = styled.set_properties(subset=pd.IndexSlice[subtotals, :], **{"font-weight": "bold"})
+    return _centered(styled)
 
 
 # ---------- Drives ----------

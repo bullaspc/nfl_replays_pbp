@@ -184,6 +184,12 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str | None = None)
     if today and not sched.empty and "start_date" in sched.columns:
         g = pd.concat([g, _live_games(sched, set(g["game_id"]), team_ids(raw, sched), today)],
                       ignore_index=True)
+    return _labelled(g)
+
+
+def _labelled(g: pd.DataFrame) -> pd.DataFrame:
+    """`g` with game_date, week_label and label (AP ranks; 🔴 for a live
+    game), in week and kickoff order."""
     g["game_date"] = _local_date(g["kickoff"])
     g["week_label"] = [week_label(t, w) for t, w in zip(g["season_type"], g["week"])]
     g["week_order"] = np.where(g["season_type"] == 3, 100, g["week"])
@@ -197,12 +203,18 @@ def list_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str | None = None)
     return g.sort_values(["week_order", "kickoff", "game_id"]).reset_index(drop=True)
 
 
-def _live_games(sched: pd.DataFrame, published: set[str], ids: pd.DataFrame, today: str) -> pd.DataFrame:
-    """Schedule rows for games that kick off by `today`, have an FBS team (the
-    release covers those) and aren't published yet."""
+def _schedule_games(sched: pd.DataFrame) -> pd.DataFrame:
+    """The schedule with string game ids, UTC kickoffs and only games with an
+    FBS team (the release covers those)."""
     s = sched.assign(game_id=sched["game_id"].astype(str), kickoff=_utc(sched["start_date"]))
     fbs = s["fbs_participant"].fillna(False).astype(bool) if "fbs_participant" in s.columns else True
-    s = s[fbs & ~s["game_id"].isin(published) & (_local_date(s["kickoff"]).fillna("9999") <= today)]
+    return s[fbs]
+
+
+def _schedule_rows(s: pd.DataFrame, ids: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Schedule rows `s` (`_schedule_games`) as list_games rows, teams by
+    abbreviation (`team_ids`; the schedule leaves them blank for games not
+    played yet)."""
     abbr = dict(zip(ids["id"], ids["abbr"]))
 
     def name(side):
@@ -216,8 +228,32 @@ def _live_games(sched: pd.DataFrame, published: set[str], ids: pd.DataFrame, tod
         "kickoff": s["kickoff"],
         "home_conf": s.get("home_conference", ""), "away_conf": s.get("away_conference", ""),
         "home_rank": s.get("home_rank", np.nan), "away_rank": s.get("away_rank", np.nan),
-        "source": "live",
+        "source": source,
     })
+
+
+def _live_games(sched: pd.DataFrame, published: set[str], ids: pd.DataFrame, today: str) -> pd.DataFrame:
+    """Schedule rows for games that kick off by `today`, have an FBS team and
+    aren't published yet."""
+    s = _schedule_games(sched)
+    s = s[~s["game_id"].isin(published) & (_local_date(s["kickoff"]).fillna("9999") <= today)]
+    return _schedule_rows(s, ids, "live")
+
+
+def upcoming_games(raw: pd.DataFrame, sched: pd.DataFrame, today: str) -> pd.DataFrame:
+    """Games with an FBS team that kick off `today` (US Eastern, YYYY-MM-DD)
+    or later and aren't finished (in the schedule or the release), for the
+    Matchup page: list_games' columns plus neutral, in week and kickoff
+    order. AP ranks are the schedule's latest."""
+    if sched.empty or "start_date" not in sched.columns:
+        return pd.DataFrame(columns=["game_id", "week_label", "home_team", "away_team", "label"])
+    s = _schedule_games(sched)
+    finished = set(raw.loc[raw["status_type_completed"].eq(True), "game_id"].astype(str))
+    completed = s["completed"].eq(True) if "completed" in s.columns else False
+    s = s[~completed & ~s["game_id"].isin(finished) & (_local_date(s["kickoff"]).fillna("") >= today)]
+    g = _schedule_rows(s, team_ids(raw, sched), "upcoming")
+    g["neutral"] = s["neutral_site"].eq(True) if "neutral_site" in s.columns else False
+    return _labelled(g)
 
 
 def team_meta(raw: pd.DataFrame, info: pd.DataFrame,
