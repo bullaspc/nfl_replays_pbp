@@ -89,7 +89,8 @@ with st.sidebar:
                       help="Opponent-adjusted: each offense's numbers less the average strength "
                            "of the defenses it faced, and each defense's less that of the "
                            "offenses it faced, iterated until they settle (like SRS). Counts of "
-                           "plays, penalties, aDOT and defenders' stats stay as played.")
+                           "plays, time of possession, penalties, aDOT and defenders' stats "
+                           "stay as played.")
     st.subheader("Situation")
     venue = st.radio("Venue", list(VENUES), horizontal=True, key="_ss_venue",
                      help="Each team's own home or away games, for its offense and its defense.")
@@ -360,12 +361,13 @@ team's strength depends on its opponents' adjusted values, the two are recompute
 they stop moving (at most {ADJUST_MAX_PASSES} passes), as the Simple Rating System does for
 points. A team's strength is shrunk toward average by games ÷ (games + {SHRINK_GAMES}), so a team
 seen in only a game or two can't swing its opponents' numbers, and the league average is kept
-where it was. Play counts, a team's own penalties, aDOT and defenders' stats stay as played.
+where it was. Play counts, time of possession, a team's own penalties, aDOT and defenders' stats
+stay as played.
 A player's SR% and EPA/play are adjusted by the strength of the defenses his plays came against,
 weighted by how many plays he had against each. The adjustment adds and subtracts, so a team or
 player with only a few plays in a cell can land past what the stat can be (a success rate below
-0% or above 100%, fewer than 0 turnovers a game): such a value is shown at the nearest one it can
-take.
+0% or above 100%, fewer than 0 turnovers a game, more rushes and completions than plays, fewer QB
+hits than sacks): such a value is shown at the nearest one it can take.
 
 **Filters** (sidebar, Situation). *Home / Away* keeps each team's own home or away games, for its
 offense and its defense (neutral-site games count for the team listed at home); with

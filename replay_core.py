@@ -1063,9 +1063,10 @@ def situational_distributions_from(table: pd.DataFrame) -> dict[str, dict[str, n
 SHRINK_GAMES = 2
 ADJUST_MAX_PASSES = 100
 ADJUST_TOL = 1e-9
-# Volumes, a team's own penalties and the depth a passer chooses aren't
+# Volumes (time of possession among them: how long a team had the ball, like
+# its plays), a team's own penalties and the depth a passer chooses aren't
 # down to the opponent.
-SEASON_ADJUST_SKIP = SEASON_VOLUME | {"Penalties", "Penalty Yds", "aDoT"}
+SEASON_ADJUST_SKIP = SEASON_VOLUME | {"TOP", "Penalties", "Penalty Yds", "aDoT"}
 # The team column whose defensive strength adjusts each player rate, and the
 # scale between them (player SR% is in percent, team SR a fraction).
 PLAYER_ADJUST = {"passing": {"SR%": ("Pass SR", 100.0), "EPA/play": ("Pass EPA/play", 1.0)},
@@ -1150,18 +1151,25 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 # What a season value can be. The adjustment is additive, so a team or player
 # seen on a few plays (one situation or quarter, a back with two carries) can
 # be pushed past either end of its stat's range: a success rate of -18% or
-# 121%, -0.3 turnovers a game. Adjusted tables keep the nearest possible value.
+# 121%, -0.3 turnovers a game, more rushes and completions than plays, fewer
+# QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
+# possible value.
 SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%",
                 *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
-SEASON_COUNTS = {"Rush+Comp", "Turnovers", "TOP"}     # per game, never below 0
+# Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
+# Plays, which stay as played; turnovers have no ceiling (a special-teams fumble
+# isn't on a play from scrimmage).
+SEASON_COUNTS = {"Rush+Comp", "Turnovers"}
 
 
 def possible_values(df: pd.DataFrame) -> pd.DataFrame:
     """A season team table, `season_situational()` table (columns
     (situation, metric)) or season players table with each value moved into
-    its stat's range (`SEASON_RATES`, `SEASON_PERCENTS`, `SEASON_COUNTS`);
-    other stats, EPA among them, have none."""
+    its stat's range (`SEASON_RATES`, `SEASON_PERCENTS`, `SEASON_COUNTS`) and,
+    in a team table, into the range its row allows: Rush+Comp between Rush
+    Plays and Plays, QB Hit % at least Sack %. Other stats, EPA among them,
+    have none."""
     out = df.copy()
     for col in df.columns:
         stat = col[1] if isinstance(col, tuple) else col
@@ -1171,6 +1179,10 @@ def possible_values(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = out[col].clip(0.0, 100.0)
         elif stat in SEASON_COUNTS:
             out[col] = out[col].clip(lower=0.0)
+    if {"Rush+Comp", "Rush Plays", "Plays"} <= set(out.columns):
+        out["Rush+Comp"] = out["Rush+Comp"].clip(out["Rush Plays"], out["Plays"], axis=0)
+    if {"QB Hit %", "Sack %"} <= set(out.columns):
+        out["QB Hit %"] = out["QB Hit %"].clip(lower=out["Sack %"], axis=0)
     return out
 
 

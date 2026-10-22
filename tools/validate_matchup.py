@@ -41,6 +41,8 @@ def main(season: int, path: str | None = None, first_week: int = 4) -> None:
             continue
         raw_off, raw_def = core.season_team_table(before), core.season_team_table(before, "defteam")
         adj_off, adj_def, _, _ = core.opponent_adjust(raw_off, raw_def, core.season_games(before))
+        # As leagues._season_tables() does, so these are the page's tables.
+        adj_off, adj_def = core.possible_values(adj_off), core.possible_values(adj_def)
         actual = core.season_team_table(now)  # one game each: per game = the game
         for gid, g in games[games["week"] == week].iterrows():
             proj_epa = {}
