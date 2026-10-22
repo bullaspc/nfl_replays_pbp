@@ -11,7 +11,8 @@ league average. The slope of the game's distance from the league average on
 the unshrunk projection's says how much of it carries over (what
 `PROJ_SHRINK` is set from). Then the projected EPA/play
 margin (each offense's Proj. less its opponent's) picks a winner, next to the
-betting line's favorite. NFL only.
+betting line's favorite. NFL only. `offense_games()` is the loop, shared with
+tools/validate_injuries.py.
 
     python tools/validate_matchup.py 2025 [path] [first_week]
 """
@@ -29,43 +30,73 @@ STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1s
          "3rd Down %", "Sack %", "Stuff %", "Turnovers"]
 
 
-def main(season: int, path: str | None = None, first_week: int = 4) -> None:
+def read_season(season: int, path: str | None = None) -> pd.DataFrame:
+    """A season's regular-season pbp, with the betting line and result."""
     pbp = pd.read_parquet(path or PBP_URL.format(y=season),
                           columns=core.PBP_COLS + ["season_type", "spread_line", "result"])
-    pbp = pbp[pbp["season_type"] == "REG"].sort_values(["game_id", "play_id"])
+    return pbp[pbp["season_type"] == "REG"].sort_values(["game_id", "play_id"])
+
+
+def offense_games(pbp: pd.DataFrame, first_week: int = 4, kinds=("raw", "adjusted"),
+                  stats: list[str] = STATS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Every offense-game from `first_week` on with its `matchup_table()`
+    built from the weeks before: one row per (game_id, week, team, opp, kind,
+    stat) with the game's actual value, Proj., the offense's and defense's
+    season values and the league's. Also the games (week, teams, betting
+    line, result) by game_id."""
     games = pbp.groupby("game_id")[["week", "home_team", "away_team", "spread_line", "result"]].first()
-    rows, picks = [], []
+    rows = []
     for week in range(first_week, int(pbp["week"].max()) + 1):
         before, now = pbp[pbp["week"] < week], pbp[pbp["week"] == week]
         if now.empty:
             continue
+        tables = {}
         raw_off, raw_def = core.season_team_table(before), core.season_team_table(before, "defteam")
-        adj_off, adj_def, _, _ = core.opponent_adjust(raw_off, raw_def, core.season_games(before))
-        # As leagues._season_tables() does, so these are the page's tables.
-        adj_off, adj_def = core.possible_values(adj_off), core.possible_values(adj_def)
+        if "raw" in kinds:
+            tables["raw"] = (raw_off, raw_def)
+        if "adjusted" in kinds:
+            adj_off, adj_def, _, _ = core.opponent_adjust(raw_off, raw_def, core.season_games(before))
+            # As leagues._season_tables() does, so these are the page's tables.
+            tables["adjusted"] = (core.possible_values(adj_off), core.possible_values(adj_def))
         actual = core.season_team_table(now)  # one game each: per game = the game
         for gid, g in games[games["week"] == week].iterrows():
-            proj_epa = {}
             for team, opp in ((g["away_team"], g["home_team"]), (g["home_team"], g["away_team"])):
-                for kind, (off, def_) in (("raw", (raw_off, raw_def)), ("adjusted", (adj_off, adj_def))):
-                    if team not in off.index or opp not in def_.index:
+                for kind, (off, def_) in tables.items():
+                    if team not in off.index or opp not in def_.index or team not in actual.index:
                         continue
-                    m = core.matchup_table(off, def_, team, opp, STATS)
+                    m = core.matchup_table(off, def_, team, opp, stats)
                     for stat in m.index:
-                        rows.append({"kind": kind, "stat": stat, "actual": actual.at[team, stat],
+                        rows.append({"game_id": gid, "week": week, "team": team, "opp": opp,
+                                     "kind": kind, "stat": stat, "actual": actual.at[team, stat],
                                      "proj": m.at[stat, "Proj."], "offense": m.at[stat, "Offense"],
                                      "defense": m.at[stat, "Defense"], "league": m.at[stat, "League"]})
-                    proj_epa[(kind, team)] = m.at["EPA/play", "Proj."]
-            if pd.isna(g["result"]) or g["result"] == 0:
-                continue
-            home_won = g["result"] > 0
-            pick = {"line": g["spread_line"] > 0 if g["spread_line"] != 0 else np.nan}
-            for kind in ("raw", "adjusted"):
-                h, a = proj_epa.get((kind, g["home_team"])), proj_epa.get((kind, g["away_team"]))
-                pick[kind] = (h > a) if h is not None and a is not None else np.nan
-            picks.append({k: (np.nan if pd.isna(v) else float(v == home_won)) for k, v in pick.items()})
+    return pd.DataFrame(rows), games
 
-    df = pd.DataFrame(rows).dropna(subset=["actual", "proj"])
+
+def winner_picks(rows: pd.DataFrame, games: pd.DataFrame, proj_col: str = "proj",
+                 kinds=("raw", "adjusted")) -> pd.DataFrame:
+    """Per game without a tie, whether each projected EPA/play margin (home
+    Proj. less away, from `proj_col`) and the betting line's favorite picked
+    the winner (1/0; NaN where there's no pick)."""
+    epa = rows[rows["stat"] == "EPA/play"].set_index(["game_id", "kind", "team"])[proj_col]
+    picks = []
+    for gid, g in games.iterrows():
+        if pd.isna(g["result"]) or g["result"] == 0:
+            continue
+        home_won = g["result"] > 0
+        pick = {"line": g["spread_line"] > 0 if g["spread_line"] != 0 else np.nan}
+        for kind in kinds:
+            h, a = epa.get((gid, kind, g["home_team"])), epa.get((gid, kind, g["away_team"]))
+            pick[kind] = (h > a) if h is not None and a is not None else np.nan
+        if all(pd.isna(pick[k]) for k in kinds):
+            continue  # before first_week
+        picks.append({k: (np.nan if pd.isna(v) else float(v == home_won)) for k, v in pick.items()})
+    return pd.DataFrame(picks)
+
+
+def main(season: int, path: str | None = None, first_week: int = 4) -> None:
+    rows, games = offense_games(read_season(season, path), first_week)
+    df = rows.dropna(subset=["actual", "proj"])
     n = int(((df["kind"] == "raw") & (df["stat"] == "EPA/play")).sum())
     print(f"{season}, weeks {first_week}+: {n} offense-games\n")
     print("Mean absolute error against the game (lower is better), the correlation of Proj. with it, "
@@ -82,7 +113,7 @@ def main(season: int, path: str | None = None, first_week: int = 4) -> None:
                     "r(offense)": d["offense"].corr(d["actual"]),
                     "carries over": (x * y).sum() / (x ** 2).sum()})
     print(pd.DataFrame(out).set_index(["stats", "stat"]).round(3).to_string())
-    p = pd.DataFrame(picks)
+    p = winner_picks(rows, games)
     print(f"\nWinner picked ({len(p)} games without a tie):")
     for col, label in (("raw", "projected EPA/play margin, raw"),
                        ("adjusted", "projected EPA/play margin, opponent-adjusted"),

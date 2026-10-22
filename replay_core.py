@@ -1399,6 +1399,18 @@ def player_ids(pbp: pd.DataFrame) -> pd.DataFrame:
     return ids[~ids.duplicated(["team", "name"], keep=False)].reset_index(drop=True)
 
 
+def _phase_totals(s: pd.DataFrame) -> pd.DataFrame:
+    """One team's snaps per game and phase (game_id × `SNAP_PHASES` labels),
+    read off its fullest-playing player in each (snaps ÷ share)."""
+    out = {}
+    for label, phase in SNAP_PHASES.items():
+        pct = s[f"{phase}_pct"]
+        fullest = (s.assign(_n=s[f"{phase}_snaps"], _p=pct)[pct > 0].sort_values("_p")
+                   .groupby("game_id").tail(1).set_index("game_id"))
+        out[label] = (fullest["_n"] / fullest["_p"]).round()
+    return pd.DataFrame(out).reindex(s["game_id"].unique()).fillna(0.0)
+
+
 def team_snaps(snaps: pd.DataFrame, team: str, games=None) -> pd.DataFrame:
     """`team`'s snap counts over `games` (game ids; every game if None), one
     row per player, indexed by gsis id (PFR's id where nflverse has none):
@@ -1418,12 +1430,10 @@ def team_snaps(snaps: pd.DataFrame, team: str, games=None) -> pd.DataFrame:
     g = s.groupby(s["gsis_id"].fillna(s["pfr_player_id"]))
     out = pd.DataFrame({"Player": g["player"].last(), "Pos": g["position"].last(),
                         "G": g["game_id"].nunique()})
+    totals = _phase_totals(s).sum()
     for label, phase in SNAP_PHASES.items():
-        n, pct = s[f"{phase}_snaps"], s[f"{phase}_pct"]
-        fullest = s.assign(_n=n, _p=pct)[pct > 0].sort_values("_p").groupby("game_id").tail(1)
-        total = float((fullest["_n"] / fullest["_p"]).round().sum())
         out[label] = g[f"{phase}_snaps"].sum().astype(int)
-        out[f"{label} %"] = out[label] / total if total else np.nan
+        out[f"{label} %"] = out[label] / totals[label] if totals[label] else np.nan
     out.index.name = "gsis_id"
     out = out.assign(_both=out["Off"] + out["Def"]).sort_values(["_both", "ST"], ascending=False,
                                                                kind="stable")
@@ -1522,6 +1532,94 @@ def status_by_name(report: pd.DataFrame, team: str, ids: pd.DataFrame,
         if isinstance(name, str) and name:
             out[name] = status
     return out
+
+
+# How a team's lineup for a game differs from the one behind its season
+# numbers. The numbers were built by whoever played those games, so a starter
+# out now takes away only the share of their snaps he had (half, if he missed
+# half of them), and one coming back adds the share he plays when he does,
+# less what he had. Who's gone: Out or Doubtful on the week's injury report,
+# or not available on the week's roster (nflverse's weekly rosters: a player
+# on a reserve list, injured or otherwise, drops off the injury report). The
+# roster's game-day inactive status is set 90 minutes before kickoff, too
+# late for a preview, so it counts as available, as does the practice squad
+# (a player there can be elevated).
+AVAILABLE_ROSTER = {"ACT", "INA", "DEV"}
+ROSTER_WHY = {"RES": "Reserve", "PUP": "Reserve", "NWT": "Reserve", "RSN": "Reserve",
+              "SUS": "Suspended", "CUT": "Released", "TRD": "Traded", "TRT": "Traded",
+              "RET": "Retired", "EXE": "Exempt"}
+LINEUP_COLS = ["Player", "Pos", "Unit", "Why", "Was", "Now", "Change"]
+# The units the Matchup page's injury adjustment groups players into.
+LINEUP_GROUPS = {"QB": ["QB"], "OL": ["OL"], "Skill": ["RB", "WR", "TE"],
+                 "Front": ["DL", "LB"], "DB": ["DB"]}
+
+
+def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFrame,
+                  team: str, week: int, games) -> pd.DataFrame:
+    """The players who make `team`'s lineup for `week` differ from the one
+    behind its season numbers, the snap counts over `games` (its earlier
+    games), each in his unit's phase (`UNIT_PHASE`): Why ("Out", "Doubtful"
+    on the week's injury report, "Reserve", "Released", "Traded", … or "Not
+    on roster" on the week's roster; "Back" for one listed Out or off the
+    roster in one of those weeks who's available now), Was (his share of
+    those games' snaps), Now (0 if gone; if back, his share in the games he
+    played) and Change (Now − Was: −1.0 is a full-time player fewer than the
+    numbers had). Players without a gsis id, or who never played the phase,
+    are left out. `roster` is nflverse's weekly rosters (team, week,
+    gsis_id, status): the week's, or the team's latest before it (early in
+    a week the new one may not be out yet); none at all, and it isn't used."""
+    if snaps.empty:
+        return pd.DataFrame(columns=LINEUP_COLS)
+    s = snaps[(snaps["team"] == team) & snaps["game_id"].isin(set(games))]
+    if s.empty:
+        return pd.DataFrame(columns=LINEUP_COLS)
+    totals = _phase_totals(s)
+    s = s.dropna(subset=["gsis_id"])
+    weeks = set(s["week"])
+    inj = injuries[injuries["team"] == team] if not injuries.empty else injuries
+    now_status = dict(zip(inj.loc[inj["week"] == week, "gsis_id"],
+                          inj.loc[inj["week"] == week, "report_status"])) if not inj.empty else {}
+    out_before = set(inj.loc[inj["week"].isin(weeks) & (inj["report_status"] == "Out"), "gsis_id"]) \
+        if not inj.empty else set()
+    ros = roster[roster["team"] == team] if not roster.empty else roster
+    ros_week = ros.loc[ros["week"] <= week, "week"].max() if not ros.empty else np.nan
+    ros_now = (dict(zip(ros.loc[ros["week"] == ros_week, "gsis_id"], ros.loc[ros["week"] == ros_week, "status"]))
+               if pd.notna(ros_week) else None)
+    gone_before = (set(ros.loc[ros["week"].isin(weeks) & ~ros["status"].isin(AVAILABLE_ROSTER), "gsis_id"])
+                   if not ros.empty else set())
+    rows = []
+    for gid, p in s.groupby("gsis_id"):
+        unit = UNITS.get(p["position"].iloc[-1])
+        if unit is None:
+            continue
+        label = UNIT_PHASE[unit]
+        n = p.set_index("game_id")[f"{SNAP_PHASES[label]}_snaps"]
+        if n.sum() <= 0:
+            continue
+        was = n.sum() / totals[label].sum()
+        played = n.index[n > 0]
+        status = now_status.get(gid)
+        if status in LIKELY_OUT:
+            why, now = status, 0.0
+        elif ros_now is not None and ros_now.get(gid) not in AVAILABLE_ROSTER:
+            why = ROSTER_WHY.get(ros_now.get(gid), "Not on roster" if gid not in ros_now else "Unavailable")
+            now = 0.0
+        elif gid in out_before or gid in gone_before:
+            why, now = "Back", n.sum() / totals.loc[played, label].sum()
+        else:
+            continue
+        if abs(now - was) < 0.005:
+            continue
+        rows.append({"Player": p["player"].iloc[-1], "Pos": p["position"].iloc[-1], "Unit": unit,
+                     "Why": why, "Was": was, "Now": now, "Change": now - was})
+    return pd.DataFrame(rows, columns=LINEUP_COLS).sort_values("Change", kind="stable").reset_index(drop=True)
+
+
+def lineup_groups(change: pd.DataFrame) -> pd.Series:
+    """A `lineup_change()` summed by `LINEUP_GROUPS`: the net change in each
+    group's snaps, in full-time players (−1.4: 1.4 fewer than the numbers had)."""
+    return pd.Series({g: float(change.loc[change["Unit"].isin(units), "Change"].sum())
+                      for g, units in LINEUP_GROUPS.items()})
 
 
 # ---------- Drives ----------

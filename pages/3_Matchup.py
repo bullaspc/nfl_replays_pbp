@@ -18,13 +18,15 @@ import streamlit as st
 
 import game_summary
 import leagues
-from replay_core import (EDGE_EVEN, MATCHUP_ROWS, PLAYER_MIN_PLAYS, PROJ_SHRINK, SEASON_MIN_PLAYS,
-                         SITUATION_MIN_PLAYS, PlayFilter, availability_summary, head_to_head,
-                         injury_report, matchup_table, season_player_distributions, season_qualified,
-                         situational_matchup, status_by_name, team_snaps)
+from replay_core import (EDGE_EVEN, LIKELY_OUT, MATCHUP_ROWS, PLAYER_MIN_PLAYS, PROJ_SHRINK,
+                         SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter, availability_summary,
+                         head_to_head, injury_report, lineup_change, lineup_groups, matchup_table,
+                         season_player_distributions, season_qualified, situational_matchup,
+                         status_by_name, team_snaps)
 from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_availability_summary,
-                   style_defense_table, style_head_to_head, style_injury_report, style_matchup_table,
-                   style_player_table, style_situational_matchup)
+                   style_defense_table, style_head_to_head, style_injury_report, style_lineup_change,
+                   style_lineup_groups, style_matchup_table, style_player_table,
+                   style_situational_matchup)
 
 st.set_page_config(page_title="Matchup", layout="wide", page_icon="🆚")
 
@@ -169,6 +171,23 @@ for team in (away, home):
 injury_note = (f"the week {game_week} reports, as of {avail.as_of or 'the latest build'}"
                if not avail.injuries.empty else "")
 
+# How each lineup differs from the one behind its season numbers (its games in
+# this selection): the week's report and roster, so also players on a reserve
+# list, who drop off the injury report, and starters coming back.
+_games = leagues.season_plays(league, season, stamp, weeks, "Both")
+lineups, lineup_net = {}, {}
+for team in (away, home):
+    _ids = _games.loc[(_games["home_team"] == team) | (_games["away_team"] == team), "game_id"].unique()
+    lineups[team] = lineup_change(avail.snaps, avail.injuries, avail.roster, team, game_week, _ids)
+    lineup_net[team] = lineup_groups(lineups[team])
+# What the injury report doesn't show: gone off the roster, or back.
+LINEUP_SHOWN = 0.1  # full-time players: smaller changes count in the totals only
+
+
+def _off_report(team: str) -> pd.DataFrame:
+    ch = lineups[team]
+    return ch[~ch["Why"].isin(LIKELY_OUT) & (ch["Change"].abs() >= LINEUP_SHOWN)]
+
 
 def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
     """A leaders table with a Status column after Player, if any of its
@@ -246,7 +265,9 @@ else:
             selection=sel_note.replace(" · ", ", "), n_teams=n_teams,
             matchups=matchups, situational=situational, leaders=_leaders,
             injuries={t: reports[t][_shown] for t in (away, home)}, injury_units=report_units,
-            injury_note=injury_note)
+            injury_note=injury_note,
+            lineup_groups=lineup_net if not avail.snaps.empty else {},
+            lineup_players={t: _off_report(t).drop(columns="Unit").round(2) for t in (away, home)})
         _future, _progress = game_summary.submit_preview(_ctx, _providers[_prov])
         st.session_state["_mu_job"] = {"future": _future, "progress": _progress,
                                        "key": preview_key, "started": time.time(),
@@ -307,17 +328,28 @@ else:
             st.markdown(f"**{team}** · week {game_week} injury report")
             if reports[team].empty:
                 st.caption("Not filed yet: teams file the first one about three days before the game.")
-                continue
-            if not report_units[team].empty:
-                stat_table(style_availability_summary(report_units[team]), hide_index=True)
-            stat_table(style_injury_report(reports[team]), hide_index=True)
+            else:
+                if not report_units[team].empty:
+                    stat_table(style_availability_summary(report_units[team]), hide_index=True)
+                stat_table(style_injury_report(reports[team]), hide_index=True)
+            if not avail.snaps.empty:
+                st.markdown(f"**{team}** · lineup vs the season numbers")
+                stat_table(style_lineup_groups(lineup_net[team]), hide_index=True)
+                if not _off_report(team).empty:
+                    stat_table(style_lineup_change(_off_report(team)), hide_index=True)
     st.caption(
         "**Status** is the game status on the final report, the day before the game (Wednesday for "
         "a Thursday game): Out, Doubtful (rarely plays) or Questionable (may play); before it there's "
         "only practice participation. **Snaps** is the player's share of his team's snaps this "
         "season in the phase he plays most (O offense, D defense, ST special teams), **Starter** "
         "his slot on the latest depth chart. **Snaps out** adds up the out-or-doubtful players' "
-        "shares of the unit's phase: 1.0 is one full-time player. "
+        "shares of the unit's phase: 1.0 is one full-time player. **Lineup vs the season "
+        "numbers** is how far each group is from the players behind the numbers above, in "
+        "full-time players: one out now takes away his share of those games' snaps (**Was**; "
+        "half, if he missed half of them), one back adds the share he plays when he does "
+        "(**Now**) less what he had. Gone counts the report's Out and Doubtful and the roster's "
+        "reserve lists, releases and trades (players on injured reserve aren't on the report); "
+        f"the table lists what the report doesn't show, {LINEUP_SHOWN:.1f}+ players' worth. "
         f"From {avail.source}; reports as of {avail.as_of or 'the latest build'}.")
 
 # ---------- Matchups ----------

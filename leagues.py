@@ -18,7 +18,7 @@ The loaders here are cached with Streamlit; the modules they call aren't.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -56,6 +56,7 @@ class Availability:
     snaps: pd.DataFrame         # snap counts per player and game, with gsis_id
     starters: pd.Series         # gsis id → slot on the team's latest depth chart
     short_names: pd.Series      # gsis id → short name ("T.Edwards")
+    roster: pd.DataFrame = field(default_factory=pd.DataFrame)  # weekly rosters: team, week, gsis_id, status
     source: str = ""            # where they come from, for captions; "" when the league has none
     as_of: str = ""             # when the injury reports were last rebuilt
 
@@ -400,6 +401,17 @@ def load_snap_counts(season: int, stamp: str) -> pd.DataFrame:
 
 
 @st.cache_data(max_entries=2)
+def load_roster_status(season: int, stamp: str) -> pd.DataFrame:
+    """Each team's weekly roster: team, week, gsis_id and status (ACT,
+    RES for a reserve list, CUT, …), for who's gone that the injury report
+    doesn't list (replay_core.lineup_change)."""
+    try:
+        return nflreadpy.load_rosters_weekly([season]).select(["team", "week", "gsis_id", "status"]).to_pandas()
+    except Exception:
+        return pd.DataFrame(columns=["team", "week", "gsis_id", "status"])
+
+
+@st.cache_data(max_entries=2)
 def load_starters(season: int, stamp: str) -> pd.Series:
     """gsis id → slot ("LT", "MLB", "RCB") for each team's first-team players
     on its latest depth chart. Since 2025 nflverse keeps ESPN's daily charts
@@ -489,6 +501,7 @@ class NFLLeague(League):
             snaps=load_snap_counts(season, nflverse_stamp("snap_counts")),
             starters=load_starters(season, nflverse_stamp("depth_charts")),
             short_names=p.set_index("gsis_id")["short_name"],
+            roster=load_roster_status(season, nflverse_stamp("weekly_rosters")),
             source="the NFL's injury reports, PFR snap counts and ESPN depth charts, via nflverse",
             as_of="" if injuries_stamp.startswith("unknown") else injuries_stamp)
 

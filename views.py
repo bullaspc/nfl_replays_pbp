@@ -420,6 +420,34 @@ def style_availability_summary(df: pd.DataFrame):
     return _centered(df.style.format({"Snaps out": "{:.1f}"}))
 
 
+_LOSS, _GAIN = (220, 53, 69), (40, 167, 69)
+
+
+def _change_tint(v: float) -> str:
+    """Red for players fewer than the season numbers had, green for more,
+    stronger up to one full-time player."""
+    if pd.isna(v) or abs(v) < 0.05:
+        return ""
+    r, g, b = _LOSS if v < 0 else _GAIN
+    return f"background-color: rgba({r}, {g}, {b}, {0.12 + 0.33 * min(abs(v), 1.0):.2f})"
+
+
+def style_lineup_groups(groups: pd.Series):
+    """A `replay_core.lineup_groups` as a one-row table: each group's net
+    change in full-time players, signed and tinted."""
+    df = groups.to_frame().T
+    return _centered(smap(df.style.format(lambda v: "0.0" if abs(v) < 0.05 else f"{v:+.1f}"),
+                          _change_tint))
+
+
+def style_lineup_change(df: pd.DataFrame):
+    """A `replay_core.lineup_change` table: Was and Now as shares, Change
+    signed and tinted (without the Unit column)."""
+    shown = df.drop(columns=[c for c in ("Unit",) if c in df.columns])
+    return _centered(smap(shown.style.format({"Was": "{:.0%}", "Now": "{:.0%}", "Change": "{:+.2f}"}),
+                          _change_tint, subset=["Change"]))
+
+
 def style_snap_table(df: pd.DataFrame):
     """A `replay_core.team_snaps` table: snaps as counts and shares as
     percents, blank where a player took none in that phase."""
