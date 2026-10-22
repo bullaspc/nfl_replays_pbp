@@ -762,6 +762,10 @@ def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, 
     if venue:
         offense, defense = v_offense, v_defense
         situational, sit_defense = v_situational, v_sit_defense
+    if adjusted:  # additive, so a few plays can land past a stat's range
+        offense, defense = core.possible_values(offense), core.possible_values(defense)
+        situational, sit_defense = core.possible_values(situational), core.possible_values(sit_defense)
+        players = {kind: core.possible_values(df) for kind, df in players.items()}
     situational = _rows(situational)
     return {
         "offense": _rows(offense),

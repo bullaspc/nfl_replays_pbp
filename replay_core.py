@@ -1063,9 +1063,10 @@ def situational_distributions_from(table: pd.DataFrame) -> dict[str, dict[str, n
 SHRINK_GAMES = 2
 ADJUST_MAX_PASSES = 100
 ADJUST_TOL = 1e-9
-# Volumes, a team's own penalties and the depth a passer chooses aren't
+# Volumes (time of possession among them: how long a team had the ball, like
+# its plays), a team's own penalties and the depth a passer chooses aren't
 # down to the opponent.
-SEASON_ADJUST_SKIP = SEASON_VOLUME | {"Penalties", "Penalty Yds", "aDoT"}
+SEASON_ADJUST_SKIP = SEASON_VOLUME | {"TOP", "Penalties", "Penalty Yds", "aDoT"}
 # The team column whose defensive strength adjusts each player rate, and the
 # scale between them (player SR% is in percent, team SR a fraction).
 PLAYER_ADJUST = {"passing": {"SR%": ("Pass SR", 100.0), "EPA/play": ("Pass EPA/play", 1.0)},
@@ -1145,6 +1146,44 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
     off_out[cols], def_out[cols] = o_adj, d_adj
     return (off_out, def_out, (o_adj - m_off).mul(w_off, axis=0),
             (d_adj - m_def).mul(w_def, axis=0))
+
+
+# What a season value can be. The adjustment is additive, so a team or player
+# seen on a few plays (one situation or quarter, a back with two carries) can
+# be pushed past either end of its stat's range: a success rate of -18% or
+# 121%, -0.3 turnovers a game, more rushes and completions than plays, fewer
+# QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
+# possible value.
+SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%",
+                *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
+SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
+# Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
+# Plays, which stay as played; turnovers have no ceiling (a special-teams fumble
+# isn't on a play from scrimmage).
+SEASON_COUNTS = {"Rush+Comp", "Turnovers"}
+
+
+def possible_values(df: pd.DataFrame) -> pd.DataFrame:
+    """A season team table, `season_situational()` table (columns
+    (situation, metric)) or season players table with each value moved into
+    its stat's range (`SEASON_RATES`, `SEASON_PERCENTS`, `SEASON_COUNTS`) and,
+    in a team table, into the range its row allows: Rush+Comp between Rush
+    Plays and Plays, QB Hit % at least Sack %. Other stats, EPA among them,
+    have none."""
+    out = df.copy()
+    for col in df.columns:
+        stat = col[1] if isinstance(col, tuple) else col
+        if stat in SEASON_RATES:
+            out[col] = out[col].clip(0.0, 1.0)
+        elif stat in SEASON_PERCENTS:
+            out[col] = out[col].clip(0.0, 100.0)
+        elif stat in SEASON_COUNTS:
+            out[col] = out[col].clip(lower=0.0)
+    if {"Rush+Comp", "Rush Plays", "Plays"} <= set(out.columns):
+        out["Rush+Comp"] = out["Rush+Comp"].clip(out["Rush Plays"], out["Plays"], axis=0)
+    if {"QB Hit %", "Sack %"} <= set(out.columns):
+        out["QB Hit %"] = out["QB Hit %"].clip(lower=out["Sack %"], axis=0)
+    return out
 
 
 def adjust_players(df: pd.DataFrame, pbp: pd.DataFrame, kind: str,
@@ -1299,9 +1338,7 @@ def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: s
     (the offense's), "<metric> D" (what the defense allowed) and "<metric>
     edge" (percentiles as `matchup_table`'s; NaN unless both sides have
     `SITUATION_MIN_PLAYS`), with `_`-prefixed percentiles and play counts
-    ("_<metric> O pct", "_<metric> O n", …). Success rates are kept within
-    0–100%: opponent adjustment can push a cell of a few plays past either
-    end."""
+    ("_<metric> O pct", "_<metric> O n", …)."""
     off_pct = season_ranks(off_sit)
     def_pct = season_ranks(def_sit, set(def_sit.columns))  # allowing less is better
     off_n, def_n = _situation_counts(plays, offense, "posteam"), _situation_counts(plays, defense, "defteam")
@@ -1321,10 +1358,6 @@ def situational_matchup(off_sit: pd.DataFrame, def_sit: pd.DataFrame, offense: s
                         f"_{m} O pct": p_off, f"_{m} D pct": p_def, f"_{m} O n": no, f"_{m} D n": nd})
         rows[sit] = row
     out = pd.DataFrame.from_dict(rows, orient="index")
-    for m in metrics:
-        if m.endswith("SR%"):
-            cols = [f"{m} O", f"{m} D"]
-            out[cols] = out[cols].clip(0, 100)
     out.index.name = "Situation"
     return out
 

@@ -88,9 +88,11 @@ with st.sidebar:
     if games.empty:
         st.caption(f"No {group} games in {week}.")
         st.stop()
-    label = st.selectbox("Game", games["label"].tolist(),
-                         key=f"_mu_game_{league.name}_{season}_{week}_{group}")
-    game = games[games["label"] == label].iloc[0]
+    # By game id: a college label carries AP ranks, which a new poll changes.
+    labels = dict(zip(games["game_id"], games["label"]))
+    game_id = st.selectbox("Game", list(labels), format_func=labels.get,
+                           key=f"_mu_game_{league.name}_{season}_{week}_{group}")
+    game = games[games["game_id"] == game_id].iloc[0]
 
 # ---------- Sidebar: the season numbers ----------
 reg_weeks = sorted(int(w) for w in pbp_all.loc[~pbp_all["postseason"], "week"].dropna().unique())
