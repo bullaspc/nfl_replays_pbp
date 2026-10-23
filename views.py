@@ -451,13 +451,17 @@ def style_lineup_change(df: pd.DataFrame):
                           _change_tint, subset=["Change"]))
 
 
-def style_snap_table(df: pd.DataFrame):
-    """A `replay_core.team_snaps` table: snaps as counts and shares as
-    percents, blank where a player took none in that phase."""
-    fmt = {c: (lambda v: "" if pd.isna(v) or v == 0 else f"{v:.0%}") if c.endswith(" %")
-           else (lambda v: "" if pd.isna(v) or v == 0 else f"{int(v):,}")
-           for c in df.columns if c not in ("Player", "Pos", "G")}
-    return _centered(df.style.format(fmt))
+def style_snap_table(df: pd.DataFrame, phase: str):
+    """One phase ("Off", "Def" or "ST", `replay_core.SNAP_PHASES`) of a
+    `replay_core.team_snaps` table: the players who took a snap in it, most
+    first, with snaps as a count and the share as a percent (both text, so
+    no column falls back to a raw float)."""
+    share = f"{phase} %"
+    shown = df[df[phase] > 0].sort_values([phase, "Player"], ascending=[False, True], kind="stable")
+    shown = pd.DataFrame({"Player": shown["Player"], "Pos": shown["Pos"], "G": shown["G"],
+                          "Snaps": shown[phase].map(lambda v: f"{int(v):,}"),
+                          "%": shown[share].map(lambda v: "" if pd.isna(v) else f"{v:.0%}")})
+    return _centered(shown.style)
 
 
 # ---------- Drives ----------

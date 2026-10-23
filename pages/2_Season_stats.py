@@ -283,7 +283,9 @@ with tab_team:
         if snaps.empty:
             st.caption("No snap counts for these games yet.")
         else:
-            stat_table(style_snap_table(snaps), hide_index=True)
+            for label, title in (("Off", "Offense"), ("Def", "Defense"), ("ST", "Special teams")):
+                st.markdown(f"*{title}*")
+                stat_table(style_snap_table(snaps, label), hide_index=True)
             st.caption(f"Each player's snaps over the {counted} of {team}'s {len(game_ids)} selected "
                        "games PFR has counted so far, and his share of the team's offensive, "
                        "defensive and special-teams snaps in them. Whole games: the quarter, "
