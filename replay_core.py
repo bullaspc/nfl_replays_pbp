@@ -1557,6 +1557,9 @@ LINEUP_COLS = ["Player", "Pos", "Unit", "Why", "Was", "Now", "Change"]
 # The units the Matchup page's injury adjustment groups players into.
 LINEUP_GROUPS = {"QB": ["QB"], "OL": ["OL"], "Skill": ["RB", "WR", "TE"],
                  "Front": ["DL", "LB"], "DB": ["DB"]}
+LINEUP_SHOWN = 0.1  # full-time players: smaller lineup changes count in the totals only
+# Each team's season leaders a matchup preview shows: (kind, how many).
+MATCHUP_LEADERS = [("passing", 2), ("rushing", 3), ("receiving", 4), ("defenders", 5)]
 
 
 def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFrame,

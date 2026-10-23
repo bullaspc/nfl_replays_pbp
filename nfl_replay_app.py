@@ -38,10 +38,11 @@ from replay_core import (
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
 )
 from views import (
-    build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
+    MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
-    stat_table, style_defense_table, style_line_table, style_player_table, style_scoring_timeline,
-    style_sr_table, style_stat_table, ticker_html, time_bar_html, timeout_pips,
+    stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
+    style_scoring_timeline, style_sr_table, style_stat_table, ticker_html, time_bar_html,
+    timeout_pips,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
@@ -543,6 +544,95 @@ st.divider()
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
 stat_table(boxscore(revealed, home, away), hide_index=True)
+
+# ---------- Spoiler-free preview ----------
+# The Matchup page's preview of this game, written from the season before it:
+# leagues.pregame() takes only the weeks ahead of the game's own, so nothing
+# of this game or later ones can show, and it doesn't depend on the cursor.
+# The job runs as the game summary's does (on_click records the request, the
+# first run to get here builds the context and starts the worker, a fragment
+# polls for the result), under its own `_pv_` keys.
+_PREGAME_POLL_SECS = 3
+_providers = game_summary.configured_providers(_setting)
+_pv_key = (league.name, season, game_id)
+_pv_job = st.session_state.get("_pv_job")
+if st.session_state.get("_pv_requested") not in (None, _pv_key) or (
+        _pv_job is not None and "_pv_requested" in st.session_state):
+    del st.session_state["_pv_requested"]
+st.markdown("**🔮 Before kickoff** · spoiler-free preview")
+if not _providers:
+    st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
+               "`.streamlit/secrets.toml` or the environment to get a preview of the game.")
+else:
+    _pv_btn, _pv_pick = st.columns([3, 2])
+    _pv_prov = next(iter(_providers))
+    if len(_providers) > 1:
+        _pv_prov = _pv_pick.selectbox(
+            "Model", list(_providers), label_visibility="collapsed", key="_pv_provider",
+            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
+    _pv_btn.button("Writing the preview…" if _pv_job is not None and _pv_job["key"] == _pv_key
+                   else ("Update preview" if _pv_key in st.session_state.get("_pv_previews", {})
+                         else "Preview this game"),
+                   disabled=_pv_job is not None,
+                   on_click=lambda k=_pv_key: st.session_state.update(_pv_requested=k),
+                   help="Uses only the games played before this one (the season numbers, "
+                        "injury reports and betting line), never this game or any after it.")
+    if st.session_state.get("_pv_requested") == _pv_key:
+        with st.spinner("Reading the season so far…"):
+            _pg = leagues.pregame(league, season, stamp, game_row)
+        if _pg.context is None:
+            st.session_state["_pv_error"] = {"key": _pv_key, "text": _pg.reason}
+        else:
+            _future, _progress = game_summary.submit_preview(_pg.context, _providers[_pv_prov])
+            st.session_state["_pv_job"] = {"future": _future, "progress": _progress, "key": _pv_key,
+                                           "started": time.time(), "matchups": _pg.matchups,
+                                           "selection": _pg.context.selection}
+            st.session_state.pop("_pv_error", None)
+        del st.session_state["_pv_requested"]
+        st.rerun()  # redraw the button as busy, and start the fragment polling
+
+
+@st.fragment(run_every=_PREGAME_POLL_SECS if "_pv_job" in st.session_state else None)
+def _pregame_result() -> None:
+    """The preview, or that it's being written, or why it can't be."""
+    job = st.session_state.get("_pv_job")
+    if job and job["future"].done():
+        try:
+            res = job["future"].result()
+        except Exception as e:  # SummaryError, or anything the worker didn't expect
+            st.session_state["_pv_error"] = {
+                "key": job["key"],
+                "text": str(e) if isinstance(e, game_summary.SummaryError) else f"The preview failed: {e}"}
+        else:
+            st.session_state["_pv_previews"] = {
+                **st.session_state.get("_pv_previews", {}),
+                job["key"]: {"text": res.text, "model": res.model, "selection": job["selection"],
+                             "matchups": job["matchups"]}}
+        del st.session_state["_pv_job"]
+        st.rerun()  # a full run: the button frees up, and polling stops
+    if job and job["key"] == _pv_key:
+        with st.status(f"🔮 {job['progress'].status}… ({time.time() - job['started']:.0f}s)",
+                       state="running"):
+            st.caption("The preview shows up here when it's ready; you can keep watching meanwhile.")
+    err = st.session_state.get("_pv_error")
+    if err and err["key"] == _pv_key:
+        st.info(err["text"])
+    preview = st.session_state.get("_pv_previews", {}).get(_pv_key)
+    if preview:
+        with st.container(border=True):
+            st.markdown(preview["text"])
+            st.caption(f"{preview['model']} · {preview['selection']}")
+        with st.expander("The numbers behind it"):
+            _tints = dict(zip((away, home), MATCHUP_TINTS))
+            for off, def_ in ((away, home), (home, away)):
+                st.markdown(f"**When {off} has the ball** · {off} offense vs {def_} defense")
+                stat_table(style_matchup_table(preview["matchups"][off], off, def_, _tints))
+            st.caption("Season numbers before this game, as on the Matchup page: each value with its "
+                       "place among the teams, **Edge** the percentile points by which the better "
+                       "unit leads, **Proj.** a guess for the game.")
+
+
+_pregame_result()
 
 # ---------- AI game summary ----------
 # An agent reads the same stats as the sections below, built from `revealed`

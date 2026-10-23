@@ -18,7 +18,8 @@ import streamlit as st
 
 import game_summary
 import leagues
-from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, MATCHUP_ROWS, PLAYER_MIN_PLAYS,
+from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MATCHUP_LEADERS,
+                         MATCHUP_ROWS, PLAYER_MIN_PLAYS,
                          PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
                          availability_summary, head_to_head, injury_report, lineup_adjustment,
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
@@ -31,8 +32,7 @@ from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_avai
 st.set_page_config(page_title="Matchup", layout="wide", page_icon="🆚")
 
 SIDES = {"Offense": "posteam", "Defense (allowed)": "defteam"}
-# Each team's leaders shown, and sent to the preview: (kind, how many).
-LEADERS = [("passing", 2), ("rushing", 3), ("receiving", 4), ("defenders", 5)]
+LEADERS = MATCHUP_LEADERS
 _TODAY = date.today()
 # A season is named for the year it starts in; before September it's last year's.
 LATEST_SEASON = _TODAY.year if _TODAY.month >= 9 else _TODAY.year - 1
@@ -188,7 +188,6 @@ matchups = {away: matchup_table(off_table, def_table, away, home, rows, adjustme
 # Before the final report there are no game statuses, so only roster moves count.
 no_status = [t for t in (away, home) if has_lineup and not (reports[t]["Status"] != "").any()]
 # What the injury report doesn't show: gone off the roster, or back.
-LINEUP_SHOWN = 0.1  # full-time players: smaller changes count in the totals only
 
 
 def _off_report(team: str) -> pd.DataFrame:
