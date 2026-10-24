@@ -30,6 +30,7 @@ import streamlit as st
 from nflreadpy.config import update_config
 
 import cfb_feed
+import game_summary
 import live_feed
 import nflfastr_models
 import replay_core as core
@@ -931,3 +932,114 @@ def season_tendencies(league: League, season: int, stamp: str, weeks: tuple[int,
     """League-wide tendencies over the selection (`core.tendency_baselines`),
     what a team's split is compared against on the Season stats page."""
     return _season_tendencies(league.name, season, stamp, tuple(weeks), part, play_filter)
+
+
+# ---------- Pre-game preview ----------
+@dataclass
+class Pregame:
+    """What a game's spoiler-free preview is built from: `context` for
+    game_summary.preview() and the `matchups` it shows (offense team ->
+    `core.matchup_table`), or why there are none (`reason`)."""
+    context: game_summary.MatchupContext | None
+    matchups: dict
+    reason: str = ""
+
+
+def is_postseason(game: pd.Series) -> bool:
+    """Whether a `League.games()` row is a postseason game (the NFL's
+    `game_type`, college's `season_type` 3)."""
+    return game.get("game_type", "REG") != "REG" or game.get("season_type") == 3
+
+
+def betting_line(home: str, away: str, spread, total) -> str:
+    """"CHI favored by 3, total 50.5" from the home team's spread and the total
+    (either may be missing); "" without either."""
+    line = ""
+    if pd.notna(spread):
+        line = "Pick'em" if spread == 0 else f"{home if spread > 0 else away} favored by {abs(spread):g}"
+    if pd.notna(total):
+        line += (", " if line else "") + f"total {total:g}"
+    return line
+
+
+def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame:
+    """The Matchup page's preview of `game` (a `League.games()` row), made
+    safe to read while watching it: the season numbers, snap counts and
+    lineups cover only the regular-season weeks before the game's (every
+    one, for a postseason game), opponent-adjusted, so neither the game nor
+    anything after it is in them. The injury report and the betting line are
+    the ones the game was played under."""
+    away, home = game["away_team"], game["home_team"]
+    week = int(game["week"])
+    played = league.season_pbp(season, stamp)
+    played = played[~played["postseason"]]
+    weeks = sorted(int(w) for w in played["week"].dropna().unique()
+                   if is_postseason(game) or w < week)
+    if not weeks:
+        return Pregame(None, {}, "No games were played before this one this season.")
+    span = (weeks[0], weeks[-1])
+    tables = season_tables(league, season, stamp, span, "Regular season", "Opponent-adjusted")
+    off_table = core.season_qualified(tables["offense"], core.SEASON_MIN_PLAYS)
+    def_table = core.season_qualified(tables["defense"], core.SEASON_MIN_PLAYS)
+    short = [t for t in (away, home) if t not in off_table.index or t not in def_table.index]
+    if short:
+        return Pregame(None, {}, f"{' and '.join(short)} had fewer than {core.SEASON_MIN_PLAYS} "
+                                 "plays before this game.")
+    rows = [r for r in core.MATCHUP_ROWS if not (r == "QB Hit %" and "QB Hits" in tables["missing"])]
+    plays = season_plays(league, season, stamp, span, "Regular season")
+    sit_off = tables["situational_team"][tables["situational_team"].index.isin(off_table.index)]
+    sit_def = tables["situational_defense"][tables["situational_defense"].index.isin(def_table.index)]
+    situational = {away: core.situational_matchup(sit_off, sit_def, away, home, plays),
+                   home: core.situational_matchup(sit_off, sit_def, home, away, plays)}
+
+    avail = league.availability(season)
+    player_ids = season_player_ids(league, season, stamp)
+    reports, report_units, statuses, lineups, lineup_net = {}, {}, {}, {}, {}
+    for team in (away, home):
+        ids = plays.loc[(plays["home_team"] == team) | (plays["away_team"] == team),
+                        "game_id"].unique()
+        reports[team] = core.injury_report(avail.injuries, team, week,
+                                           core.team_snaps(avail.snaps, team, ids), avail.starters)
+        report_units[team] = core.availability_summary(reports[team])
+        statuses[team] = core.status_by_name(reports[team], team, player_ids, avail.short_names)
+        lineups[team] = core.lineup_change(avail.snaps, avail.injuries, avail.roster, team, week, ids)
+        lineup_net[team] = core.lineup_groups(lineups[team])
+    has_lineup = not avail.snaps.empty and not avail.injuries.empty
+    adjustments = ({away: core.lineup_adjustment(lineups[away], lineups[home]),
+                    home: core.lineup_adjustment(lineups[home], lineups[away])} if has_lineup else {})
+    matchups = {away: core.matchup_table(off_table, def_table, away, home, rows, adjustments.get(away)),
+                home: core.matchup_table(off_table, def_table, home, away, rows, adjustments.get(home))}
+
+    def _with_status(df: pd.DataFrame, team: str) -> pd.DataFrame:
+        status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
+        if not any(status):
+            return df
+        return df.copy().assign(Status=status)[["Player", "Status", *[c for c in df.columns if c != "Player"]]]
+
+    leaders = {}
+    for kind, n in core.MATCHUP_LEADERS:
+        df = tables[kind]
+        for team in (away, home):
+            if not df.empty:
+                leaders[(team, "defense" if kind == "defenders" else kind)] = _with_status(
+                    df[df["Team"] == team].drop(columns="Team").head(n), team)
+    shown = ["Player", "Pos", "Status", "Snaps", "Starter", "Practice", "Injury"]
+
+    def _off_report(team: str) -> pd.DataFrame:
+        ch = lineups[team]
+        return ch[~ch["Why"].isin(core.LIKELY_OUT) & (ch["Change"].abs() >= core.LINEUP_SHOWN)]
+
+    kick = pd.Timestamp(game["game_date"])
+    when = f"{game['week_label']}, {kick:%a %b} {kick.day}" + (
+        ", neutral site" if game.get("location") == "Neutral" or game.get("neutral") is True else "")
+    week_note = f"week {span[0]}" if span[0] == span[1] else f"weeks {span[0]}–{span[1]}"
+    context = game_summary.MatchupContext(
+        league=league.key, away=away, home=home, when=when,
+        line=betting_line(home, away, game.get("spread_line"), game.get("total_line")),
+        selection=f"{season} {week_note}, the games before this one, opponent-adjusted",
+        n_teams=len(off_table), matchups=matchups, situational=situational, leaders=leaders,
+        injuries={t: reports[t][shown] for t in (away, home)}, injury_units=report_units,
+        injury_note=f"the week {week} reports" if not avail.injuries.empty else "",
+        lineup_groups=lineup_net if not avail.snaps.empty else {},
+        lineup_players={t: _off_report(t).drop(columns="Unit").round(2) for t in (away, home)})
+    return Pregame(context, matchups)
