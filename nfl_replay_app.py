@@ -879,7 +879,7 @@ if not revealed.empty:
         _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
         drive_df = build_plays_df(_drive_raw, hide_descriptions)
         with st.expander(f"Current drive ({_possession_team} · {_drive_plays} plays)",
-                         expanded=False):
+                         expanded=True):
             st.caption(
                 f"**{_possession_team}** · {_drive_plays} plays · "
                 f"Success rate: {_sr_str} · Time of possession: {_top_str}"
