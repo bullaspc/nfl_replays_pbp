@@ -92,7 +92,7 @@ An index is used because a clock value cannot address plays individually: plays 
 
 **Other games ticker:** above the score, `_ticker()` (an `st.fragment`) shows `league.ticker(game_row)` as `ticker_html()` cards while at least one other game is in progress. It reruns on its own every `_TICKER_SECS` (30s) while `scoreboard.busy()`, else every `_TICKER_IDLE_SECS` (5 min), so it stays current on a replay too without rerunning the page. The watched game is never in it: its live score would spoil it. The Spoiler shield's **Hide other games' scores** turns it off. If ESPN can't be read, `load_scoreboard()` returns no games and the ticker doesn't show.
 
-**Collapse play lists:** a sidebar checkbox (default off). When on, Recent plays shows only the last revealed play (no pagination) and the Current drive's play table goes into a collapsed "Drive plays" expander; the drive summary caption stays visible.
+**Collapsed play lists:** Recent plays (with its filters and pagination) and Current drive (summary caption and play table) are each an `st.expander`, collapsed by default like Explosive plays; the labels count the revealed plays and the drive's plays.
 
 **Keep screen awake:** a sidebar checkbox (default on) calls `keep_screen_awake()`, which injects a `components.html` script that requests a Screen Wake Lock on `window.parent` (the component iframe itself lacks the permissions-policy grant) and re-acquires it on `visibilitychange`. Requires HTTPS or localhost.
 

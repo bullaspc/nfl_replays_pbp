@@ -17,7 +17,6 @@ Run with:
     streamlit run nfl_replay_app.py
 """
 
-import contextlib
 import os
 import time
 
@@ -233,9 +232,6 @@ with st.sidebar:
                              "page is open. Needs HTTPS and a recent browser "
                              "(iOS 16.4+, Android Chrome).")
     keep_screen_awake(awake)
-    collapse_plays = st.checkbox("Collapse play lists", value=False,
-                                 help="Recent plays shows only the last play and the "
-                                      "current drive's plays fold into an expander.")
 
     st.divider()
     st.subheader("🙈 Spoiler shield")
@@ -783,68 +779,66 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Recent plays (with pagination) ----------
-st.subheader("Recent plays")
-st.markdown(
-    '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
-    '<span style="background:#ffd0a6;padding:2px 8px;border-radius:3px;margin-right:6px">4th-down attempt</span>'
-    '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
-    '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
-    '<span style="margin-right:6px">✅ Positive EPA</span>',
-    unsafe_allow_html=True,
-)
 def _reset_recent_page():
     st.session_state.recent_plays_page = 1
 
 
 _DOWN_NAMES = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}
-_f_down, _f_kind, _f_team = st.columns([4, 6, 3])
-with _f_down:
-    _sel_downs = st.pills("Down", list(_DOWN_NAMES), selection_mode="multi",
-                          format_func=_DOWN_NAMES.get, key="plays_downs",
-                          on_change=_reset_recent_page)
-with _f_kind:
-    _sel_kinds = st.pills("Play type", PLAY_KINDS, selection_mode="multi",
-                          key="plays_kinds", on_change=_reset_recent_page)
-with _f_team:
-    # Keyed by game: the options are this game's teams.
-    _sel_teams = st.pills("Offense", [away, home], selection_mode="multi",
-                          key=f"plays_teams_{game_id}", on_change=_reset_recent_page)
-_filtered = bool(_sel_downs or _sel_kinds or _sel_teams)
-_matching = filter_plays(revealed, _sel_downs, _sel_kinds, _sel_teams)
+# Filters sit inside the expander, so its label counts what is revealed.
+with st.expander(f"Recent plays ({len(revealed)})", expanded=False):
+    st.markdown(
+        '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
+        '<span style="background:#ffd0a6;padding:2px 8px;border-radius:3px;margin-right:6px">4th-down attempt</span>'
+        '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
+        '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
+        '<span style="margin-right:6px">✅ Positive EPA</span>',
+        unsafe_allow_html=True,
+    )
+    _f_down, _f_kind, _f_team = st.columns([4, 6, 3])
+    with _f_down:
+        _sel_downs = st.pills("Down", list(_DOWN_NAMES), selection_mode="multi",
+                              format_func=_DOWN_NAMES.get, key="plays_downs",
+                              on_change=_reset_recent_page)
+    with _f_kind:
+        _sel_kinds = st.pills("Play type", PLAY_KINDS, selection_mode="multi",
+                              key="plays_kinds", on_change=_reset_recent_page)
+    with _f_team:
+        # Keyed by game: the options are this game's teams.
+        _sel_teams = st.pills("Offense", [away, home], selection_mode="multi",
+                              key=f"plays_teams_{game_id}", on_change=_reset_recent_page)
+    _filtered = bool(_sel_downs or _sel_kinds or _sel_teams)
+    _matching = filter_plays(revealed, _sel_downs, _sel_kinds, _sel_teams)
 
-if _matching.empty:
-    st.caption("No plays match these filters yet." if _filtered and not revealed.empty
-               else "No plays revealed yet.")
-elif collapse_plays:
-    plays_table(build_plays_df(_matching.iloc[[-1]], hide_descriptions, reverse=False))
-else:
-    _PAGE_SIZE = 15
-    _all_rev = _matching.iloc[::-1].copy()
-    _total_plays = len(_all_rev)
-    _total_pages = max(1, (_total_plays + _PAGE_SIZE - 1) // _PAGE_SIZE)
-    if "recent_plays_page" not in st.session_state:
-        st.session_state.recent_plays_page = 1
-    _page = min(int(st.session_state.recent_plays_page), _total_pages)
+    if _matching.empty:
+        st.caption("No plays match these filters yet." if _filtered and not revealed.empty
+                   else "No plays revealed yet.")
+    else:
+        _PAGE_SIZE = 15
+        _all_rev = _matching.iloc[::-1].copy()
+        _total_plays = len(_all_rev)
+        _total_pages = max(1, (_total_plays + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        if "recent_plays_page" not in st.session_state:
+            st.session_state.recent_plays_page = 1
+        _page = min(int(st.session_state.recent_plays_page), _total_pages)
 
-    _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
-    recent_df = build_plays_df(_slice, hide_descriptions, reverse=False)
-    plays_table(recent_df)
-    col_prev, col_info, col_next = st.columns([1, 4, 1])
-    with col_prev:
-        if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
-            st.session_state.recent_plays_page = _page - 1
-            st.rerun()
-    with col_info:
-        _count = (f"{_total_plays} of {len(revealed)} plays" if _filtered
-                  else f"{_total_plays} plays total")
-        st.caption(f"Page {_page} of {_total_pages}  ({_count})")
-    with col_next:
-        if st.button("Next ▶", disabled=(_page >= _total_pages), key="next_plays"):
-            st.session_state.recent_plays_page = _page + 1
-            st.rerun()
+        _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
+        recent_df = build_plays_df(_slice, hide_descriptions, reverse=False)
+        plays_table(recent_df)
+        col_prev, col_info, col_next = st.columns([1, 4, 1])
+        with col_prev:
+            if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
+                st.session_state.recent_plays_page = _page - 1
+                st.rerun()
+        with col_info:
+            _count = (f"{_total_plays} of {len(revealed)} plays" if _filtered
+                      else f"{_total_plays} plays total")
+            st.caption(f"Page {_page} of {_total_pages}  ({_count})")
+        with col_next:
+            if st.button("Next ▶", disabled=(_page >= _total_pages), key="next_plays"):
+                st.session_state.recent_plays_page = _page + 1
+                st.rerun()
 
 # ---------- Current drive ----------
-st.subheader("Current drive")
 if not revealed.empty:
     # Anchor the current drive on the most recent scrimmage play so that after a
     # score → PAT → kickoff sequence the section still shows the offensive drive,
@@ -883,14 +877,13 @@ if not revealed.empty:
             _poss = _drive_raw["posteam"].dropna()
         _possession_team = _poss.iloc[-1] if not _poss.empty else "—"
         _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
-        st.caption(
-            f"**{_possession_team}** · {_drive_plays} plays · "
-            f"Success rate: {_sr_str} · Time of possession: {_top_str}"
-        )
-
         drive_df = build_plays_df(_drive_raw, hide_descriptions)
-        with (st.expander(f"Drive plays ({len(drive_df)})", expanded=False)
-              if collapse_plays else contextlib.nullcontext()):
+        with st.expander(f"Current drive ({_possession_team} · {_drive_plays} plays)",
+                         expanded=False):
+            st.caption(
+                f"**{_possession_team}** · {_drive_plays} plays · "
+                f"Success rate: {_sr_str} · Time of possession: {_top_str}"
+            )
             plays_table(drive_df)
     else:
         st.caption("No drive data available.")
