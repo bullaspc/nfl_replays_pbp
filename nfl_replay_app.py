@@ -853,10 +853,10 @@ if not revealed.empty:
         (revealed["pass_attempt"].fillna(0) == 1) |
         (revealed["rush_attempt"].fillna(0) == 1)
     ]
-    if not _scrimmage_all.empty:
-        _cur_drive = _scrimmage_all["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
-    else:
-        _cur_drive = revealed["drive"].dropna().iloc[-1] if "drive" in revealed.columns else None
+    _drive_src = _scrimmage_all if not _scrimmage_all.empty else revealed
+    # "drive" can be missing or all-NaN (e.g. early in a game), so dropna() may be empty.
+    _drive_vals = _drive_src["drive"].dropna() if "drive" in revealed.columns else None
+    _cur_drive = _drive_vals.iloc[-1] if _drive_vals is not None and not _drive_vals.empty else None
 
     if _cur_drive is not None:
         _drive_raw = revealed[
@@ -878,9 +878,10 @@ if not revealed.empty:
         else:
             _top_str = "—"
 
-        _possession_team = _scrimmage["posteam"].dropna().iloc[-1] if not _scrimmage.empty else (
-            _drive_raw["posteam"].dropna().iloc[-1] if not _drive_raw.empty else "—"
-        )
+        _poss = _scrimmage["posteam"].dropna()
+        if _poss.empty:
+            _poss = _drive_raw["posteam"].dropna()
+        _possession_team = _poss.iloc[-1] if not _poss.empty else "—"
         _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
         st.caption(
             f"**{_possession_team}** · {_drive_plays} plays · "
