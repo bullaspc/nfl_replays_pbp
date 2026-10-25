@@ -1093,6 +1093,50 @@ def venue_games(games: pd.DataFrame, venue: str | None) -> pd.DataFrame:
     return games if venue is None else games[games["home"] == (venue == "home_team")]
 
 
+def game_epa(pbp: pd.DataFrame) -> pd.Series:
+    """EPA/play per (game_id, offense) over `pbp`'s scrimmage plays, as
+    Team stats' EPA/play takes it."""
+    scrimmage = pbp[(pbp["pass_attempt"].fillna(0) == 1) | (pbp["rush_attempt"].fillna(0) == 1)]
+    return scrimmage["epa"].fillna(0).groupby([scrimmage["game_id"], scrimmage["posteam"]]).mean()
+
+
+def team_schedule(games: pd.DataFrame, plays: pd.DataFrame, team: str) -> pd.DataFrame:
+    """`team`'s games in `games` (whole games, for the final score), in
+    order: Week, Opp ("vs BUF" / "@ BUF"), Result ("W 27–20"), its offense's
+    EPA/play, what its defense allowed and Net (offense − defense), over
+    `plays` (the same games, maybe filtered to some situations). `_off_pct`
+    / `_def_pct` are each one's 0–100 percentile (100 = best) among every
+    team-game in `plays`."""
+    mine = games[(games["home_team"] == team) | (games["away_team"] == team)]
+    cols = ["Week", "Opp", "Result", "Off EPA/play", "Def EPA/play", "Net", "_off_pct", "_def_pct"]
+    if mine.empty:
+        return pd.DataFrame(columns=cols)
+    g = mine.groupby("game_id").agg(
+        week=("week", "first"), postseason=("postseason", "first"),
+        home_team=("home_team", "first"), away_team=("away_team", "first"),
+        home_pts=("total_home_score", "max"), away_pts=("total_away_score", "max"),
+    ).reset_index().sort_values(["postseason", "week", "game_id"], kind="stable")
+    epa = game_epa(plays)
+    dist = np.sort(epa.dropna().to_numpy())
+    rows = []
+    for r in g.itertuples(index=False):
+        home = r.home_team == team
+        opp = r.away_team if home else r.home_team
+        pts, opp_pts = (r.home_pts, r.away_pts) if home else (r.away_pts, r.home_pts)
+        pts, opp_pts = int(pts or 0), int(opp_pts or 0)
+        wlt = "W" if pts > opp_pts else "L" if pts < opp_pts else "T"
+        off = epa.get((r.game_id, team), np.nan)
+        def_ = epa.get((r.game_id, opp), np.nan)
+        def_pct = percentile_of(def_, dist)
+        rows.append([
+            f"{int(r.week)}" + (" (post)" if r.postseason else ""),
+            f"{'vs' if home else '@'} {opp}", f"{wlt} {pts}–{opp_pts}",
+            off, def_, off - def_,
+            percentile_of(off, dist), 100.0 - def_pct if pd.notna(def_pct) else np.nan,
+        ])
+    return pd.DataFrame(rows, columns=cols)
+
+
 def faced(strength: pd.DataFrame, games: pd.DataFrame, teams) -> pd.DataFrame:
     """Each team's average opponent strength over its `games`."""
     s = strength.reindex(games["opp"]).set_axis(games["team"].to_numpy())

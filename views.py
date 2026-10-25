@@ -262,6 +262,21 @@ def style_team_season(values: pd.Series, ranks: pd.Series, places: pd.Series):
     )
 
 
+def style_team_schedule(df: pd.DataFrame):
+    """A `replay_core.team_schedule` table: one row per game, the offense's
+    and defense's EPA/play colored by their percentile among the
+    selection's team-games, Net green or red by its sign."""
+    shown = df.drop(columns=["_off_pct", "_def_pct"])
+    pcts = {"Off EPA/play": df["_off_pct"], "Def EPA/play": df["_def_pct"]}
+    styled = (shown.style.format({c: "{:+.2f}" for c in ["Off EPA/play", "Def EPA/play", "Net"]},
+                                 na_rep="—")
+              .apply(lambda col: [percentile_color(p) for p in pcts[col.name]],
+                     subset=list(pcts))
+              # Full strength at ±0.5 EPA/play.
+              .apply(lambda col: [_change_tint(2 * v) for v in col], subset=["Net"]))
+    return _centered(styled)
+
+
 def _season_format(col: str):
     """A formatter for one season table column, as `style_season_table`'s."""
     if col == "TOP":
