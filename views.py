@@ -262,6 +262,29 @@ def style_team_season(values: pd.Series, ranks: pd.Series, places: pd.Series):
     )
 
 
+def style_team_schedule(df: pd.DataFrame):
+    """A `replay_core.team_schedule` table: one row per game, the offense's
+    and defense's EPA/play colored by their percentile among the
+    selection's team-games, Net green or red by its sign, and Result
+    green for a win, red for a loss (a tie stays plain)."""
+    shown = df.drop(columns=["_off_pct", "_def_pct"])
+    pcts = {"Off EPA/play": df["_off_pct"], "Def EPA/play": df["_def_pct"]}
+    styled = (shown.style.format({c: "{:+.2f}" for c in ["Off EPA/play", "Def EPA/play", "Net"]},
+                                 na_rep="—")
+              .apply(lambda col: [percentile_color(p) for p in pcts[col.name]],
+                     subset=list(pcts))
+              # Full strength at ±0.5 EPA/play.
+              .apply(lambda col: [_change_tint(2 * v) for v in col], subset=["Net"])
+              .apply(lambda col: [_result_tint(v) for v in col], subset=["Result"]))
+    return _centered(styled)
+
+
+def _result_tint(result: str) -> str:
+    """Green for a win ("W 27–20"), red for a loss, nothing for a tie."""
+    rgb = {"W": _GAIN, "L": _LOSS}.get(result[:1])
+    return "" if rgb is None else "background-color: rgba({}, {}, {}, 0.35); font-weight: bold".format(*rgb)
+
+
 def _season_format(col: str):
     """A formatter for one season table column, as `style_season_table`'s."""
     if col == "TOP":

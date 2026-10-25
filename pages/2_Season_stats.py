@@ -21,12 +21,13 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table,
+    situational_table, team_schedule,
 )
 from views import (
     pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
+    style_team_schedule,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -192,8 +193,8 @@ with tab_teams:
 # ---------- Team ----------
 with tab_team:
     team = st.selectbox("Team", shown_teams, key=f"_ss_team_{league.name}")
-    pbp = venue_plays(leagues.season_plays(league, season, stamp, weeks, part, play_filter),
-                      VENUES[venue])
+    sit_plays = leagues.season_plays(league, season, stamp, weeks, part, play_filter)
+    pbp = venue_plays(sit_plays, VENUES[venue])
     st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"))
     col_o, col_d = st.columns(2)
     for col, side_label in [(col_o, "Offense"), (col_d, "Defense (allowed)")]:
@@ -208,6 +209,23 @@ with tab_team:
             stat_table(style_team_season(full.loc[team], season_ranks(full, lower).loc[team],
                                          season_rank_label(full, team, lower)))
     st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays.")
+
+    # Whole games, for the final score (and the snap counts below); the EPA
+    # follows the situation filters, over both offenses (not `pbp`, which
+    # keeps only the offense at the venue).
+    sel_games = leagues.season_plays(league, season, stamp, weeks, part)
+    if VENUES[venue]:
+        sel_games = sel_games[sel_games[VENUES[venue]] == team]
+    st.markdown("**Schedule**")
+    schedule = team_schedule(sel_games, sit_plays, team)
+    if schedule.empty:
+        st.caption("No games in this selection.")
+    else:
+        stat_table(style_team_schedule(schedule), hide_index=True)
+        st.caption("Each game's final score, the offense's EPA/play and what the defense allowed "
+                   "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
+                   "defense. Colors rank each game against every team-game in the selection: "
+                   "green = top, red = bottom.")
 
     st.markdown("**Situational success rates**")
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
@@ -272,10 +290,7 @@ with tab_team:
     if not avail.source:
         st.caption(f"No snap counts or injury reports for {league.name} in this app's data.")
     else:
-        sel_games = leagues.season_plays(league, season, stamp, weeks, part)
         mine = sel_games[(sel_games["home_team"] == team) | (sel_games["away_team"] == team)]
-        if VENUES[venue]:
-            mine = mine[mine[VENUES[venue]] == team]
         game_ids = mine["game_id"].unique()
         snaps = team_snaps(avail.snaps, team, game_ids)
         counted = avail.snaps.loc[(avail.snaps["team"] == team) & avail.snaps["game_id"].isin(game_ids),
