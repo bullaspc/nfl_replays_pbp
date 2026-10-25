@@ -446,7 +446,7 @@ it (the same additive view of offense and defense the opponent adjustment uses),
 on in 2024 and 2025, from the weeks before it), game results landed a quarter to two thirds of the
 way from the average to the full sum. Shrunk, Proj. came closer to the game than the offense's own number or the league
 average for EPA/play, pass EPA/play and 1st-down rate in both seasons, and about as close for the
-rest. Turnovers, 3rd-down rate, sack rate and the run game carry over least from one game to the
+rest. Turnovers and lost possessions, 3rd-down rate, sack rate and the run game carry over least from one game to the
 next: an edge there says more about the season than about the game. The projected EPA/play margin
 picked 61–67% of winners opponent-adjusted (62–67% as played); the betting favorite 63–74%. It
 knows nothing of weather, and of injuries only through **w/ lineup**.

@@ -1309,8 +1309,8 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
 # Head to head compares like with like (offense with offense, defense with
 # defense); a matchup sets one team's offense against the other's defense.
 MATCHUP_ROWS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "CMP%", "aDoT",
-                "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Sack %", "QB Hit %", "Stuff %",
-                "Explosive Run %", "Total Yds", "Pass Yds", "Rush Yds", "Plays"]
+                "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss.", "Sack %", "QB Hit %",
+                "Stuff %", "Explosive Run %", "Total Yds", "Pass Yds", "Rush Yds", "Plays"]
 # Shown but never given an edge: how much a team plays and how deep it
 # throws are its style, not good or bad.
 MATCHUP_STYLE = SEASON_VOLUME | {"aDoT"}
@@ -1318,8 +1318,8 @@ EDGE_EVEN = 5  # percentile points: a smaller edge is shown as even
 # How much of the offense's and the defense's distance from the league
 # average Proj. keeps. tools/validate_matchup.py fits how far games landed
 # from the average, per stat, against the unshrunk sum: 0.23–0.66 in 2024
-# and 2025 for every stat but 2025's turnovers (0.06); EPA/play 0.52 and
-# 0.64. Half, for every stat.
+# and 2025 for every stat but 2025's turnovers (0.06) and lost possessions
+# (0.18); EPA/play 0.52 and 0.64. Half, for every stat.
 PROJ_SHRINK = 0.5
 # The order the down-and-distance rows are shown in, and the plays each side
 # needs in a situation for it to get an edge.
