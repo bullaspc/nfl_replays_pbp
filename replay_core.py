@@ -159,7 +159,17 @@ def boxscore(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
 def _rate(num: float, den: float) -> float:
     return num / den if den > 0 else float("nan")
 
-LOWER_IS_BETTER = {"Turnovers", "Penalties", "Penalty Yds"}
+LOWER_IS_BETTER = {"Turnovers", "Lost Poss.", "Penalties", "Penalty Yds"}
+
+
+def _lost_possessions(td: pd.DataFrame, tos: int) -> int:
+    """Possessions given away: turnovers (`tos`), plus turnovers on downs and
+    missed or blocked field goals. A 4th-down interception or lost fumble is
+    already a turnover, so it isn't counted again as one on downs."""
+    giveaway = (td["interception"].fillna(0) == 1) | (td["fumble_lost"].fillna(0) == 1)
+    on_downs = int(((td["fourth_down_failed"].fillna(0) == 1) & ~giveaway).sum())
+    missed_fg = int(td["field_goal_result"].isin(["missed", "blocked"]).sum())
+    return tos + on_downs + missed_fg
 
 def _top_seconds(td: pd.DataFrame) -> float:
     """Time of possession in seconds, estimated from drive×quarter clock diffs."""
@@ -191,7 +201,7 @@ TEAM_STAT_ROWS = [
     "Pass EPA/play", "Rush EPA/play", "EPA/play",
     "Pass SR", "Rush SR",
     "1st Down %", "3rd Down %", "RZ TD%",
-    "Turnovers", "Penalties", "Penalty Yds", "TOP",
+    "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
 ]
 
 
@@ -261,6 +271,7 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         _rate(third_conv, third_conv + third_fail),
         _rate(rz_td, rz_plays),
         tos,
+        _lost_possessions(td, tos),
         penalties,
         penalty_yds,
         top,
@@ -296,8 +307,8 @@ BASELINE_COLS = [
     "passing_yards", "rushing_yards",
     "complete_pass", "air_yards",
     "interception", "fumble_lost", "first_down",
-    "third_down_converted", "third_down_failed",
-    "yardline_100", "touchdown",
+    "third_down_converted", "third_down_failed", "fourth_down_failed",
+    "yardline_100", "touchdown", "field_goal_result",
     "drive", "qtr", "game_seconds_remaining",
     "penalty", "penalty_team", "penalty_yards",
     "down", "ydstogo",
@@ -357,6 +368,7 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "3rd Down %":   _rate(tc, tc + tf),
             "RZ TD%":       _rate(rz_td, rz_plays),
             "Turnovers":    tos,
+            "Lost Poss.":   _lost_possessions(td, tos),
             "TOP":          top,
         })
 
@@ -899,7 +911,8 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
 # (teams play different numbers of games), and every cell is ranked against
 # the other teams (or qualified players) in the same selection.
 SEASON_PER_GAME = {"Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
-                   "Total Yds", "Turnovers", "Penalties", "Penalty Yds", "TOP", *LINE_COUNT_ROWS}
+                   "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
+                   *LINE_COUNT_ROWS}
 # Volumes: neither good nor bad, so never colored.
 SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps"}
 SEASON_COLS = ["Games", *TEAM_STAT_ROWS, *LINE_ROWS]
@@ -1223,9 +1236,9 @@ SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD
                 *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
 # Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
-# Plays, which stay as played; turnovers have no ceiling (a special-teams fumble
+# Plays, which stay as played; turnovers and lost possessions have no ceiling (a special-teams fumble
 # isn't on a play from scrimmage).
-SEASON_COUNTS = {"Rush+Comp", "Turnovers"}
+SEASON_COUNTS = {"Rush+Comp", "Turnovers", "Lost Poss."}
 
 
 def possible_values(df: pd.DataFrame) -> pd.DataFrame:

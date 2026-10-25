@@ -359,7 +359,7 @@ Score by quarter:
 Scoring plays:
 {_csv(ctx.scoring)}
 
-Offense: the dashboard's Team stats. "pct" is the percentile against {_LEAGUE[ctx.league]['baseline']} (100 = best; for Turnovers and Penalties, fewer is better).
+Offense: the dashboard's Team stats. "pct" is the percentile against {_LEAGUE[ctx.league]['baseline']} (100 = best; for Turnovers, Lost Poss. and Penalties, fewer is better; Lost Poss. is turnovers plus turnovers on downs and missed or blocked field goals).
 {_csv(offense_table(ctx))}
 
 Defense: what each defense allowed, and its own pressure, stops and takeaways.
