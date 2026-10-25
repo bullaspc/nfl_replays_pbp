@@ -27,7 +27,8 @@ import replay_core as core  # noqa: E402
 
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
 STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1st Down %",
-         "3rd Down %", "Sack %", "Stuff %", "Turnovers"]
+         "3rd Down %", "Sack %", "Stuff %", "Turnovers",
+         "Lost Poss."]
 
 
 def read_season(season: int, path: str | None = None) -> pd.DataFrame:

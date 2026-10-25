@@ -104,7 +104,7 @@ def style_sr_table(df: pd.DataFrame,
 
 _EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
 _RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
-_NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "TOP"}
+_NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS
 
