@@ -26,6 +26,13 @@ SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summar
 
 # ESPN → nflverse team codes (only the ones that differ).
 ESPN_TEAM_FIX = {"WSH": "WAS", "LAR": "LA", "JAC": "JAX"}
+# The gamebook text's own team codes, where they differ from nflverse's.
+TEXT_TEAM_FIX = {"BLT": "BAL", "ARZ": "ARI", "CLV": "CLE", "HST": "HOU"}
+
+
+def _text_team(t: str) -> str:
+    """nflverse's code for a team as the gamebook text writes it."""
+    return ESPN_TEAM_FIX.get(t, TEXT_TEAM_FIX.get(t, t))
 
 # How the gamebook names a team in challenge text ("Green Bay challenged ...").
 TEAM_PLACES = {
@@ -214,7 +221,8 @@ def parse_play_text(desc: str) -> dict:
         pm = re.match(r"PENALTY on ([A-Z]{2,3})(?:-|,)", seg, re.I)
         if not pm or re.search(r"declined|offsetting", seg.split(" - ")[0], re.I):
             continue
-        out["penalty_team"] = pm.group(1).upper()
+        team = pm.group(1).upper()
+        out["penalty_team"] = _text_team(team)
         foul = re.match(rf"PENALTY on [A-Z]{{2,3}}(?:-{NAME})?, ([^,]+),", seg, re.I)
         if foul:
             out["penalty_type"] = foul.group(1).strip()
@@ -358,7 +366,7 @@ def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.Data
             h_to = a_to = ot_tos if qq == 5 else 3
         cur_q = qq
         # Timeouts also hide inside challenge/review text, so scan it all.
-        charged = [ESPN_TEAM_FIX.get(t, t) for t in re.findall(r"Timeout #\d+ by ([A-Z]{2,3})\b", d)]
+        charged = [_text_team(t) for t in re.findall(r"Timeout #\d+ by ([A-Z]{2,3})\b", d)]
         charged += [TEAM_PLACES[t] for t in _CHALLENGE_TO.findall(d)]
         for team in charged:
             if team == home:
@@ -387,7 +395,7 @@ def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.Data
         on_down = scrimmage & (df["down"] == d)
         df[f"{name}_down_converted"] = (on_down & (df["first_down"] == 1)).astype(float)
         df[f"{name}_down_failed"] = (on_down & (df["first_down"] == 0)).astype(float)
-    rec = df.pop("_recovered_by").map(lambda t: ESPN_TEAM_FIX.get(t, t) if isinstance(t, str) else t)
+    rec = df.pop("_recovered_by").map(lambda t: _text_team(t) if isinstance(t, str) else t)
     df["fumble_lost"] = ((df["fumble"] == 1) & rec.notna() & (rec == df["defteam"])).astype(float)
     df["goal_to_go"] = ((df["yardline_100"] <= df["ydstogo"]) & df["down"].notna()).astype(float)
     df["season_type"] = season_type
