@@ -217,12 +217,18 @@ with tab_team:
     if VENUES[venue]:
         sel_games = sel_games[sel_games[VENUES[venue]] == team]
     st.markdown("**Schedule**")
-    schedule = team_schedule(sel_games, sit_plays, team)
+    try:
+        upcoming = league.upcoming(season, stamp)
+    except leagues.GameLoadError:
+        upcoming = None
+    if upcoming is not None and VENUES[venue] and not upcoming.empty:
+        upcoming = upcoming[upcoming[VENUES[venue]] == team]
+    schedule = team_schedule(sel_games, sit_plays, team, upcoming)
     if schedule.empty:
         st.caption("No games in this selection.")
     else:
         stat_table(style_team_schedule(schedule), hide_index=True)
-        st.caption("Each game's final score, the offense's EPA/play and what the defense allowed "
+        st.caption("Each game's final score (games still to play: the kickoff date), the offense's EPA/play and what the defense allowed "
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
                    "defense. Colors rank each game against every team-game in the selection: "
                    "green = top, red = bottom.")

@@ -1100,17 +1100,35 @@ def game_epa(pbp: pd.DataFrame) -> pd.Series:
     return scrimmage["epa"].fillna(0).groupby([scrimmage["game_id"], scrimmage["posteam"]]).mean()
 
 
-def team_schedule(games: pd.DataFrame, plays: pd.DataFrame, team: str) -> pd.DataFrame:
+def team_schedule(games: pd.DataFrame, plays: pd.DataFrame, team: str,
+                  upcoming: pd.DataFrame | None = None) -> pd.DataFrame:
     """`team`'s games in `games` (whole games, for the final score), in
     order: Week, Opp ("vs BUF" / "@ BUF"), Result ("W 27–20"), its offense's
     EPA/play, what its defense allowed and Net (offense − defense), over
     `plays` (the same games, maybe filtered to some situations). `_off_pct`
     / `_def_pct` are each one's 0–100 percentile (100 = best) among every
-    team-game in `plays`."""
+    team-game in `plays`. Then its games in `upcoming` (`League.upcoming`'s
+    rows), with the kickoff date as Result and no EPA."""
     mine = games[(games["home_team"] == team) | (games["away_team"] == team)]
     cols = ["Week", "Opp", "Result", "Off EPA/play", "Def EPA/play", "Net", "_off_pct", "_def_pct"]
-    if mine.empty:
-        return pd.DataFrame(columns=cols)
+    rows = _played_rows(mine, plays, team) if not mine.empty else []
+    if upcoming is not None and not upcoming.empty:
+        ahead = upcoming[((upcoming["home_team"] == team) | (upcoming["away_team"] == team))
+                         & ~upcoming["game_id"].isin(mine["game_id"])]
+        for r in ahead.itertuples(index=False):
+            home = r.home_team == team
+            day = pd.to_datetime(r.game_date, errors="coerce")
+            rows.append([
+                str(r.week_label).removeprefix("Week "),
+                f"{'vs' if home else '@'} {r.away_team if home else r.home_team}",
+                "" if pd.isna(day) else f"{day:%a %b} {day.day}",
+                np.nan, np.nan, np.nan, np.nan, np.nan,
+            ])
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _played_rows(mine: pd.DataFrame, plays: pd.DataFrame, team: str) -> list:
+    """`team_schedule`'s rows for the games in `mine`."""
     g = mine.groupby("game_id").agg(
         week=("week", "first"), postseason=("postseason", "first"),
         home_team=("home_team", "first"), away_team=("away_team", "first"),
@@ -1134,7 +1152,7 @@ def team_schedule(games: pd.DataFrame, plays: pd.DataFrame, team: str) -> pd.Dat
             off, def_, off - def_,
             percentile_of(off, dist), 100.0 - def_pct if pd.notna(def_pct) else np.nan,
         ])
-    return pd.DataFrame(rows, columns=cols)
+    return rows
 
 
 def faced(strength: pd.DataFrame, games: pd.DataFrame, teams) -> pd.DataFrame:

@@ -266,7 +266,7 @@ def style_team_schedule(df: pd.DataFrame):
     """A `replay_core.team_schedule` table: one row per game, the offense's
     and defense's EPA/play colored by their percentile among the
     selection's team-games, Net green or red by its sign, and Result
-    green for a win, red for a loss (a tie stays plain)."""
+    green for a win, red for a loss (a tie or a game to come stays plain)."""
     shown = df.drop(columns=["_off_pct", "_def_pct"])
     pcts = {"Off EPA/play": df["_off_pct"], "Def EPA/play": df["_def_pct"]}
     styled = (shown.style.format({c: "{:+.2f}" for c in ["Off EPA/play", "Def EPA/play", "Net"]},
@@ -280,8 +280,9 @@ def style_team_schedule(df: pd.DataFrame):
 
 
 def _result_tint(result: str) -> str:
-    """Green for a win ("W 27–20"), red for a loss, nothing for a tie."""
-    rgb = {"W": _GAIN, "L": _LOSS}.get(result[:1])
+    """Green for a win ("W 27–20"), red for a loss, nothing for a tie or a
+    game still to play ("Wed Nov 5")."""
+    rgb = {"W ": _GAIN, "L ": _LOSS}.get(result[:2])
     return "" if rgb is None else "background-color: rgba({}, {}, {}, 0.35); font-weight: bold".format(*rgb)
 
 
