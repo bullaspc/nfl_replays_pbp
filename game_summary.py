@@ -24,8 +24,8 @@ from typing import Callable
 import anthropic
 import pandas as pd
 
-from replay_core import (LINE_COUNT_ROWS, TENDENCY_DOWNS, edge_label, has_air_yards, pass_tendencies,
-                          period_label, run_tendencies)
+from replay_core import (LINE_COUNT_ROWS, TENDENCY_DOWNS, edge_label, has_air_yards, nullified_snaps,
+                          pass_tendencies, period_label, run_tendencies)
 
 # ---------- Providers ----------
 # name → (label, default model, default base URL, key settings, key sent as Bearer).
@@ -297,7 +297,9 @@ def defense_table(ctx: GameContext) -> pd.DataFrame:
         pm = d["pass_attempt"].fillna(0) == 1
         rm = d["rush_attempt"].fillna(0) == 1
         sc = d[pm | rm]
-        epa = sc["epa"].fillna(0)
+        # EPA and success rate count the snaps a penalty wiped out, as Team stats do.
+        null_pass, null_rush = nullified_snaps(d)
+        epa = d.loc[pm | rm | null_pass | null_rush, "epa"].fillna(0)
         conv = int(d["third_down_converted"].fillna(0).sum())
         fail = int(d["third_down_failed"].fillna(0).sum())
         rz = sc[sc["yardline_100"].fillna(100) <= 20]
@@ -312,8 +314,8 @@ def defense_table(ctx: GameContext) -> pd.DataFrame:
             "Yds/play allowed": "-" if sc.empty else f"{sc['yards_gained'].fillna(0).mean():.1f}",
             "EPA/play allowed": "-" if sc.empty else f"{epa.mean():+.2f}",
             "Success rate allowed": "-" if sc.empty else f"{(epa > 0).mean():.0%}",
-            "Pass EPA/play allowed": "-" if not pm.any() else f"{d.loc[pm, 'epa'].fillna(0).mean():+.2f}",
-            "Rush EPA/play allowed": "-" if not rm.any() else f"{d.loc[rm, 'epa'].fillna(0).mean():+.2f}",
+            "Pass EPA/play allowed": "-" if not pm.any() else f"{d.loc[pm | null_pass, 'epa'].fillna(0).mean():+.2f}",
+            "Rush EPA/play allowed": "-" if not rm.any() else f"{d.loc[rm | null_rush, 'epa'].fillna(0).mean():+.2f}",
             "Explosive plays allowed (pass 15+, run 10+)": str(expl),
             "3rd-down stops": f"{fail} of {conv + fail}",
             "Red-zone plays faced / TDs allowed": f"{len(rz)} / {int(rz['touchdown'].fillna(0).sum())}",
@@ -580,7 +582,7 @@ Ground rules:
 - Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, where each offense ran and threw (and how it worked against the league's split), explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
-Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA. WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}
+Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate, the team's and the players', also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}
 
 Write the summary in Markdown, about 350 to 500 words, with this structure:
 **Headline**: one or two sentences with the score and the main reason for it.
@@ -853,7 +855,7 @@ Ground rules:
 - Season numbers over a few games, and down-and-distance cells with few plays, are noisy. Say so when it matters.
 - If injury reports are given, weigh them: a starter who is Out or Doubtful takes his unit's season numbers with him, so say which matchup it changes and how much he plays (his snap share), e.g. two starting offensive linemen out against a strong pass rush. A Questionable player may play. The lineup lines count the same way, and add starters on injured reserve (not on the report) and starters back. Where "proj w/ lineup" is given, it already counts the players gone from both lineups: use it instead of proj for those stats, and say when it moves a matchup. Players back aren't in it: in backtests they made no measurable difference, so don't promise a lift from one. Mention only players the reports and lineup lines list, and if there are none, don't bring up anyone's health.
 
-Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA. Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it; proj w/ lineup (EPA/play, pass EPA/play and pass SR only) moves it by what players gone have done to games before, about -0.10 EPA/play for a starting QB out, -0.02 for each other full-time player the offense is missing and +0.02 for each one the defense is missing, and came a little closer to the games in backtests. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers and lost possessions, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game; Lost Poss. (per game) adds turnovers on downs and missed or blocked field goals. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
+Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA; both count a pass or run a penalty wiped out (its EPA is the penalty's). Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it; proj w/ lineup (EPA/play, pass EPA/play and pass SR only) moves it by what players gone have done to games before, about -0.10 EPA/play for a starting QB out, -0.02 for each other full-time player the offense is missing and +0.02 for each one the defense is missing, and came a little closer to the games in backtests. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers and lost possessions, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game; Lost Poss. (per game) adds turnovers on downs and missed or blocked field goals. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
 
 Write Markdown, about 150 to 220 words:
 **Headline**: one sentence: who the numbers favor and why.

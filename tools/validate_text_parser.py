@@ -3,7 +3,9 @@ Score live_feed.parse_play_text against nflverse's own columns.
 
 Parses every `desc` of a published season and reports, per column, how often
 the parsed value matches nflverse. Names are compared on rows where either
-side has one; flags and yards on every play.
+side has one, with nflverse's names for a pass or run a penalty wiped out
+filled in as the app loads them (replay_core.name_nullified()); flags and
+yards on every play.
 
     python tools/validate_text_parser.py 2025 [local.parquet]
 """
@@ -15,6 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import live_feed as lf  # noqa: E402
+import replay_core as core  # noqa: E402
 
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
 
@@ -35,7 +38,7 @@ VALUE_COLS = ["play_type", "yards_gained", "passing_yards", "rushing_yards", "re
 
 
 def main(season: int, path: str | None = None, show: str | None = None) -> None:
-    pbp = pd.read_parquet(path or PBP_URL.format(y=season))
+    pbp = core.name_nullified(pd.read_parquet(path or PBP_URL.format(y=season)))
     parsed = pd.DataFrame([lf.parse_play_text(d) for d in pbp["desc"]], index=pbp.index)
     print(f"{season}: {len(pbp)} plays")
     for col in NAME_COLS + VALUE_COLS + FLAG_COLS:

@@ -194,6 +194,46 @@ def percentile_of(value: float, sorted_arr: np.ndarray) -> float:
         return float("nan")
     return float(np.searchsorted(sorted_arr, value, side="right") / len(sorted_arr) * 100)
 
+# ---------- Snaps a penalty wiped out ----------
+# A pass or run the officials wiped out ("No Play") still moved the ball by
+# the penalty. Its EPA (the penalty's) counts in EPA/play and success rate,
+# the team's and the named players', as rbsdm.com counts them; plays,
+# yards and other rates (CMP%, 1st Down %, line play) count real plays only.
+# Every source names a wiped-out snap's players in the *_player_name columns:
+# nflverse through name_nullified(), live_feed and cfb_feed from the text
+# before the flag.
+NFLVERSE_NAME_COLS = {"passer": "passer_player_name", "rusher": "rusher_player_name",
+                      "receiver": "receiver_player_name"}
+# Counts a wiped-out snap doesn't add to (the leaders' columns are sums or
+# means of these): blanked on those rows by _player_plays().
+_REAL_PLAY_COLS = ["passing_yards", "rushing_yards", "receiving_yards", "yards_after_catch",
+                   "yards_gained", "air_yards", "pass_touchdown", "rush_touchdown",
+                   "interception", "complete_pass", "sack", "qb_hit"]
+
+
+def name_nullified(pbp: pd.DataFrame) -> pd.DataFrame:
+    """nflverse play-by-play with the players of a wiped-out pass or run
+    copied into its *_player_name columns, which nflverse leaves blank on
+    no_play rows, from `passer`/`rusher`/`receiver` (`NFLVERSE_NAME_COLS`),
+    which it fills. A wiped-out scramble names the QB as the rusher, as a
+    scramble's own row does. Changes `pbp` in place and returns it."""
+    np_ = pbp["play_type"] == "no_play"
+    scramble = np_ & pbp["desc"].str.contains(" scrambles ", na=False, regex=False)
+    pbp.loc[np_, "passer_player_name"] = pbp.loc[np_, "passer"].where(~scramble)
+    pbp.loc[np_, "rusher_player_name"] = pbp.loc[np_, "rusher"].where(
+        ~scramble, pbp.loc[np_, "passer"])
+    pbp.loc[np_, "receiver_player_name"] = pbp.loc[np_, "receiver"]
+    return pbp
+
+
+def nullified_snaps(td: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """(passes, runs) a penalty wiped out: no_play rows on a down that name a
+    passer (a pass), or only a rusher (a run)."""
+    np_ = (td["play_type"] == "no_play") & td["down"].notna()
+    passer = td["passer_player_name"].notna()
+    return np_ & passer, np_ & ~passer & td["rusher_player_name"].notna()
+
+
 TEAM_STAT_ROWS = [
     "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
     "Pass Yds", "Rush Yds", "Total Yds",
@@ -225,12 +265,16 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
     cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
     adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
 
-    pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
-    rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
-    total_epa = td.loc[scrimmage_mask, "epa"].fillna(0).sum()
+    # EPA and success rate also count the snaps a penalty wiped out.
+    null_pass, null_rush = nullified_snaps(td)
+    epa_pass, epa_rush = pass_mask | null_pass, rush_mask | null_rush
+    epa_snaps = epa_pass | epa_rush
+    pass_epa = td.loc[epa_pass, "epa"].fillna(0).sum()
+    rush_epa = td.loc[epa_rush, "epa"].fillna(0).sum()
+    total_epa = td.loc[epa_snaps, "epa"].fillna(0).sum()
 
-    pass_sr = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
-    rush_sr = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
+    pass_sr = (td.loc[epa_pass, "epa"].fillna(0) > 0).sum()
+    rush_sr = (td.loc[epa_rush, "epa"].fillna(0) > 0).sum()
 
     first_downs = td.loc[scrimmage_mask, "first_down"].fillna(0).sum()
 
@@ -262,11 +306,11 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         pass_yds + rush_yds,
         _rate(cmp, pass_plays),
         adot if not pd.isna(adot) else float("nan"),
-        _rate(pass_epa, pass_plays),
-        _rate(rush_epa, rush_plays),
-        _rate(total_epa, total_plays),
-        _rate(pass_sr, pass_plays),
-        _rate(rush_sr, rush_plays),
+        _rate(pass_epa, int(epa_pass.sum())),
+        _rate(rush_epa, int(epa_rush.sum())),
+        _rate(total_epa, int(epa_snaps.sum())),
+        _rate(pass_sr, int(epa_pass.sum())),
+        _rate(rush_sr, int(epa_rush.sum())),
         _rate(first_downs, total_plays),
         _rate(third_conv, third_conv + third_fail),
         _rate(rz_td, rz_plays),
@@ -335,11 +379,14 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         rush_yds = int(td["rushing_yards"].fillna(0).sum())
         cmp      = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
         adot     = td.loc[pass_mask, "air_yards"].mean()
-        pass_epa = td.loc[pass_mask, "epa"].fillna(0).sum()
-        rush_epa = td.loc[rush_mask, "epa"].fillna(0).sum()
-        tot_epa  = td.loc[sc_mask,   "epa"].fillna(0).sum()
-        pass_sr  = (td.loc[pass_mask, "epa"].fillna(0) > 0).sum()
-        rush_sr  = (td.loc[rush_mask, "epa"].fillna(0) > 0).sum()
+        null_pass, null_rush = nullified_snaps(td)
+        epa_pass, epa_rush = pass_mask | null_pass, rush_mask | null_rush
+        epa_sc   = epa_pass | epa_rush
+        pass_epa = td.loc[epa_pass, "epa"].fillna(0).sum()
+        rush_epa = td.loc[epa_rush, "epa"].fillna(0).sum()
+        tot_epa  = td.loc[epa_sc,   "epa"].fillna(0).sum()
+        pass_sr  = (td.loc[epa_pass, "epa"].fillna(0) > 0).sum()
+        rush_sr  = (td.loc[epa_rush, "epa"].fillna(0) > 0).sum()
         fd       = td.loc[sc_mask, "first_down"].fillna(0).sum()
         tc       = td["third_down_converted"].fillna(0).sum()
         tf       = td["third_down_failed"].fillna(0).sum()
@@ -359,11 +406,11 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "Total Yds":    pass_yds + rush_yds,
             "CMP%":         _rate(cmp, pp),
             "aDoT":         adot,
-            "Pass EPA/play":_rate(pass_epa, pp),
-            "Rush EPA/play":_rate(rush_epa, rp),
-            "EPA/play":     _rate(tot_epa,  tp),
-            "Pass SR":      _rate(pass_sr,  pp),
-            "Rush SR":      _rate(rush_sr,  rp),
+            "Pass EPA/play":_rate(pass_epa, int(epa_pass.sum())),
+            "Rush EPA/play":_rate(rush_epa, int(epa_rush.sum())),
+            "EPA/play":     _rate(tot_epa,  int(epa_sc.sum())),
+            "Pass SR":      _rate(pass_sr,  int(epa_pass.sum())),
+            "Rush SR":      _rate(rush_sr,  int(epa_rush.sum())),
             "1st Down %":   _rate(fd, tp),
             "3rd Down %":   _rate(tc, tc + tf),
             "RZ TD%":       _rate(rz_td, rz_plays),
@@ -593,9 +640,13 @@ SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
 
 def _situation_row(plays: pd.DataFrame) -> dict[str, float]:
     """`SR_METRICS` for one team's plays in one situation: success rate (EPA
-    > 0) and EPA/play on passes without spikes and runs without kneels."""
-    pass_plays = plays[(plays["pass_attempt"].fillna(0) == 1) & (plays["qb_spike"].fillna(0) == 0)]
-    rush_plays = plays[(plays["rush_attempt"].fillna(0) == 1) & (plays["qb_kneel"].fillna(0) == 0)]
+    > 0) and EPA/play on passes without spikes and runs without kneels, and
+    the ones a penalty wiped out."""
+    null_pass, null_rush = nullified_snaps(plays)
+    pass_plays = plays[((plays["pass_attempt"].fillna(0) == 1) & (plays["qb_spike"].fillna(0) == 0))
+                       | null_pass]
+    rush_plays = plays[((plays["rush_attempt"].fillna(0) == 1) & (plays["qb_kneel"].fillna(0) == 0))
+                       | null_rush]
 
     def _sr(p) -> float:
         return float("nan") if p.empty else (p["epa"].fillna(0) > 0).mean() * 100
@@ -695,13 +746,25 @@ PLAYER_MIN_PLAYS = {"passing": 10, "rushing": 5, "receiving": 3}
 
 def _player_plays(td: pd.DataFrame, kind: str) -> pd.DataFrame:
     """The plays a `kind` leaders table credits to a player: dropbacks (sacks
-    included) without spikes, carries without kneels, or targets."""
+    included) without spikes, carries without kneels, or targets, and the
+    ones a penalty wiped out, which add to his EPA and success rate only
+    (their `_REAL_PLAY_COLS` are blanked)."""
     no_spike = td["qb_spike"].fillna(0) == 0
+    null_pass, null_rush = nullified_snaps(td)
     if kind == "passing":
-        return td[(td["pass_attempt"] == 1) & no_spike]
-    if kind == "rushing":
-        return td[(td["rush_attempt"] == 1) & (td["qb_kneel"].fillna(0) == 0)]
-    return td[td["receiver_player_name"].notna() & (td["pass_attempt"].fillna(0) == 1) & no_spike]
+        real = (td["pass_attempt"] == 1) & no_spike
+        null = null_pass
+    elif kind == "rushing":
+        real = (td["rush_attempt"] == 1) & (td["qb_kneel"].fillna(0) == 0)
+        null = null_rush
+    else:
+        real = td["receiver_player_name"].notna() & (td["pass_attempt"].fillna(0) == 1) & no_spike
+        null = null_pass & td["receiver_player_name"].notna()
+    out = td[real | null]
+    if null.any():
+        out = out.copy()
+        out.loc[null[out.index], [c for c in _REAL_PLAY_COLS if c in out.columns]] = np.nan
+    return out
 
 
 def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
@@ -729,7 +792,8 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
         if rush_td.empty:
             return pd.DataFrame()
         rush_td["_success"] = (rush_td["epa"].fillna(0) > 0).astype(int)
-        rush_td["_stuffed"] = (rush_td["yards_gained"].fillna(0) <= 0).astype(int)
+        rush_td["_stuffed"] = ((rush_td["yards_gained"].fillna(0) <= 0)
+                               & (rush_td["rush_attempt"] == 1)).astype(int)
         sr = rush_td.groupby("rusher_player_name")["_success"].mean().rename("SR%")
         g = rush_td.groupby("rusher_player_name", as_index=False).agg(
             Att=("rush_attempt", "sum"), Yds=("rushing_yards", "sum"),
@@ -1107,9 +1171,11 @@ def venue_games(games: pd.DataFrame, venue: str | None) -> pd.DataFrame:
 
 
 def game_epa(pbp: pd.DataFrame) -> pd.Series:
-    """EPA/play per (game_id, offense) over `pbp`'s scrimmage plays, as
-    Team stats' EPA/play takes it."""
-    scrimmage = pbp[(pbp["pass_attempt"].fillna(0) == 1) | (pbp["rush_attempt"].fillna(0) == 1)]
+    """EPA/play per (game_id, offense) over `pbp`'s scrimmage plays and the
+    ones a penalty wiped out, as Team stats' EPA/play takes it."""
+    null_pass, null_rush = nullified_snaps(pbp)
+    scrimmage = pbp[(pbp["pass_attempt"].fillna(0) == 1) | (pbp["rush_attempt"].fillna(0) == 1)
+                    | null_pass | null_rush]
     return scrimmage["epa"].fillna(0).groupby([scrimmage["game_id"], scrimmage["posteam"]]).mean()
 
 
@@ -1317,9 +1383,9 @@ MATCHUP_STYLE = SEASON_VOLUME | {"aDoT"}
 EDGE_EVEN = 5  # percentile points: a smaller edge is shown as even
 # How much of the offense's and the defense's distance from the league
 # average Proj. keeps. tools/validate_matchup.py fits how far games landed
-# from the average, per stat, against the unshrunk sum: 0.23–0.66 in 2024
+# from the average, per stat, against the unshrunk sum: 0.23–0.67 in 2024
 # and 2025 for every stat but 2025's turnovers (0.06) and lost possessions
-# (0.18); EPA/play 0.52 and 0.64. Half, for every stat.
+# (0.18); EPA/play 0.50 and 0.63. Half, for every stat.
 PROJ_SHRINK = 0.5
 # The order the down-and-distance rows are shown in, and the plays each side
 # needs in a situation for it to get an edge.

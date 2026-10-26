@@ -448,7 +448,7 @@ way from the average to the full sum. Shrunk, Proj. came closer to the game than
 average for EPA/play, pass EPA/play and 1st-down rate in both seasons, and about as close for the
 rest. Turnovers and lost possessions, 3rd-down rate, sack rate and the run game carry over least from one game to the
 next: an edge there says more about the season than about the game. The projected EPA/play margin
-picked 61–67% of winners opponent-adjusted (62–67% as played); the betting favorite 63–74%. It
+picked 58–68% of winners opponent-adjusted (60–67% as played); the betting favorite 63–74%. It
 knows nothing of weather, and of injuries only through **w/ lineup**.
 
 **Head to head** compares like with like. Δ is {away} − {home}; whether more is better depends on
