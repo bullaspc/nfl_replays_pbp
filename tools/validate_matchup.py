@@ -33,8 +33,10 @@ STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1s
 
 def read_season(season: int, path: str | None = None) -> pd.DataFrame:
     """A season's regular-season pbp, with the betting line and result."""
+    extra = list(core.NFLVERSE_NAME_COLS)
     pbp = pd.read_parquet(path or PBP_URL.format(y=season),
-                          columns=core.PBP_COLS + ["season_type", "spread_line", "result"])
+                          columns=core.PBP_COLS + extra + ["season_type", "spread_line", "result"])
+    pbp = core.name_nullified(pbp).drop(columns=extra)  # as leagues.nflverse_pbp() does
     return pbp[pbp["season_type"] == "REG"].sort_values(["game_id", "play_id"])
 
 

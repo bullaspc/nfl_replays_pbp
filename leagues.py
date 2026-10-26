@@ -163,9 +163,12 @@ def nflverse_teams() -> pd.DataFrame:
 
 def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
     """nflverse play-by-play for `seasons`, `columns` only, with float64 columns
-    stored as float32 to save memory, as nfl_data_py did. Raises if a season
-    isn't published."""
-    df = nflreadpy.load_pbp(seasons).select(columns).to_pandas()
+    stored as float32 to save memory, as nfl_data_py did, and the players of
+    a pass or run a penalty wiped out named (`core.name_nullified()`). Raises
+    if a season isn't published."""
+    extra = list(core.NFLVERSE_NAME_COLS)
+    df = nflreadpy.load_pbp(seasons).select(columns + extra).to_pandas()
+    df = core.name_nullified(df).drop(columns=extra)
     floats = df.select_dtypes("float64").columns
     df[floats] = df[floats].astype("float32")
     return df

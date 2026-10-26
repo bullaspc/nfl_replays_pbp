@@ -415,6 +415,71 @@ def _crew_defenders(text: str) -> dict[str, list[str]]:
     }
 
 
+# A pass or run a penalty wiped out, in the text before the flag.
+_FLAG = re.compile(r"\bPENALTY\b|\bPenalty\b")
+_SNAP_PASS = re.compile(r" (?:pass|sacked)\b")
+_SNAP_RUN = re.compile(r" (?:rush|run|scrambles?)\b")
+
+
+def _spellings(name: str) -> list[str]:
+    """The ways the feed's texts write a player the feed names `name`, in
+    lower case: as is, stat-crew's 'l.marble', 'marble,luke' and 'marble, luke'."""
+    first, _, rest = name.partition(" ")
+    forms = [name] + ([crew_spelling(name), f"{rest},{first}", f"{rest}, {first}"] if rest else [])
+    return [f.lower() for f in forms]
+
+
+def _named(text: str, names) -> str | None:
+    """The one of `names` the text writes first, in any of its spellings
+    (any case: 'LOWRY, Broc')."""
+    best, text = None, text.lower()
+    for n in names:
+        for s in _spellings(n):
+            i = text.find(s)
+            if i >= 0 and (best is None or i < best[0]):
+                best = (i, n)
+    return best[1] if best else None
+
+
+def _nullified_names(out: pd.DataFrame, text: pd.Series) -> None:
+    """Name the passer and receiver, or the rusher, of a pass or run a penalty
+    wiped out ("NO PLAY"), in place, as replay_core.nullified_snaps() reads
+    them; the feed names few. They're read from the text before the flag,
+    among the players the offense's real plays in the game name, so a snap
+    goes to a player as he's spelled on those."""
+    rows = out.index[(out["play_type"] == "no_play") & out["down"].notna()
+                     & out["passer_player_name"].isna() & out["rusher_player_name"].isna()]
+    if rows.empty:
+        return
+    pre = text[rows].str.split(_FLAG.pattern, n=1, regex=True).str[0]
+    rows = rows[pre.str.contains(_SNAP_PASS) | pre.str.contains(_SNAP_RUN)]
+    if rows.empty:
+        return
+    keys = ["game_id", "posteam"]
+    real = out[out["play_type"].isin(["pass", "run"])]
+    roster = {col: real.dropna(subset=[col]).groupby(keys)[col].unique()
+              for col in ("passer_player_name", "rusher_player_name", "receiver_player_name")}
+
+    def known(col, key):
+        return roster[col].get(key, [])
+
+    for i in rows:
+        key = (out.at[i, "game_id"], out.at[i, "posteam"])
+        snap = pre[i]
+        if _SNAP_PASS.search(snap):
+            act = _SNAP_PASS.search(snap).start()
+            passer = _named(snap[:act], known("passer_player_name", key))
+            if passer is None:
+                continue
+            out.at[i, "passer_player_name"] = passer
+            to = snap.find(" to ", act)
+            if to >= 0:
+                out.at[i, "receiver_player_name"] = _named(snap[to:], known("receiver_player_name", key))
+        else:
+            act = _SNAP_RUN.search(snap).start()
+            out.at[i, "rusher_player_name"] = _named(snap[:act], known("rusher_player_name", key))
+
+
 _PASSER = re.compile(rf"#\d+ ({_NAME}) (?:pass|sacked)\b")
 _RUSHER = re.compile(rf"#\d+ ({_NAME}) rush\b|Kneel down by #\d+ ({_NAME})")
 _RECEIVER = re.compile(rf"pass (?:complete|incomplete)[^#]*?\bto #\d+ ({_NAME})")
@@ -647,6 +712,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["pass_defense_1_player_name"] = df["pass_breakup_player_name"].where(live)
     out["forced_fumble_player_1_player_name"] = df["fumble_forced_player_name"].where(live)
     _crew_columns(out, text, scrimmage)
+    _nullified_names(out, text)
 
     # Timeouts left before the play, and on a timeout's own row after it, as
     # nflfastR has them.

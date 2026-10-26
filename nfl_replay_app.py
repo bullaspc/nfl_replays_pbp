@@ -1044,7 +1044,8 @@ st.subheader("Team stats")
 stat_df = team_stats(revealed, home, away)
 _baselines = leagues.stat_baselines(league, season)
 stat_table(style_stat_table(stat_df, away, home, _baselines))
-st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
+st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom · "
+           "EPA/play and SR count a pass or run a penalty wiped out (its EPA is the penalty's)")
 
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")

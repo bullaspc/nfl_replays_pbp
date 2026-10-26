@@ -295,7 +295,26 @@ def parse_play_text(desc: str) -> dict:
     for i, n in enumerate(hitters[:2], 1):
         out[f"qb_hit_{i}_player_name"] = n
     out["qb_hit"] = float(bool(hitters))
+    if play_type == "no_play":
+        out.update(_nullified_names(body))
     return out
+
+
+_NULLIFIED_NAMES = ("passer_player_name", "rusher_player_name", "receiver_player_name")
+
+
+def _nullified_names(body: str) -> dict:
+    """The players of a pass or run a penalty wiped out, read from the text
+    before the flag as on a play that stood (nflverse names them in its
+    passer/rusher/receiver columns; replay_core.nullified_snaps() counts
+    them). Empty for a flag before the snap, or a row with no flag."""
+    snap = re.split(r"PENALTY on|Penalty on", body, maxsplit=1)[0].strip()
+    if not snap or snap == body.strip():
+        return {}
+    parsed = parse_play_text(snap)
+    if parsed.get("play_type") not in ("pass", "run"):
+        return {}
+    return {c: parsed[c] for c in _NULLIFIED_NAMES if parsed.get(c)}
 
 
 # ---------- Game-level derivations (shared by the ESPN path and its tests) ----------
@@ -447,8 +466,18 @@ def _mmss(s) -> str | None:
 
 
 _END_TYPES = re.compile(r"end (?:of )?(?:period|quarter|half|regulation|game)", re.I)
-_PAT_SPLIT = re.compile(r"(?:(?<=TOUCHDOWN)|(?<=\]))(?:[^.]*\.)?\s+(?=(?:\(Kick formation\)\s*|\(Pass formation\)\s*)?"
+# Where the try starts in a touchdown's text. Anything between the two (a
+# flag enforced between downs, an injury note) stays with the touchdown, as
+# nflverse writes it.
+_TRY_START = re.compile(r"\s+(?=(?:\(Kick formation\)\s*|\(Pass formation\)\s*)?"
                         rf"(?:{NAME} extra point is|TWO-POINT CONVERSION ATTEMPT))")
+
+
+def _split_try(desc: str) -> list[str]:
+    """A touchdown's text and the try ESPN folded into it, or [desc]."""
+    td = desc.find("TOUCHDOWN")
+    m = _TRY_START.search(desc, td) if td >= 0 else None
+    return [desc[:m.start()], desc[m.end():]] if m else [desc]
 
 
 def _espn_rows(summary: dict) -> list[dict]:
@@ -597,15 +626,17 @@ def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
                 row["down"] = row["ydstogo"] = np.nan
 
         # A touchdown row that also carries the try becomes two rows.
-        parts = _PAT_SPLIT.split(row["desc"], maxsplit=1) if "TOUCHDOWN" in row["desc"] else [row["desc"]]
+        parts = _split_try(row["desc"])
         if len(parts) == 2:
             td_row = dict(row, desc=parts[0].strip())
             try_row = dict(row, desc=parts[1].strip(), down=np.nan, ydstogo=np.nan,
                            yardline_100=2.0 if "TWO-POINT" in parts[1] else 15.0)
+            # The touchdown's 6 only: anything else (a defensive two-point
+            # return of the try) happened on the try.
             if post_h - pre_h >= 6:
-                td_row["total_home_score"] = pre_h + 6
+                td_row["total_home_score"], td_row["total_away_score"] = pre_h + 6, pre_a
             if post_a - pre_a >= 6:
-                td_row["total_away_score"] = pre_a + 6
+                td_row["total_away_score"], td_row["total_home_score"] = pre_a + 6, pre_h
             out += [td_row, try_row]
         else:
             if "extra point" in row["desc"] or "TWO-POINT" in row["desc"]:

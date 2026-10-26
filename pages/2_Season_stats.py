@@ -398,7 +398,9 @@ games are used; the sidebar picks the regular-season weeks and/or the postseason
 
 **Definitions** are the replay's. Plays are pass attempts (sacks included) plus rush attempts
 (scrambles and kneels included); a play is a *success* when its EPA is above 0, and SR is the share
-of successes. 1st Down % is first downs per play, 3rd Down % third-down conversions per attempt,
+of successes. EPA/play and SR also count a pass or run a penalty wiped out ("No Play"), whose EPA is
+the penalty's, for the offense and the players named on it; play counts, yards and other rates
+count real plays only. 1st Down % is first downs per play, 3rd Down % third-down conversions per attempt,
 RZ TD% touchdowns per play snapped at or inside the opponent's 20. Turnovers are interceptions plus lost
 fumbles; Lost Poss. adds turnovers on downs and missed or blocked field goals. Time of possession is read from the game clock within each drive. Line play counts downs
 only: dropbacks (no spikes), Sack % and QB Hit % (hits include sacks) per dropback, designed runs
