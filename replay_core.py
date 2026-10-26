@@ -1781,14 +1781,14 @@ def lineup_groups(change: pd.DataFrame, part: str = "net") -> pd.Series:
 # (4,194, opponent-adjusted Proj.), whoever filled in. Players back aren't
 # counted: fitted apart, they moved nothing measurable, and adding them made
 # no projection better. Only the stats where the adjustment came closer to
-# the game, a season at a time out of sample (RMSE): EPA/play 0.1902 → 0.1875
-# (0.2015 → 0.1888 in the 471 games with the QB half a player or more off),
-# pass EPA/play 0.3096 → 0.3061, pass success rate 0.0962 → 0.0950. Run EPA
+# the game, a season at a time out of sample (RMSE): EPA/play 0.1839 → 0.1814
+# (0.1946 → 0.1828 in the 471 games with the QB half a player or more off),
+# pass EPA/play 0.2990 → 0.2954, pass success rate 0.0938 → 0.0927. Run EPA
 # and sack rate didn't move.
 LINEUP_EFFECTS = {
-    "EPA/play": {"QB": -0.0968, "OL": -0.018, "Skill": -0.0199, "Front": 0.018, "DB": 0.0185},
-    "Pass EPA/play": {"QB": -0.1472, "OL": -0.0268, "Skill": -0.0266, "Front": 0.0314, "DB": 0.0263},
-    "Pass SR": {"QB": -0.0428, "OL": -0.0079, "Skill": -0.0103, "Front": 0.0092, "DB": 0.0101},
+    "EPA/play": {"QB": -0.0918, "OL": -0.0194, "Skill": -0.0175, "Front": 0.0167, "DB": 0.0183},
+    "Pass EPA/play": {"QB": -0.1398, "OL": -0.0296, "Skill": -0.0222, "Front": 0.0296, "DB": 0.026},
+    "Pass SR": {"QB": -0.0406, "OL": -0.0088, "Skill": -0.0085, "Front": 0.0089, "DB": 0.0096},
 }
 
 

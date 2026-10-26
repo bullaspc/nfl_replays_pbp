@@ -473,12 +473,12 @@ short, whoever filled in. A starting QB gone has cost his offense about {abs(_ep
 EPA/play, each other full-time player about {abs(_epa['OL']):.2f}, and each full-time player a
 defense is missing has given the offense about {_epa['Front']:.2f}. Tested a season at a time on
 effects fitted on the other seasons, it came closer to the game than Proj. for EPA/play (RMSE
-0.1902 → 0.1875; 0.2015 → 0.1888 in the 471 games with a QB change), pass EPA/play (0.3096 →
-0.3061) and pass success rate (0.0962 → 0.0950), and the projected EPA/play margin picked 63.6% of
-winners instead of 62.4% (the betting favorite: 67.8%). The run game and sack rate didn't move, so
+0.1839 → 0.1814; 0.1946 → 0.1828 in the 471 games with a QB change), pass EPA/play (0.2990 →
+0.2954) and pass success rate (0.0938 → 0.0927), and the projected EPA/play margin picked 63.1% of
+winners instead of 61.5% (the betting favorite: 67.8%). The run game and sack rate didn't move, so
 they aren't adjusted.
 Players coming back aren't counted either: on their own, they made no measurable difference (a
-starting QB back: −0.02 ± 0.04 EPA/play against Proj.). The adjustment is small next to how far
+starting QB back: −0.02 ± 0.03 EPA/play against Proj.). The adjustment is small next to how far
 single games stray from any projection.
 
 **Matchup preview.** On request, the matchup tables, down and distance, key players and the injury
