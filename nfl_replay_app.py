@@ -214,15 +214,23 @@ with st.sidebar:
     # OT in pbp is qtr=5; treat it as starting after Q4 ends.
     completed_qtrs = qtr_idx - 1
     baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-    auto = False if follow_live else st.checkbox("Auto-advance play by play", value=False)
+    auto = False if follow_live else st.checkbox("Auto-advance play by play",
+                                                 value=_url.get("auto") == "1")
+    auto_tick = 0
     if follow_live:
         # Fast enough that the delay above is honoured to within ~10s.
         st_autorefresh(interval=10_000, key="live_follow")
     elif auto:
-        refresh_interval = st.selectbox("Refresh interval", [30, 45, 60, 90],
+        _intervals = [30, 45, 60, 90]
+        _every = _url_int("every", 30, 30, 90)
+        refresh_interval = st.selectbox("Refresh interval", _intervals,
+                                        index=_intervals.index(_every)
+                                        if _every in _intervals else 0,
                                         format_func=lambda x: f"{x}s",
                                         key="refresh_interval_clock")
-        st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
+        # The timer's tick count: a play is revealed only when it changes (see
+        # the bottom of the file), not on every rerun.
+        auto_tick = st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
     elif source == "live" and live_state != "post":
         # Keep pulling new plays in. This only makes them available to the
         # ▶ buttons — it never moves the cursor or unlocks anything.
@@ -348,6 +356,8 @@ def _save_url() -> None:
         params |= {"follow": "1", "delay": str(live_delay)}
     else:
         params |= {"q": qtr_pick, "clock": clock_str}
+        if auto:
+            params |= {"auto": "1", "every": str(refresh_interval)}
     for name, (e, rank) in zip(("at", "max"), st.session_state["_cursor_anchor"]):
         params[name] = f"{e!r}:{rank}"
     if st.query_params.to_dict() != params:
@@ -1265,8 +1275,12 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Auto-advance to next play ----------
-# One play per refresh tick.
-if auto and cursor_max < last_idx:
+# One play per refresh tick. Only a tick advances: any other rerun (a click, a
+# fragment's st.rerun(), the first run of a session restored from the URL)
+# leaves the count where it was, so it can't reveal a play early.
+_new_tick = auto and auto_tick != st.session_state.get("_auto_tick", 0)
+st.session_state["_auto_tick"] = auto_tick
+if _new_tick and cursor_max < last_idx:
     _at_edge = cursor_idx >= cursor_max
     st.session_state["_cursor_max"] = cursor_max + 1
     if _at_edge:
