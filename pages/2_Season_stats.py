@@ -37,7 +37,7 @@ QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 # The team table's column groups (replay_core.SEASON_COLS is "All").
 TEAM_VIEWS = {
     "Efficiency": ["Games", "EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR",
-                   "CMP%", "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
+                   "ED SR", "CMP%", "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
@@ -413,7 +413,7 @@ games are used; the sidebar picks the regular-season weeks and/or the postseason
 of successes. EPA/play and SR also count a pass or run a penalty wiped out ("No Play"), whose EPA is
 the penalty's, for the offense and the players named on it; play counts, yards and other rates
 count real plays only. 1st Down % is first downs per play, 3rd Down % third-down conversions per attempt,
-RZ TD% touchdowns per play snapped at or inside the opponent's 20. Turnovers are interceptions plus lost
+ED SR is the success rate on 1st and 2nd down, passes and runs together. RZ TD% touchdowns per play snapped at or inside the opponent's 20. Turnovers are interceptions plus lost
 fumbles; Lost Poss. adds turnovers on downs and missed or blocked field goals. Time of possession is read from the game clock within each drive. Line play counts downs
 only: dropbacks (no spikes), Sack % and QB Hit % (hits include sacks) per dropback, designed runs
 (no kneels or scrambles), Stuff % (≤ {STUFF_MAX_YDS} yds) and Explosive Run % (≥ {EXPLOSIVE_RUN_YDS} yds)

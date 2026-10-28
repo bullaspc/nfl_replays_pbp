@@ -1056,6 +1056,7 @@ _baselines = leagues.stat_baselines(league, season)
 stat_table(style_stat_table(stat_df, away, home, _baselines))
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom · "
            "EPA/play and SR count a pass or run a penalty wiped out (its EPA is the penalty's) · "
+           "ED SR: success rate on 1st and 2nd down, passes and runs · "
            "CPOE: completion % over expected (nflfastR's model, points) · RYOE/att: rushing yards "
            "over expected per designed run, vs the league's average run from the same down, "
            "distance and field position")
