@@ -497,6 +497,20 @@ def style_snap_table(df: pd.DataFrame, phase: str):
     return _centered(shown.style)
 
 
+def style_weekly_snaps(df: pd.DataFrame):
+    """A `replay_core.weekly_snaps` table: each share as a percent, shaded
+    green with it, blank in a week the player took no snap in that phase."""
+    pcts = [c for c in df.columns if c.startswith("Wk ") or c == "Total"]
+
+    def _shade(v):
+        if pd.isna(v):
+            return ""
+        return f"background-color: rgba({_GAIN[0]}, {_GAIN[1]}, {_GAIN[2]}, {0.1 + 0.5 * min(v, 1.0):.2f})"
+
+    styled = df.style.format(lambda v: "" if pd.isna(v) else f"{v:.0%}", subset=pcts)
+    return _centered(smap(styled, _shade, subset=pcts))
+
+
 # ---------- Drives ----------
 _FIELD_GREEN = "#2f7a3b"
 _FIELD_GREEN_ALT = "#2a6f35"

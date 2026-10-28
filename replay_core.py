@@ -1668,6 +1668,32 @@ def team_snaps(snaps: pd.DataFrame, team: str, games=None) -> pd.DataFrame:
     return out[cols]
 
 
+def weekly_snaps(snaps: pd.DataFrame, team: str, phase: str, games=None) -> pd.DataFrame:
+    """`team`'s snap shares by week in one phase ("Off", "Def" or "ST",
+    `SNAP_PHASES`) over `games` (every game if None): one row per player who
+    took a snap in it, most snaps first, Player, Pos, a "Wk N" column per
+    week (PFR's share of the team's snaps that game, NaN if he took none)
+    and Total (his share over those games, as `team_snaps()`)."""
+    col = SNAP_PHASES[phase]
+    if snaps.empty:
+        return pd.DataFrame(columns=["Player", "Pos", "Total"])
+    s = snaps[snaps["team"] == team]
+    if games is not None:
+        s = s[s["game_id"].isin(set(games))]
+    s = s.assign(_id=s["gsis_id"].fillna(s["pfr_player_id"]))
+    total = team_snaps(snaps, team, games)
+    shown = total[total[phase] > 0]
+    if s.empty or shown.empty:
+        return pd.DataFrame(columns=["Player", "Pos", "Total"])
+    pct = (s[s[f"{col}_snaps"] > 0].pivot_table(index="_id", columns="week", values=f"{col}_pct",
+                                                 aggfunc="sum")
+           .reindex(columns=sorted(s["week"].unique())))
+    pct.columns = [f"Wk {int(w)}" for w in pct.columns]
+    shown = shown.sort_values([phase, "Player"], ascending=[False, True], kind="stable")
+    out = shown[["Player", "Pos"]].join(pct).assign(Total=shown[f"{phase} %"])
+    return out.reset_index(drop=True)
+
+
 def _snap_label(row) -> tuple[float, str]:
     """A player's share in the phase he plays most: (0.89, "89% O")."""
     shares = {"O": row.get("Off %"), "D": row.get("Def %"), "ST": row.get("ST %")}
