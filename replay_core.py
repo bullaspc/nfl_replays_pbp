@@ -245,6 +245,13 @@ def _cpoe(passes: pd.DataFrame) -> float:
     return float(passes["cpoe"].mean()) if "cpoe" in passes.columns else float("nan")
 
 
+def _early_down_sr(td: pd.DataFrame, snaps: pd.Series) -> float:
+    """Early-down success rate: the share of `snaps` (passes and runs, the
+    ones a penalty wiped out included) on 1st or 2nd down with EPA > 0."""
+    early = snaps & td["down"].isin([1, 2])
+    return _rate((td.loc[early, "epa"].fillna(0) > 0).sum(), int(early.sum()))
+
+
 def _ryoe(td: pd.DataFrame) -> float:
     """Rushing yards over expected per designed run: rushing yards less
     `xrush_yards` (add_expected_rush()), over the runs that have one."""
@@ -258,7 +265,7 @@ TEAM_STAT_ROWS = [
     "Pass Yds", "Rush Yds", "Total Yds",
     "CMP%", "CPOE", "aDoT", "RYOE/att",
     "Pass EPA/play", "Rush EPA/play", "EPA/play",
-    "Pass SR", "Rush SR",
+    "Pass SR", "Rush SR", "ED SR",
     "1st Down %", "3rd Down %", "RZ TD%",
     "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
 ]
@@ -295,6 +302,7 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
 
     pass_sr = (td.loc[epa_pass, "epa"].fillna(0) > 0).sum()
     rush_sr = (td.loc[epa_rush, "epa"].fillna(0) > 0).sum()
+    ed_sr = _early_down_sr(td, epa_snaps)
 
     first_downs = td.loc[scrimmage_mask, "first_down"].fillna(0).sum()
 
@@ -333,6 +341,7 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         _rate(total_epa, int(epa_snaps.sum())),
         _rate(pass_sr, int(epa_pass.sum())),
         _rate(rush_sr, int(epa_rush.sum())),
+        ed_sr,
         _rate(first_downs, total_plays),
         _rate(third_conv, third_conv + third_fail),
         _rate(rz_td, rz_plays),
@@ -411,6 +420,7 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         tot_epa  = td.loc[epa_sc,   "epa"].fillna(0).sum()
         pass_sr  = (td.loc[epa_pass, "epa"].fillna(0) > 0).sum()
         rush_sr  = (td.loc[epa_rush, "epa"].fillna(0) > 0).sum()
+        ed_sr    = _early_down_sr(td, epa_sc)
         fd       = td.loc[sc_mask, "first_down"].fillna(0).sum()
         tc       = td["third_down_converted"].fillna(0).sum()
         tf       = td["third_down_failed"].fillna(0).sum()
@@ -437,6 +447,7 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "EPA/play":     _rate(tot_epa,  int(epa_sc.sum())),
             "Pass SR":      _rate(pass_sr,  int(epa_pass.sum())),
             "Rush SR":      _rate(rush_sr,  int(epa_rush.sum())),
+            "ED SR":        ed_sr,
             "1st Down %":   _rate(fd, tp),
             "3rd Down %":   _rate(tc, tc + tf),
             "RZ TD%":       _rate(rz_td, rz_plays),
@@ -1380,7 +1391,7 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 # 121%, -0.3 turnovers a game, more rushes and completions than plays, fewer
 # QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
 # possible value.
-SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%",
+SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%",
                 *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
 # Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and

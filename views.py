@@ -108,7 +108,7 @@ def style_sr_table(df: pd.DataFrame,
 _OE_FORMATS = {"CPOE": "{:+.1f}", "RYOE/att": "{:+.2f}", "Pass CPOE": "{:+.1f}",
                "Rush RYOE": "{:+.2f}"}
 _EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
-_RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%"}
 _NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS

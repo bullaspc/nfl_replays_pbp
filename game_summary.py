@@ -191,7 +191,7 @@ def game_status(revealed: pd.DataFrame) -> tuple[str, bool]:
     return f"{period_label(q)}{clock}", False
 
 
-_PCT_STATS = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_PCT_STATS = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%"}
 _EPA_STATS = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
 
 
@@ -588,7 +588,7 @@ Ground rules:
 - Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, where each offense ran and threw (and how it worked against the league's split), explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
-Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate, the team's and the players', also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. CPOE is completion percentage over expected, in points (nflfastR's completion model); RYOE is rushing yards over expected per designed run, against the league's average run from the same down, distance and field position. A defense's numbers are what it allowed.{notes}
+Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate, the team's and the players', also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. ED SR is the success rate on 1st and 2nd down, passes and runs together. CPOE is completion percentage over expected, in points (nflfastR's completion model); RYOE is rushing yards over expected per designed run, against the league's average run from the same down, distance and field position. A defense's numbers are what it allowed.{notes}
 
 Write the summary in Markdown, about 350 to 500 words, with this structure:
 **Headline**: one or two sentences with the score and the main reason for it.
