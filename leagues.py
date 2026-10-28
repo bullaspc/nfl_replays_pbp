@@ -20,6 +20,7 @@ The loaders here are cached with Streamlit; the modules they call aren't.
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import nflreadpy
@@ -167,11 +168,32 @@ def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
     a pass or run a penalty wiped out named (`core.name_nullified()`). Raises
     if a season isn't published."""
     extra = list(core.NFLVERSE_NAME_COLS)
-    df = nflreadpy.load_pbp(seasons).select(columns + extra).to_pandas()
+    read = [c for c in columns if c != "xrush_yards"]  # the app's own, added below
+    df = nflreadpy.load_pbp(seasons).select(read + extra).to_pandas()
     df = core.name_nullified(df).drop(columns=extra)
     floats = df.select_dtypes("float64").columns
     df[floats] = df[floats].astype("float32")
-    return df
+    return with_xrush(df, "NFL") if "xrush_yards" in columns else df
+
+
+XRUSH_TABLE = Path(__file__).parent / "models" / "xrush_yards.csv"
+
+
+@st.cache_resource
+def xrush_table(league_key: str) -> pd.DataFrame | None:
+    """The league's expected rushing yards table (tools/build_xrush_table.py),
+    or None if it isn't there: RYOE is then blank."""
+    try:
+        t = pd.read_csv(XRUSH_TABLE)
+    except OSError:
+        return None
+    t = t[t["league"] == league_key].drop(columns="league")
+    return None if t.empty else t
+
+
+def with_xrush(pbp: pd.DataFrame, league_key: str) -> pd.DataFrame:
+    """`pbp` with each designed run's expected yards (`xrush_yards`)."""
+    return core.add_expected_rush(pbp, xrush_table(league_key))
 
 
 @st.cache_data(ttl=3600)
@@ -317,7 +339,7 @@ def load_live_game(sched_row: dict) -> tuple[pd.DataFrame, str, str, str | None]
     fetched-at clock, model error). Cached 20s, so reruns don't hammer ESPN."""
     summary = live_feed.fetch_summary(int(sched_row["espn"]))
     models, fg_table, model_err = load_nflfastr_models()
-    df = live_feed.build_live_pbp(summary, sched_row, models, fg_table, core.PBP_COLS)
+    df = with_xrush(live_feed.build_live_pbp(summary, sched_row, models, fg_table, core.PBP_COLS), "NFL")
     return df, live_feed.game_state(summary), datetime.now().strftime("%H:%M:%S"), model_err
 
 
@@ -567,7 +589,7 @@ def list_cfb_upcoming(season: int, stamp: str, today: str) -> pd.DataFrame:
 @st.cache_data(max_entries=8)
 def load_cfb_game(season: int, stamp: str, game_id: str) -> pd.DataFrame:
     raw = load_cfb_season(season, stamp)
-    return cfb_feed.to_pbp(raw[raw["game_id"].astype(str) == game_id], core.PBP_COLS)
+    return with_xrush(cfb_feed.to_pbp(raw[raw["game_id"].astype(str) == game_id], core.PBP_COLS), "CFB")
 
 
 @st.cache_data(ttl=20)
@@ -576,7 +598,7 @@ def load_cfb_live_game(game_id: str) -> tuple[pd.DataFrame, str, str]:
     sportsdataverse's processing, in the app's layout. Returns (pbp, ESPN
     state, fetched-at clock). Cached 20s, so reruns don't hammer ESPN."""
     summary = cfb_feed.fetch_summary(game_id)
-    pbp = cfb_feed.to_pbp(cfb_feed.live_raw(summary, game_id), core.PBP_COLS)
+    pbp = with_xrush(cfb_feed.to_pbp(cfb_feed.live_raw(summary, game_id), core.PBP_COLS), "CFB")
     return pbp, cfb_feed.game_state(summary), datetime.now().strftime("%H:%M:%S")
 
 
@@ -597,7 +619,7 @@ def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     fbs = set(_cfb_season_teams(season, stamp).index)
     raw = raw[raw["homeTeamAbbrev"].isin(fbs) | raw["awayTeamAbbrev"].isin(fbs)]
     post = set(raw.loc[raw["seasonType"] == 3, "game_id"].astype(str))
-    pbp = cfb_feed.to_pbp(raw, core.PBP_COLS)
+    pbp = with_xrush(cfb_feed.to_pbp(raw, core.PBP_COLS), "CFB")
     return pbp.assign(postseason=pbp["game_id"].astype(str).isin(post))
 
 
@@ -630,7 +652,7 @@ def _cfb_baseline_pbp(season: int) -> pd.DataFrame:
     prior = season - 1
     if prior < cfb_feed.FIRST_SEASON:
         return pd.DataFrame(columns=core.BASELINE_COLS)
-    pbp = cfb_feed.to_pbp(cfb_feed.read_season(prior), core.PBP_COLS)
+    pbp = with_xrush(cfb_feed.to_pbp(cfb_feed.read_season(prior), core.PBP_COLS), "CFB")
     fbs = cfb_feed.fbs_games(cfb_feed.read_schedule(prior))
     if fbs:
         pbp = pbp[pbp["game_id"].isin(fbs)]

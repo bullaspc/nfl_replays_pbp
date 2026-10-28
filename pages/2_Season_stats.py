@@ -18,7 +18,7 @@ import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
-    availability_summary, has_air_yards, injury_report, team_snaps, venue_plays,
+    availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
     situational_table, team_schedule,
@@ -27,7 +27,7 @@ from views import (
     pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
-    style_team_schedule,
+    style_team_schedule, style_weekly_snaps,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -37,7 +37,7 @@ QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 # The team table's column groups (replay_core.SEASON_COLS is "All").
 TEAM_VIEWS = {
     "Efficiency": ["Games", "EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR",
-                   "CMP%", "aDoT", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
+                   "CMP%", "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
@@ -311,6 +311,18 @@ with tab_team:
                        "games PFR has counted so far, and his share of the team's offensive, "
                        "defensive and special-teams snaps in them. Whole games: the quarter, "
                        "garbage-time and clutch filters don't apply.")
+            with st.expander("Snap % by week", expanded=False):
+                _phases = {"Off": "Offense", "Def": "Defense", "ST": "Special teams"}
+                wk_phase = st.radio("Phase", list(_phases), format_func=_phases.get, horizontal=True,
+                                    key="_ss_snap_phase", label_visibility="collapsed")
+                weekly = weekly_snaps(avail.snaps, team, wk_phase, game_ids)
+                if weekly.empty:
+                    st.caption("No snaps in this phase.")
+                else:
+                    stat_table(style_weekly_snaps(weekly), hide_index=True)
+                st.caption("Each player's share of the team's snaps in each selected game PFR has "
+                           "counted, by week (blank: no snap in this phase that week), and Total over "
+                           "those games. Bye weeks and games not counted yet have no column.")
 
         st.markdown("**Injury report**")
         team_reports = (avail.injuries[avail.injuries["team"] == team] if not avail.injuries.empty
@@ -407,6 +419,11 @@ only: dropbacks (no spikes), Sack % and QB Hit % (hits include sacks) per dropba
 (no kneels or scrambles), Stuff % (≤ {STUFF_MAX_YDS} yds) and Explosive Run % (≥ {EXPLOSIVE_RUN_YDS} yds)
 per designed run, and OL Penalty % (the offense's holding, false start and ineligible-downfield
 flags) per snap.
+
+**Over expected.** CPOE is completion % over expected, in percentage points: nflfastR's completion
+probability model per pass{" (the college data has none, so it's blank)" if _college else ""}. RYOE/att
+is rushing yards over expected per designed run: each run's yards less the league's average
+designed run from the same down, distance and field position (`models/xrush_yards.csv`).
 
 **Per game and colors.** Counts and yards are divided by the games each team played. Every
 colored cell is the team's percentile within its column among the ranked teams: green is best,
