@@ -1055,11 +1055,15 @@ stat_df = team_stats(revealed, home, away)
 _baselines = leagues.stat_baselines(league, season)
 stat_table(style_stat_table(stat_df, away, home, _baselines))
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom · "
-           "EPA/play and SR count a pass or run a penalty wiped out (its EPA is the penalty's)")
+           "EPA/play and SR count a pass or run a penalty wiped out (its EPA is the penalty's) · "
+           "CPOE: completion % over expected (nflfastR's model, points) · RYOE/att: rushing yards "
+           "over expected per designed run, vs the league's average run from the same down, "
+           "distance and field position")
 
 # ---------- Situational success rates ----------
 st.subheader("Situational success rates")
-st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
+st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom · "
+           "CPOE and RYOE as in Team stats")
 _sr_subtotals = st.toggle("Early/late subtotals", value=False,
                           help="Add rows totalling early downs (1st–2nd) and "
                                "late downs (3rd–4th) over every distance.")
@@ -1245,9 +1249,9 @@ st.subheader("Top plays by win probability added")
 if not revealed.empty:
     _top_wpa = top_plays_wpa(revealed, home, away)
     if not _top_wpa.empty:
-        display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "WPA"]
+        display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "EPA", "WPA"]
         if not hide_descriptions:
-            display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "Description", "WPA"]
+            display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "Description", "EPA", "WPA"]
         _top_display = _top_wpa[display_cols].copy()
         _top_display.index = range(1, len(_top_display) + 1)
 
@@ -1263,12 +1267,13 @@ if not revealed.empty:
             return "background-color: #fdecea; color: #721c24"
 
         styled_wpa = smap(_top_display.style, _wpa_color, subset=["WPA"])
-        styled_wpa = styled_wpa.format({"WPA": "{:+.3f}"})
+        styled_wpa = styled_wpa.format({"WPA": "{:+.3f}", "EPA": "{:+.2f}"}, na_rep="—")
         styled_wpa = styled_wpa.set_properties(**{"text-align": "center"}).set_table_styles(
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
         stat_table(styled_wpa)
-        st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits")
+        st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits "
+                   "· EPA = the offense's expected points added on the play")
     else:
         st.caption("No win probability data available.")
 else:

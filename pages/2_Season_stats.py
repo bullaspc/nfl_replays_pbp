@@ -37,7 +37,7 @@ QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 # The team table's column groups (replay_core.SEASON_COLS is "All").
 TEAM_VIEWS = {
     "Efficiency": ["Games", "EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR",
-                   "CMP%", "aDoT", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
+                   "CMP%", "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
@@ -407,6 +407,11 @@ only: dropbacks (no spikes), Sack % and QB Hit % (hits include sacks) per dropba
 (no kneels or scrambles), Stuff % (≤ {STUFF_MAX_YDS} yds) and Explosive Run % (≥ {EXPLOSIVE_RUN_YDS} yds)
 per designed run, and OL Penalty % (the offense's holding, false start and ineligible-downfield
 flags) per snap.
+
+**Over expected.** CPOE is completion % over expected, in percentage points: nflfastR's completion
+probability model per pass{" (the college data has none, so it's blank)" if _college else ""}. RYOE/att
+is rushing yards over expected per designed run: each run's yards less the league's average
+designed run from the same down, distance and field position (`models/xrush_yards.csv`).
 
 **Per game and colors.** Counts and yards are divided by the games each team played. Every
 colored cell is the team's percentile within its column among the ranked teams: green is best,

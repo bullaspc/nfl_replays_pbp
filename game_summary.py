@@ -204,6 +204,10 @@ def _fmt_stat(stat: str, v) -> str:
         return f"{v:+.2f}"
     if stat == "aDoT":
         return f"{v:.1f}"
+    if stat == "CPOE":
+        return f"{v:+.1f}"
+    if stat == "RYOE/att":
+        return f"{v:+.2f}"
     if stat == "TOP":
         return f"{int(v) // 60}:{int(v) % 60:02d}"
     return f"{v:.0f}"
@@ -484,7 +488,9 @@ def _situational(ctx: GameContext) -> str:
         for sit, v in ctx.situational[col].items():
             n = ctx.situational_counts.get((sit, team), {}).get(kind, 0)
             cells.append("-" if pd.isna(v) else
-                         (f"{v:.0f}% ({n})" if "SR" in metric else f"{v:+.2f} ({n})"))
+                         f"{v:.0f}% ({n})" if "SR" in metric else
+                         f"{v:+.1f}" if "CPOE" in metric else
+                         f"{v:+.2f}" if "RYOE" in metric else f"{v:+.2f} ({n})")
         out[col] = cells
     return _csv(out, index=True)
 
@@ -582,7 +588,7 @@ Ground rules:
 - Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, where each offense ran and threw (and how it worked against the league's split), explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
 
-Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate, the team's and the players', also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. A defense's numbers are what it allowed.{notes}
+Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate, the team's and the players', also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. CPOE is completion percentage over expected, in points (nflfastR's completion model); RYOE is rushing yards over expected per designed run, against the league's average run from the same down, distance and field position. A defense's numbers are what it allowed.{notes}
 
 Write the summary in Markdown, about 350 to 500 words, with this structure:
 **Headline**: one or two sentences with the score and the main reason for it.

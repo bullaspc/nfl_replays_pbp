@@ -82,6 +82,8 @@ def style_sr_table(df: pd.DataFrame,
             n = _c.get((sit, team_part), {}).get(play_type)
             if "SR%" in metric:
                 fmt_fn = lambda v, c=n: ("—" if pd.isna(v) else (f"{v:.0f}% ({c})" if c is not None else f"{v:.0f}%"))
+            elif metric in _OE_FORMATS:  # no count: the play counts are on the SR% cells
+                fmt_fn = lambda v, f=_OE_FORMATS[metric]: "—" if pd.isna(v) else f.format(v)
             else:
                 fmt_fn = lambda v, c=n: ("—" if pd.isna(v) else (f"{v:+.2f} ({c})" if c is not None else f"{v:+.2f}"))
             styled = smap(
@@ -102,6 +104,9 @@ def style_sr_table(df: pd.DataFrame,
     )
 
 
+# Over-expected stats: CPOE in percentage points, RYOE in yards per run.
+_OE_FORMATS = {"CPOE": "{:+.1f}", "RYOE/att": "{:+.2f}", "Pass CPOE": "{:+.1f}",
+               "Rush RYOE": "{:+.2f}"}
 _EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
 _RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "1st Down %", "3rd Down %", "RZ TD%"}
 _NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
@@ -134,6 +139,8 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
             fmt_str = "{:.1%}"
         elif row in _EPA_FORMAT_ROWS:
             fmt_str = "{:+.2f}"
+        elif row in _OE_FORMATS:
+            fmt_str = _OE_FORMATS[row]
         elif row == "aDoT":
             fmt_str = "{:.1f}"
         else:
@@ -294,6 +301,8 @@ def _season_format(col: str):
         f = "{:.1%}"
     elif col in _EPA_ROWS:
         f = "{:+.2f}"
+    elif col in _OE_FORMATS:
+        f = _OE_FORMATS[col]
     elif col == "aDoT" or col in SEASON_PER_GAME:
         f = "{:.1f}"
     else:
@@ -332,7 +341,7 @@ def _delta_format(stat: str, v) -> str:
     if stat in _RATE_ROWS or (stat.endswith("%") and stat not in LINE_COUNT_ROWS):
         s = f"{v:+.1%}"
     else:
-        s = f"{v:+.2f}" if stat in _EPA_ROWS else f"{v:+.1f}"
+        s = f"{v:+.2f}" if stat in _EPA_ROWS or stat == "RYOE/att" else f"{v:+.1f}"
     return s.lstrip("+-") if float(s.rstrip("%")) == 0 else s  # no "-0.0"
 
 

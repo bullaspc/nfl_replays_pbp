@@ -34,6 +34,10 @@ PBP_COLS = [
     "complete_pass", "pass_attempt", "rush_attempt", "qb_kneel", "qb_spike",
     "first_down",
     "air_yards",
+    # nflverse's completion % over expected (percentage points; NaN for live
+    # NFL and college games) and the expected rushing yards of a designed run
+    # (add_expected_rush(), from the league's table in models/)
+    "cpoe", "xrush_yards",
     "run_location", "run_gap", "pass_location", "pass_length",
     "third_down_converted", "third_down_failed",
     "fourth_down_converted", "fourth_down_failed",
@@ -234,10 +238,25 @@ def nullified_snaps(td: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return np_ & passer, np_ & ~passer & td["rusher_player_name"].notna()
 
 
+def _cpoe(passes: pd.DataFrame) -> float:
+    """Completion % over expected, in percentage points: nflfastR's per-pass
+    cpoe averaged over the passes that have one (NaN where the data has none:
+    live NFL and college games)."""
+    return float(passes["cpoe"].mean()) if "cpoe" in passes.columns else float("nan")
+
+
+def _ryoe(td: pd.DataFrame) -> float:
+    """Rushing yards over expected per designed run: rushing yards less
+    `xrush_yards` (add_expected_rush()), over the runs that have one."""
+    runs = td[_designed_runs(td)] if "xrush_yards" in td.columns else td.iloc[:0]
+    oe = (runs["rushing_yards"].fillna(0) - runs["xrush_yards"])[runs["xrush_yards"].notna()]
+    return float(oe.mean()) if len(oe) else float("nan")
+
+
 TEAM_STAT_ROWS = [
     "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
     "Pass Yds", "Rush Yds", "Total Yds",
-    "CMP%", "aDoT",
+    "CMP%", "CPOE", "aDoT", "RYOE/att",
     "Pass EPA/play", "Rush EPA/play", "EPA/play",
     "Pass SR", "Rush SR",
     "1st Down %", "3rd Down %", "RZ TD%",
@@ -264,6 +283,7 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
 
     cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
     adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
+    cpoe, ryoe = _cpoe(td[pass_mask]), _ryoe(td)
 
     # EPA and success rate also count the snaps a penalty wiped out.
     null_pass, null_rush = nullified_snaps(td)
@@ -305,7 +325,9 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         rush_yds,
         pass_yds + rush_yds,
         _rate(cmp, pass_plays),
+        cpoe,
         adot if not pd.isna(adot) else float("nan"),
+        ryoe,
         _rate(pass_epa, int(epa_pass.sum())),
         _rate(rush_epa, int(epa_rush.sum())),
         _rate(total_epa, int(epa_snaps.sum())),
@@ -359,6 +381,7 @@ BASELINE_COLS = [
     "desc", "play_type", "yards_gained", "sack", "qb_hit",
     "passer_player_name", "rusher_player_name", "receiver_player_name",
     "run_location", "run_gap", "pass_location", "pass_length",
+    "cpoe", "xrush_yards",
 ]
 
 
@@ -379,6 +402,7 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         rush_yds = int(td["rushing_yards"].fillna(0).sum())
         cmp      = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
         adot     = td.loc[pass_mask, "air_yards"].mean()
+        cpoe, ryoe = _cpoe(td[pass_mask]), _ryoe(td)
         null_pass, null_rush = nullified_snaps(td)
         epa_pass, epa_rush = pass_mask | null_pass, rush_mask | null_rush
         epa_sc   = epa_pass | epa_rush
@@ -405,7 +429,9 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "Rush Yds":     rush_yds,
             "Total Yds":    pass_yds + rush_yds,
             "CMP%":         _rate(cmp, pp),
+            "CPOE":         cpoe,
             "aDoT":         adot,
+            "RYOE/att":     ryoe,
             "Pass EPA/play":_rate(pass_epa, int(epa_pass.sum())),
             "Rush EPA/play":_rate(rush_epa, int(epa_rush.sum())),
             "EPA/play":     _rate(tot_epa,  int(epa_sc.sum())),
@@ -467,6 +493,59 @@ def _designed_runs(td: pd.DataFrame) -> pd.Series:
     scramble = td["desc"].fillna("").str.contains("scrambles", case=False, regex=False)
     return (td["down"].notna() & (td["rush_attempt"].fillna(0) == 1)
             & (td["qb_kneel"].fillna(0) == 0) & ~scramble)
+
+
+# ---------- Expected rushing yards ----------
+# Rushing yards over expected (RYOE) without tracking data: a designed run's
+# expected yards are the average of the league's designed runs from the same
+# down, distance and field position (a 5-yard band near the goal line, wider
+# further out), fitted by tools/build_xrush_table.py into
+# models/xrush_yards.csv, one table per league. A cell with fewer than
+# XRUSH_MIN_RUNS runs falls back to down × distance.
+XRUSH_DIST_BINS = [0, 1, 3, 6, 10, 99]                # ydstogo: 1, 2–3, 4–6, 7–10, 11+
+XRUSH_FIELD_BINS = [0, 2, 5, 10, 20, 40, 60, 80, 99]  # yardline_100
+XRUSH_KEYS = ["down", "dist_bin", "field_bin"]
+XRUSH_MIN_RUNS = 50
+
+
+def _xrush_bins(plays: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "down": plays["down"],
+        "dist_bin": pd.cut(plays["ydstogo"], XRUSH_DIST_BINS, labels=False),
+        "field_bin": pd.cut(plays["yardline_100"], XRUSH_FIELD_BINS, labels=False),
+    }, index=plays.index)
+
+
+def fit_expected_rush(pbp: pd.DataFrame) -> pd.DataFrame:
+    """The expected-yards table (`XRUSH_KEYS`, xyds, runs) from the designed
+    runs in `pbp`: every down × distance × field cell, its own mean where it
+    has `XRUSH_MIN_RUNS` runs, else its down × distance mean."""
+    runs = pbp[_designed_runs(pbp)]
+    keys = _xrush_bins(runs).assign(yds=runs["rushing_yards"].fillna(0)).dropna(subset=XRUSH_KEYS)
+    cells = keys.groupby(XRUSH_KEYS)["yds"].agg(xyds="mean", runs="size").reset_index()
+    coarse = keys.groupby(["down", "dist_bin"])["yds"].mean().rename("_coarse").reset_index()
+    grid = pd.MultiIndex.from_product(
+        [[1, 2, 3, 4], range(len(XRUSH_DIST_BINS) - 1), range(len(XRUSH_FIELD_BINS) - 1)],
+        names=XRUSH_KEYS).to_frame(index=False)
+    t = grid.merge(cells, on=XRUSH_KEYS, how="left").merge(coarse, on=["down", "dist_bin"], how="left")
+    t["runs"] = t["runs"].fillna(0).astype(int)
+    t["xyds"] = t["xyds"].where(t["runs"] >= XRUSH_MIN_RUNS, t["_coarse"]).fillna(keys["yds"].mean())
+    return t[[*XRUSH_KEYS, "xyds", "runs"]]
+
+
+def add_expected_rush(pbp: pd.DataFrame, table: pd.DataFrame | None) -> pd.DataFrame:
+    """`pbp` with `xrush_yards`: a designed run's expected yards from
+    `table` (fit_expected_rush()), NaN on every other play or without a
+    table."""
+    out = pbp.copy()
+    out["xrush_yards"] = np.nan
+    if table is None or table.empty or pbp.empty:
+        return out
+    runs = _designed_runs(pbp)
+    bins = _xrush_bins(pbp[runs]).reset_index()
+    xy = bins.merge(table[[*XRUSH_KEYS, "xyds"]], on=XRUSH_KEYS, how="left").set_index("index")["xyds"]
+    out.loc[xy.index, "xrush_yards"] = xy.astype(float)
+    return out
 
 
 def _line_stats(td: pd.DataFrame) -> dict[str, float]:
@@ -635,13 +714,14 @@ SR_SUBTOTALS = [
     ("Early · Total",  (1, 2), (0, 99)),
     ("Late · Total",   (3, 4), (0, 99)),
 ]
-SR_METRICS = ["Pass SR%", "Pass EPA/play", "Rush SR%", "Rush EPA/play"]
+SR_METRICS = ["Pass SR%", "Pass EPA/play", "Pass CPOE", "Rush SR%", "Rush EPA/play", "Rush RYOE"]
 
 
 def _situation_row(plays: pd.DataFrame) -> dict[str, float]:
     """`SR_METRICS` for one team's plays in one situation: success rate (EPA
     > 0) and EPA/play on passes without spikes and runs without kneels, and
-    the ones a penalty wiped out."""
+    the ones a penalty wiped out; CPOE on the passes and RYOE per designed
+    run (`_cpoe()`, `_ryoe()`)."""
     null_pass, null_rush = nullified_snaps(plays)
     pass_plays = plays[((plays["pass_attempt"].fillna(0) == 1) & (plays["qb_spike"].fillna(0) == 0))
                        | null_pass]
@@ -657,8 +737,10 @@ def _situation_row(plays: pd.DataFrame) -> dict[str, float]:
     return {
         "Pass SR%": _sr(pass_plays),
         "Pass EPA/play": _epa_per_play(pass_plays),
+        "Pass CPOE": _cpoe(pass_plays),
         "Rush SR%": _sr(rush_plays),
         "Rush EPA/play": _epa_per_play(rush_plays),
+        "Rush RYOE": _ryoe(rush_plays),
         "_pass": len(pass_plays),
         "_rush": len(rush_plays),
     }
@@ -2090,8 +2172,9 @@ def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> 
     )
     plays["D&D"] = plays.apply(down_distance, axis=1)
     plays["WPA"] = plays["_wpa"].round(3)
+    plays["EPA"] = pd.to_numeric(plays["epa"], errors="coerce").round(2)
     plays["For"] = plays["_wpa"].apply(lambda x: home if x > 0 else away)
-    return plays[["Q", "time", "posteam", "D&D", "Score", "For", "desc", "WPA", "_abs_wpa"]].rename(
+    return plays[["Q", "time", "posteam", "D&D", "Score", "For", "desc", "EPA", "WPA", "_abs_wpa"]].rename(
         columns={"time": "Clock", "posteam": "Off", "desc": "Description"}
     ).reset_index(drop=True)
 
