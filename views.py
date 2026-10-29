@@ -12,8 +12,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (EDGE_EVEN, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+                         PLAY_SPLIT_GROUPS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
@@ -104,19 +104,64 @@ def style_sr_table(df: pd.DataFrame,
     )
 
 
+def _pct_cell(arr) -> object:
+    """A cell styler coloring a value by its percentile in sorted `arr`."""
+    def _cell(val):
+        if pd.isna(val) or arr is None or len(arr) == 0:
+            return ""
+        return percentile_color(percentile_of(float(val), arr))
+    return _cell
+
+
+def _center(styled):
+    return (styled.set_properties(**{"text-align": "center"})
+            .set_table_styles([{"selector": "th", "props": [("text-align", "center"),
+                                                            ("font-weight", "bold")]}]))
+
+
+def style_series_table(df: pd.DataFrame, baselines: dict | None = None):
+    """A `replay_core.series_success` table: each team's SCR colored by
+    percentile vs `baselines` (team-games, by row), series counts plain."""
+    baselines = baselines or {}
+    styled = df.style.format("{:.0f}", subset=[c for c in df.columns if c.endswith(" #")])
+    for col in [c for c in df.columns if c.endswith(" SCR")]:
+        styled = styled.format("{:.1%}", subset=[col], na_rep="—")
+        for row in df.index:
+            styled = smap(styled, _pct_cell(baselines.get(row)), subset=pd.IndexSlice[row, col])
+    return _center(styled)
+
+
+def style_play_splits(df: pd.DataFrame, baselines: dict | None = None):
+    """A `replay_core.play_splits` table: EPA/play, SR and 1st% colored by
+    percentile vs `baselines` (team-games, by row and rate); the down-group
+    rows bold."""
+    baselines = baselines or {}
+    styled = (df.style.format("{:+.2f}", subset=["EPA/play"], na_rep="—")
+              .format("{:.0f}%", subset=["SR", "1st%"], na_rep="—")
+              .format("{:.0f}", subset=["Plays"]))
+    for row in df.index:
+        for col in ("EPA/play", "SR", "1st%"):
+            styled = smap(styled, _pct_cell(baselines.get(row, {}).get(col)),
+                          subset=pd.IndexSlice[row, col])
+    groups = [r for r in PLAY_SPLIT_GROUPS if r in df.index]
+    styled = styled.set_properties(subset=pd.IndexSlice[groups, :], **{"font-weight": "bold"})
+    return _center(styled)
+
+
 # Over-expected stats: CPOE in percentage points, RYOE in yards per run.
 _OE_FORMATS = {"CPOE": "{:+.1f}", "RYOE/att": "{:+.2f}", "Pass CPOE": "{:+.1f}",
                "Rush RYOE": "{:+.2f}"}
 _EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
 _RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%"}
-_NO_COLOR_ROWS   = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays", "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS
 
 
 def style_stat_table(df: pd.DataFrame, away: str, home: str,
-                     baselines: dict | None = None):
-    """Return a pandas Styler with percentile-based diverging colors and EPA coloring."""
+                     baselines: dict | None = None, final: bool = False):
+    """Return a pandas Styler with percentile-based diverging colors and EPA
+    coloring. The game totals (`GAME_TOTAL_ROWS`) are colored only once the
+    game is `final`."""
     if baselines is None:
         baselines = {}
 
@@ -152,7 +197,7 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
             styled = smap(styled, _color_epa, subset=pd.IndexSlice[row, :])
 
     for row in df.index:
-        if row in _EPA_ROWS or row in _NO_COLOR_ROWS:
+        if row in _EPA_ROWS or (row in GAME_TOTAL_ROWS and not final):
             continue
         arr   = baselines.get(row, np.array([]))
         lower = row in LOWER_IS_BETTER
@@ -203,7 +248,8 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
     )
 
 
-_PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}"}
+_PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}",
+                   "Total EPA": "{:+.1f}"}
 def style_defense_table(df: pd.DataFrame):
     """A defensive leaders table: counts, shown as 1 or 0.5 (half sacks and
     half TFLs) rather than 1.0."""
