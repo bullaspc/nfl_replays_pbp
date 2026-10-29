@@ -733,7 +733,7 @@ class MatchupContext:
     away: str
     home: str
     when: str                       # "Week 7, Sun 2026-10-25", plus "neutral site"
-    line: str                       # "CHI favored by 3, total 50.5"; "" without one
+    line: str                       # "Bears favored by 3, total 50.5"; "" without one
     selection: str                  # which games and how the season numbers are taken
     n_teams: int                    # how many teams the places are among
     # offense team → replay_core.matchup_table / situational_matchup against
@@ -754,6 +754,12 @@ class MatchupContext:
     # report doesn't show (off the roster, or back); empty without snap counts
     lineup_groups: dict[str, pd.Series] = field(default_factory=dict)
     lineup_players: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # team → its name ("Bears", "Texas Tech"), for the preview's prose; the
+    # tables keep the abbreviations
+    names: dict[str, str] = field(default_factory=dict)
+
+    def name(self, team: str) -> str:
+        return self.names.get(team, team)
 
 
 def _fmt_season(stat: str, v) -> str:
@@ -802,6 +808,10 @@ def situational_rows(df: pd.DataFrame, offense: str, defense: str) -> pd.DataFra
 def matchup_snapshot(ctx: MatchupContext) -> str:
     """The Matchup page as text."""
     parts = [f"Game: {ctx.away} (away) at {ctx.home} (home), {ctx.when}"]
+    named = [t for t in (ctx.away, ctx.home) if ctx.name(t) != t]
+    if named:
+        parts.append("Team names: " + ", ".join(f"{t} = {ctx.name(t)}" for t in named)
+                     + ". The tables use the abbreviations; write the names.")
     if ctx.line:
         parts.append(f"Betting line: {ctx.line}")
     parts.append(f"Season numbers: {ctx.selection}. Places are among the {ctx.n_teams} teams; "
@@ -862,6 +872,7 @@ Ground rules:
 - Use only the numbers given. Don't bring in outside knowledge of these teams, players, injuries or news: it may be out of date, and the tables are the season so far.
 - Each team's offense meets the other's defense. Pick the two to four unit-against-unit matchups that matter most, with the biggest edges first: EPA/play and success rate, then turnovers, pass protection and pressure, run blocking (stuffs, explosive runs), 3rd downs and the red zone. Give the numbers and places behind each. Say where a strength meets a strength.
 - Don't predict a final score. Say which team the numbers favor and how clearly; if there's a betting line, say whether the numbers agree with it (the line usually knows more than season stats do).
+- Call the teams by their names where the snapshot gives them ("the Bears", "Texas Tech"), not by abbreviation.
 - Season numbers over a few games, and down-and-distance cells with few plays, are noisy. Say so when it matters.
 - If injury reports are given, weigh them: a starter who is Out or Doubtful takes his unit's season numbers with him, so say which matchup it changes and how much he plays (his snap share), e.g. two starting offensive linemen out against a strong pass rush. A Questionable player may play. The lineup lines count the same way, and add starters on injured reserve (not on the report) and starters back. Where "proj w/ lineup" is given, it already counts the players gone from both lineups: use it instead of proj for those stats, and say when it moves a matchup. Players back aren't in it: in backtests they made no measurable difference, so don't promise a lift from one. Mention only players the reports and lineup lines list, and if there are none, don't bring up anyone's health.
 
@@ -887,7 +898,7 @@ def preview(ctx: MatchupContext, provider: Provider, progress: Progress | None =
     progress.status, progress.calls = "Reading the matchup", 1
     resp = _call(_client(provider), provider, max_tokens=16000, system=matchup_prompt(ctx.league),
                  messages=[{"role": "user", "content": (
-                     matchup_snapshot(ctx) + f"\n\nPreview {ctx.away} at {ctx.home}.")}])
+                     matchup_snapshot(ctx) + f"\n\nPreview {ctx.name(ctx.away)} at {ctx.name(ctx.home)}.")}])
     progress.status = "Done"
     return Summary(_final_text(resp), resp.model, [])
 

@@ -68,6 +68,14 @@ except leagues.GameLoadError as e:
     st.title(f"🆚 {league.name} Matchup")
     st.warning(f"{e} A matchup needs games played this season.")
     st.stop()
+# Names outside the tables ("Bears", "Texas Tech"); tables keep abbreviations,
+# which fit a phone's width.
+names = league.team_names(season, stamp)
+
+
+def nm(team: str) -> str:
+    return names.get(team, team)
+
 
 # Only games between two teams with season numbers (not an FCS opponent).
 if not upcoming.empty:
@@ -129,14 +137,14 @@ def_table = season_qualified(tables["defense"], SEASON_MIN_PLAYS)
 away, home = game["away_team"], game["home_team"]
 short = [t for t in (away, home) if t not in off_table.index or t not in def_table.index]
 if short:
-    st.title(f"🆚 {away} @ {home}")
-    st.info(f"{' and '.join(short)} {'has' if len(short) == 1 else 'have'} fewer than "
+    st.title(f"🆚 {nm(away)} @ {nm(home)}")
+    st.info(f"{' and '.join(map(nm, short))} {'has' if len(short) == 1 else 'have'} fewer than "
             f"{SEASON_MIN_PLAYS} plays in this selection.")
     st.stop()
 
 _, logos, _ = league.team_meta(season, stamp)
 tints = dict(zip((away, home), MATCHUP_TINTS))
-tint_note = f"orange when {away} has it, blue when {home} does"
+tint_note = f"orange for {nm(away)}, blue for {nm(home)}"
 # The college feed has no QB hits (its QB Hit % would only repeat Sack %)
 # and no completion model (CPOE).
 rows = matchup_stats(off_table, tables["missing"])
@@ -208,21 +216,16 @@ def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
 
 kick = pd.Timestamp(game["game_date"])
 when = f"{week} · {kick:%a %b} {kick.day}" + (" · neutral site" if game.get("neutral") else "")
-spread, total = game.get("home_spread"), game.get("total")
-line = ""
-if pd.notna(spread):
-    line = ("Pick'em" if spread == 0 else
-            f"{home if spread > 0 else away} favored by {abs(spread):g}")
-if pd.notna(total):
-    line += (", " if line else "") + f"total {total:g}"
+line = leagues.betting_line(nm(home), nm(away), game.get("home_spread"), game.get("total"))
 
 # ---------- Header ----------
 st.markdown(
     "<div style='display:flex;align-items:center;justify-content:center;"
     "gap:clamp(8px,3vw,24px);margin:0.25rem 0 0.5rem'>"
     f"{logo_img(away, logos)}"
-    f"<div style='font-size:clamp(1.3rem,6vw,2.4rem);font-weight:700;white-space:nowrap'>"
-    f"{away} @ {home}</div>"
+    # Names can be long ("Florida International"): they wrap on a phone.
+    f"<div style='font-size:clamp(1.3rem,6vw,2.4rem);font-weight:700;text-align:center;"
+    f"line-height:1.2'>{nm(away)} @ {nm(home)}</div>"
     f"{logo_img(home, logos)}</div>",
     unsafe_allow_html=True)
 st.markdown(f"<div style='text-align:center'>{when}" + (f" · {line}" if line else "") + "</div>",
@@ -269,6 +272,7 @@ else:
         _shown = ["Player", "Pos", "Status", "Snaps", "Starter", "Practice", "Injury"]
         _ctx = game_summary.MatchupContext(
             league=league.key, away=away, home=home, when=when.replace(" · ", ", "), line=line,
+            names={t: nm(t) for t in (away, home)},
             selection=sel_note.replace(" · ", ", "), n_teams=n_teams,
             matchups=matchups, situational=situational, leaders=_leaders,
             injuries={t: reports[t][_shown] for t in (away, home)}, injury_units=report_units,
@@ -332,7 +336,7 @@ elif avail.injuries.empty:
 else:
     for col, team in zip(st.columns(2), (away, home)):
         with col:
-            st.markdown(f"**{team}** · week {game_week} injury report")
+            st.markdown(f"**{nm(team)}** · week {game_week} injury report")
             if reports[team].empty:
                 st.caption("Not filed yet: teams file the first one about three days before the game.")
             else:
@@ -340,7 +344,7 @@ else:
                     stat_table(style_availability_summary(report_units[team]), hide_index=True)
                 stat_table(style_injury_report(reports[team]), hide_index=True)
             if not avail.snaps.empty:
-                st.markdown(f"**{team}** · lineup vs the season numbers")
+                st.markdown(f"**{nm(team)}** · lineup vs the season numbers")
                 stat_table(style_lineup_groups(lineup_net[team]), hide_index=True)
                 if not _off_report(team).empty:
                     stat_table(style_lineup_change(_off_report(team)), hide_index=True)
@@ -364,7 +368,7 @@ st.subheader("Matchups")
 _epa = LINEUP_EFFECTS["EPA/play"]
 for col, (off, def_) in zip(st.columns(2), ((away, home), (home, away))):
     with col:
-        st.markdown(f"**When {off} has the ball** · {off} offense vs {def_} defense")
+        st.markdown(f"**{nm(off)} offense** vs {nm(def_)} defense")
         stat_table(style_matchup_table(matchups[off], off, def_, tints))
 st.caption(
     "Each value carries its place among the teams (for a defense, allowing less is better and "
@@ -379,7 +383,7 @@ st.caption(
        f"each lineman or skill player, and {_epa['Front']:.2f} more for each starter the defense "
        "is missing. Players back aren't counted: they've made no measurable difference."
        if has_lineup else "")
-    + (f" {' and '.join(no_status)} {'has' if len(no_status) == 1 else 'have'} no game statuses "
+    + (f" {' and '.join(map(nm, no_status))} {'has' if len(no_status) == 1 else 'have'} no game statuses "
        "on the report yet (they come on the final one, the day before the game), so w/ lineup "
        "counts only roster moves." if no_status else ""))
 
@@ -390,14 +394,15 @@ side_label = st.segmented_control("Side", list(SIDES), default="Offense", key="_
 side = SIDES[side_label]
 h2h = head_to_head(off_table if side == "posteam" else def_table, away, home, side, rows)
 stat_table(style_head_to_head(h2h, away, home, tints))
-st.caption(f"{side_label}: each team's value and place. **Δ** is {away} − {home} in the stat's "
+st.caption(f"{side_label}: each team's value and place. **Δ** is {nm(away)} ({away}) − "
+           f"{nm(home)} ({home}) in the stat's "
            f"units (rates in points of percent), tinted for the team that ranks better: "
            f"{tint_note} (none within {EDGE_EVEN} percentile points).")
 
 # ---------- Down and distance ----------
 st.subheader("By down and distance")
 for off, def_ in ((away, home), (home, away)):  # stacked: seven columns each
-    st.markdown(f"**When {off} has the ball** · O = {off} offense, D = {def_} defense allowed")
+    st.markdown(f"**{nm(off)} offense** vs {nm(def_)} defense · O = offense, D = defense allowed")
     stat_table(style_situational_matchup(situational[off], off, def_, tints))
 st.caption("Success rate (EPA > 0), the season's plays in brackets. Early downs are 1st–2nd, late 3rd–4th; "
            "short is 1–3 yards to go, medium 4–6, long 7+. Passes include sacks but not spikes, "
@@ -412,7 +417,7 @@ player_min = {k: max(1, round(PLAYER_MIN_PLAYS[k] * games_max * tables["play_sha
 player_dists = season_player_distributions({k: tables[k] for k in PLAYER_MIN_PLAYS}, player_min)
 for col, team in zip(st.columns(2), (away, home)):
     with col:
-        st.markdown(f"**{team}**")
+        st.markdown(f"**{nm(team)}**")
         for kind, n in LEADERS:
             df = tables[kind]
             df = df[df["Team"] == team].drop(columns="Team").head(n) if not df.empty else df
@@ -440,7 +445,7 @@ each team's schedule out, as on the Season stats page.
 
 **Matchups** set one team's offense against the other's defense. Every value is ranked among the
 {n_teams} teams and turned into a percentile (100 = best). **Edge** is the offense's percentile less the
-defense's: "{away} 30" means {away}'s unit ranks 30 percentile points better than the one it faces.
+defense's: "{away} 30" means the {nm(away)} unit ranks 30 percentile points better than the one it faces.
 **Proj.** starts from the league average and adds how far the offense and the defense each sit from
 it (the same additive view of offense and defense the opponent adjustment uses), kept at
 {PROJ_SHRINK:.0%}: in NFL backtests (`tools/validate_matchup.py`: each regular-season week from week 4
@@ -452,7 +457,7 @@ next: an edge there says more about the season than about the game. The projecte
 picked 58–68% of winners opponent-adjusted (60–67% as played); the betting favorite 63–74%. It
 knows nothing of weather, and of injuries only through **w/ lineup**.
 
-**Head to head** compares like with like. Δ is {away} − {home}; whether more is better depends on
+**Head to head** compares like with like. Δ is {nm(away)} − {nm(home)}; whether more is better depends on
 the stat, so the tint, not the sign, says who's better.
 
 **Down and distance** splits the success rates by down and distance. Small samples are noisy, so
