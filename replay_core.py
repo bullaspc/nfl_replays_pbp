@@ -1076,6 +1076,7 @@ def top_players(revealed: pd.DataFrame, team: str, kind: str, n: int = 3,
     int_cols = [c for c in g.select_dtypes("number").columns if c not in ("_epa", "_plays", "aDOT", "EPA/play", "SR%")]
     g[int_cols] = g[int_cols].astype(int)
     g["EPA/play"] = (g["_epa"] / g["_plays"]).round(2)
+    g["Total EPA"] = g["_epa"].round(1)
     g = g.drop(columns=["_epa", "_plays", *[c for c in drop if c in g.columns]])
     return g.sort_values("Yds", ascending=False).head(n)
 
@@ -1599,6 +1600,11 @@ def adjust_players(df: pd.DataFrame, pbp: pd.DataFrame, kind: str,
             s.groupby(["posteam", name])["n"].sum()
         out[col] = (out[col] - faced.reindex(key).fillna(0.0).to_numpy()).round(
             1 if col == "SR%" else 2)
+        if col == "EPA/play" and "Total EPA" in out.columns:
+            # The total less the strength of each defense, once per play against it.
+            faced_sum = (s["_s"] * s["n"]).groupby([s["posteam"], s[name]]).sum()
+            out["Total EPA"] = (out["Total EPA"]
+                                - faced_sum.reindex(key).fillna(0.0).to_numpy()).round(1)
     return out
 
 

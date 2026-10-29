@@ -247,7 +247,8 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
     )
 
 
-_PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}"}
+_PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}",
+                   "Total EPA": "{:+.1f}"}
 def style_defense_table(df: pd.DataFrame):
     """A defensive leaders table: counts, shown as 1 or 0.5 (half sacks and
     half TFLs) rather than 1.0."""
