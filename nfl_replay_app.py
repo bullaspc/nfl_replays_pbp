@@ -32,7 +32,7 @@ from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
-    run_tendencies, scoring_timeline, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
+    run_tendencies, scoring_timeline, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
 )
@@ -40,7 +40,7 @@ from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
-    style_scoring_timeline, style_sr_table, style_stat_table, ticker_html, time_bar_html,
+    style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
 
@@ -1072,6 +1072,25 @@ sr_df, _sit_counts = situational_success_rate(revealed, home, away,
                                               subtotals=_sr_subtotals)
 _sit_baselines = leagues.situational_baselines(league, season)
 stat_table(style_sr_table(sr_df, _sit_baselines, _sit_counts))
+
+_series_base = leagues.series_baselines(league, season)
+st.markdown("**Series success**")
+stat_table(style_series_table(series_success(revealed, [away, home]),
+                              _series_base.get("series")))
+st.caption("Series Conversion Rate (SCR): the share of series starting on 1st down that "
+           "earn a new first down or a touchdown, over every series and by the series' first "
+           "snap (# = series). A punt, field goal try, turnover or failed 4th down ends a "
+           "series unconverted; a series still going isn't counted yet, nor one opened by a kneel.")
+st.markdown("**By play type**")
+col_a, col_h = st.columns(2)
+for col, team in [(col_a, away), (col_h, home)]:
+    with col:
+        st.markdown(f"**{team}**")
+        stat_table(style_play_splits(play_splits(revealed, team), _series_base.get("splits")))
+st.caption("EPA/play and SR (EPA > 0) count snaps a penalty wiped out, as above; 1st% is the "
+           "share of real plays that earned a first down. Early downs = 1st–2nd, late = 3rd–4th; "
+           "no kneels or spikes. Colors show percentile vs team games in the "
+           f"{league.baseline_label}.")
 
 # ---------- Line play ----------
 st.subheader("Line play")

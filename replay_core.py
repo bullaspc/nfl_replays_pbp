@@ -823,6 +823,162 @@ def situational_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarr
     return result
 
 
+# ---------- Series success ----------
+# A series starts on a 1st down and runs to the next 1st down or the end of
+# the drive; it converts if it earns a new first down or a touchdown. Series
+# Conversion Rate (SCR) is the share that convert, over every series and by
+# the series' first snap (a nullified pass or run counts as what it was;
+# pre-snap flags are skipped). Series opened by a kneel are left out.
+SERIES_ROWS = {"All series": None, "Started with rush": "Rush", "Started with pass": "Pass"}
+_SERIES_COLS = ["game_id", "posteam", "defteam", "start", "converted"]
+
+
+def _snap_kind(plays: pd.DataFrame) -> pd.Series:
+    """"Pass", "Rush", "Kneel" or None per row; a penalty-nullified snap
+    counts as the pass or run it was."""
+    null_pass, null_rush = nullified_snaps(plays)
+    kneel = plays["qb_kneel"].fillna(0) == 1
+    is_pass = (plays["pass_attempt"].fillna(0) == 1) | null_pass
+    is_rush = ((plays["rush_attempt"].fillna(0) == 1) | null_rush) & ~kneel
+    return pd.Series(np.select([is_pass, is_rush, kneel], ["Pass", "Rush", "Kneel"], None),
+                     index=plays.index)
+
+
+def series_list(plays: pd.DataFrame) -> pd.DataFrame:
+    """One row per series in `plays` (`_SERIES_COLS`). The last series is left
+    out while it's still going: not converted, its drive still the last row's,
+    and no punt, field goal, turnover or 4th-down snap ending it."""
+    d = plays[plays["down"].notna() & plays["posteam"].notna()]
+    if d.empty:
+        return pd.DataFrame(columns=_SERIES_COLS)
+    game = d["game_id"].astype(str) if "game_id" in d.columns else pd.Series("", index=d.index)
+    key = game + "|" + d["drive"].astype(str) + "|" + d["posteam"].astype(str)
+    new_drive = key != key.shift()
+    prev_first = d["first_down"].fillna(0).shift().eq(1)
+    # A 1st down after a 2nd–4th down opens a series too, should a feed miss
+    # the first_down flag; a 1st & 15 after a flag doesn't.
+    prev_later = d["down"].shift().isin([2, 3, 4]) & (d["down"] == 1)
+    sid = (new_drive | prev_first | prev_later).cumsum()
+    # The offense's own touchdown: no return of a turnover or a kick.
+    own_td = ((d["touchdown"].fillna(0) == 1) & d["play_type"].isin(["pass", "run"])
+              & (d["interception"].fillna(0) == 0) & (d["fumble_lost"].fillna(0) == 0))
+    terminal = (d["play_type"].isin(["punt", "field_goal"])
+                | (d["interception"].fillna(0) == 1) | (d["fumble_lost"].fillna(0) == 1)
+                | ((d["down"] == 4) & d["play_type"].isin(["pass", "run"])))
+    s = pd.DataFrame({"game_id": game, "posteam": d["posteam"], "defteam": d.get("defteam"), "sid": sid, "key": key,
+                      "kind": _snap_kind(d),
+                      "conv": (d["first_down"].fillna(0) == 1) | own_td,
+                      "terminal": terminal})
+    out = s.groupby("sid", sort=True).agg(
+        game_id=("game_id", "first"), posteam=("posteam", "first"),
+        defteam=("defteam", "first"), key=("key", "first"),
+        start=("kind", "first"),  # first non-null: pre-snap flags have no kind
+        converted=("conv", "any"), ended=("terminal", "any"))
+    last = out.iloc[-1]
+    last_row = plays.iloc[-1]
+    last_key = (str(last_row.get("game_id", "")) if "game_id" in plays.columns else "") \
+        + "|" + str(last_row["drive"]) + "|" + str(last_row["posteam"])
+    if not last["converted"] and not last["ended"] and last["key"] == last_key:
+        out = out.iloc[:-1]
+    out = out[out["start"].isin(["Pass", "Rush"])]
+    return out[_SERIES_COLS].reset_index(drop=True)
+
+
+def series_success(plays: pd.DataFrame, teams: list, side: str = "posteam") -> pd.DataFrame:
+    """SCR per `SERIES_ROWS` row for each team in `teams` (`side` posteam:
+    its offense; defteam: what its defense allowed): columns "{team} #"
+    (series) and "{team} SCR" (a 0–1 rate)."""
+    s = series_list(plays)
+    cols = {}
+    for team in teams:
+        ts = s[s[side] == team]
+        n, rate = [], []
+        for start in SERIES_ROWS.values():
+            sel = ts if start is None else ts[ts["start"] == start]
+            n.append(len(sel))
+            rate.append(sel["converted"].mean() if len(sel) else float("nan"))
+        cols[f"{team} #"] = n
+        cols[f"{team} SCR"] = rate
+    return pd.DataFrame(cols, index=list(SERIES_ROWS))
+
+
+def series_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
+    """SCR per `SERIES_ROWS` row over every team-game in `raw`, sorted."""
+    s = series_list(raw)
+    out = {}
+    for label, start in SERIES_ROWS.items():
+        sel = s if start is None else s[s["start"] == start]
+        out[label] = np.sort(sel.groupby(["game_id", "posteam"])["converted"].mean().values)
+    return out
+
+
+# ---------- Play-type splits ----------
+# EPA/play, success rate, first-down rate and snaps by play type and down
+# group. EPA and SR count the snaps a penalty wiped out, as Situational
+# success does; 1st% is over real plays only. No kneels or spikes.
+PLAY_SPLITS = [
+    ("All plays",   (1, 4), None),
+    ("Rush",        (1, 4), "Rush"),
+    ("Pass",        (1, 4), "Pass"),
+    ("Early downs", (1, 2), None),
+    ("Early rush",  (1, 2), "Rush"),
+    ("Early pass",  (1, 2), "Pass"),
+    ("Late downs",  (3, 4), None),
+    ("Late rush",   (3, 4), "Rush"),
+    ("Late pass",   (3, 4), "Pass"),
+]
+PLAY_SPLIT_GROUPS = ["All plays", "Early downs", "Late downs"]
+PLAY_SPLIT_METRICS = ["EPA/play", "SR", "1st%", "Plays"]
+
+
+def _split_snaps(plays: pd.DataFrame) -> pd.DataFrame:
+    """The snaps `play_splits()` counts: kind, down, EPA, success and the
+    first-down flag (NaN on nullified snaps)."""
+    kind = _snap_kind(plays)
+    spike = plays["qb_spike"].fillna(0) == 1
+    keep = kind.isin(["Pass", "Rush"]) & ~spike & plays["down"].between(1, 4)
+    p = plays[keep]
+    null_pass, null_rush = nullified_snaps(p)
+    epa = p["epa"].fillna(0)
+    return pd.DataFrame({
+        "game_id": p["game_id"] if "game_id" in p.columns else "",
+        "posteam": p["posteam"], "defteam": p.get("defteam"),
+        "kind": kind[keep], "down": p["down"], "epa": epa, "success": (epa > 0) * 100.0,
+        "first": (p["first_down"].fillna(0) * 100.0).where(~(null_pass | null_rush)),
+    }, index=p.index)
+
+
+def _split_mask(snaps: pd.DataFrame, downs, kind) -> pd.Series:
+    m = snaps["down"].between(*downs)
+    return m if kind is None else m & (snaps["kind"] == kind)
+
+
+def play_splits(plays: pd.DataFrame, team: str, side: str = "posteam") -> pd.DataFrame:
+    """`PLAY_SPLIT_METRICS` per `PLAY_SPLITS` row for one team's offense
+    (or, with side="defteam", what its defense allowed)."""
+    s = _split_snaps(plays)
+    s = s[s[side] == team]
+    rows = {}
+    for label, downs, kind in PLAY_SPLITS:
+        sel = s[_split_mask(s, downs, kind)]
+        rows[label] = {"EPA/play": sel["epa"].mean(), "SR": sel["success"].mean(),
+                       "1st%": sel["first"].mean(), "Plays": len(sel)}
+    return pd.DataFrame.from_dict(rows, orient="index")[PLAY_SPLIT_METRICS]
+
+
+def play_split_distributions(raw: pd.DataFrame) -> dict[str, dict[str, np.ndarray]]:
+    """Per `PLAY_SPLITS` row, each rate's sorted values over every team-game
+    in `raw`."""
+    s = _split_snaps(raw[raw["posteam"].notna()])
+    out = {}
+    for label, downs, kind in PLAY_SPLITS:
+        g = s[_split_mask(s, downs, kind)].groupby(["game_id", "posteam"])
+        out[label] = {"EPA/play": np.sort(g["epa"].mean().values),
+                      "SR": np.sort(g["success"].mean().values),
+                      "1st%": np.sort(g["first"].mean().dropna().values)}
+    return out
+
+
 # ---------- Player leaders ----------
 PLAYER_NAME_COL = {"passing": "passer_player_name", "rushing": "rusher_player_name",
                    "receiving": "receiver_player_name"}

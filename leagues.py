@@ -784,6 +784,16 @@ def _situational_baselines(league: str, season: int) -> dict[str, dict[str, np.n
 
 
 @st.cache_data(ttl=86400)
+def _series_baselines(league: str, season: int) -> dict[str, dict]:
+    try:
+        raw = LEAGUES[league].baseline_pbp(season)
+    except Exception:
+        return {}
+    return {} if raw is None else {"series": core.series_distributions(raw),
+                                   "splits": core.play_split_distributions(raw)}
+
+
+@st.cache_data(ttl=86400)
 def _line_baselines(league: str, season: int) -> dict[str, np.ndarray]:
     try:
         raw = LEAGUES[league].baseline_pbp(season)
@@ -824,6 +834,13 @@ def player_baselines(league: League, season: int) -> dict[str, dict[str, np.ndar
 def line_baselines(league: League, season: int) -> dict[str, np.ndarray]:
     """Line play percentile baselines for `season`, by stat."""
     return _line_baselines(league.name, season)
+
+
+def series_baselines(league: League, season: int) -> dict[str, dict]:
+    """Series success ("series": SCR by `core.SERIES_ROWS` row) and play-type
+    split ("splits": by `core.PLAY_SPLITS` row and rate) baselines for
+    `season`, over team-games."""
+    return _series_baselines(league.name, season)
 
 
 def stat_baselines(league: League, season: int) -> dict[str, np.ndarray]:
