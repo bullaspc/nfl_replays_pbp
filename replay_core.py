@@ -1467,9 +1467,20 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
 # among the season's teams) against each other for a game not played yet.
 # Head to head compares like with like (offense with offense, defense with
 # defense); a matchup sets one team's offense against the other's defense.
-MATCHUP_ROWS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "CMP%", "aDoT",
-                "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss.", "Sack %", "QB Hit %",
+MATCHUP_ROWS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "ED SR", "CMP%",
+                "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss.", "Sack %", "QB Hit %",
                 "Stuff %", "Explosive Run %", "Total Yds", "Pass Yds", "Rush Yds", "Plays"]
+
+
+def matchup_stats(table: pd.DataFrame, missing=frozenset()) -> list[str]:
+    """`MATCHUP_ROWS` less what the league's data can't fill: QB Hit % where
+    the feed has no QB hits (`missing`, it would only repeat Sack %), and
+    any stat with no value for any team in `table` (college's CPOE)."""
+    return [r for r in MATCHUP_ROWS
+            if not (r == "QB Hit %" and "QB Hits" in missing)
+            and not (r in table.columns and table[r].isna().all())]
+
+
 # Shown but never given an edge: how much a team plays and how deep it
 # throws are its style, not good or bad.
 MATCHUP_STYLE = SEASON_VOLUME | {"aDoT"}

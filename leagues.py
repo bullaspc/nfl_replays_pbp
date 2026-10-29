@@ -1010,7 +1010,7 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
     if short:
         return Pregame(None, {}, f"{' and '.join(short)} had fewer than {core.SEASON_MIN_PLAYS} "
                                  "plays before this game.")
-    rows = [r for r in core.MATCHUP_ROWS if not (r == "QB Hit %" and "QB Hits" in tables["missing"])]
+    rows = core.matchup_stats(off_table, tables["missing"])
     plays = season_plays(league, season, stamp, span, "Regular season")
     sit_off = tables["situational_team"][tables["situational_team"].index.isin(off_table.index)]
     sit_def = tables["situational_defense"][tables["situational_defense"].index.isin(def_table.index)]
