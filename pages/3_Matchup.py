@@ -19,7 +19,7 @@ import streamlit as st
 import game_summary
 import leagues
 from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MATCHUP_LEADERS,
-                         MATCHUP_ROWS, PLAYER_MIN_PLAYS,
+                         PLAYER_MIN_PLAYS, matchup_stats,
                          PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
                          availability_summary, head_to_head, injury_report, lineup_adjustment,
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
@@ -137,8 +137,9 @@ if short:
 _, logos, _ = league.team_meta(season, stamp)
 tints = dict(zip((away, home), MATCHUP_TINTS))
 tint_note = f"orange when {away} has it, blue when {home} does"
-# The college feed has no QB hits: its QB Hit % would only repeat Sack %.
-rows = [r for r in MATCHUP_ROWS if not (r == "QB Hit %" and "QB Hits" in tables["missing"])]
+# The college feed has no QB hits (its QB Hit % would only repeat Sack %)
+# and no completion model (CPOE).
+rows = matchup_stats(off_table, tables["missing"])
 sel_plays = leagues.season_plays(league, season, stamp, weeks, "Both", play_filter)
 # Ranked among the same teams as the main tables.
 sit_off = tables["situational_team"][tables["situational_team"].index.isin(off_table.index)]
