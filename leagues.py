@@ -101,6 +101,11 @@ class League:
         """(colors, logos, nicknames) keyed by team abbreviation."""
         raise NotImplementedError
 
+    def team_names(self, season: int, stamp: str) -> dict[str, str]:
+        """Team abbreviation → the name text outside tables uses ("Chiefs",
+        "Texas Tech"); a team missing from it keeps its abbreviation."""
+        raise NotImplementedError
+
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         """Play-by-play (core.BASELINE_COLS) the percentile baselines for
         `season` are built from; None if unavailable."""
@@ -495,6 +500,9 @@ class NFLLeague(League):
     def team_meta(self, season: int, stamp: str) -> tuple[dict, dict, dict]:
         return load_team_colors(), load_team_logos(), load_team_nicknames()
 
+    def team_names(self, season: int, stamp: str) -> dict[str, str]:
+        return load_team_nicknames()
+
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         return _nfl_baseline_pbp(season)
 
@@ -609,6 +617,13 @@ def load_cfb_team_meta(season: int, stamp: str) -> tuple[dict, dict, dict]:
                               cfb_feed.read_team_info(season), load_cfb_schedule(season))
 
 
+@st.cache_data(ttl=3600)
+def load_cfb_team_names(season: int, stamp: str) -> dict[str, str]:
+    """Abbreviation → school name."""
+    return cfb_feed.team_names(_cfb_season_or_empty(season, stamp)[0],
+                               cfb_feed.read_team_info(season), load_cfb_schedule(season))
+
+
 @st.cache_data(max_entries=2)
 def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
@@ -690,6 +705,9 @@ class CollegeLeague(League):
 
     def team_meta(self, season: int, stamp: str) -> tuple[dict, dict, dict]:
         return load_cfb_team_meta(season, stamp)
+
+    def team_names(self, season: int, stamp: str) -> dict[str, str]:
+        return load_cfb_team_names(season, stamp)
 
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         df = _cfb_baseline_pbp(season)
@@ -977,7 +995,7 @@ def is_postseason(game: pd.Series) -> bool:
 
 
 def betting_line(home: str, away: str, spread, total) -> str:
-    """"CHI favored by 3, total 50.5" from the home team's spread and the total
+    """"Bears favored by 3, total 50.5" from the home team's spread and the total
     (either may be missing); "" without either."""
     line = ""
     if pd.notna(spread):
@@ -995,6 +1013,7 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
     anything after it is in them. The injury report and the betting line are
     the ones the game was played under."""
     away, home = game["away_team"], game["home_team"]
+    names = league.team_names(season, stamp)
     week = int(game["week"])
     played = league.season_pbp(season, stamp)
     played = played[~played["postseason"]]
@@ -1060,7 +1079,9 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
     week_note = f"week {span[0]}" if span[0] == span[1] else f"weeks {span[0]}–{span[1]}"
     context = game_summary.MatchupContext(
         league=league.key, away=away, home=home, when=when,
-        line=betting_line(home, away, game.get("spread_line"), game.get("total_line")),
+        names={t: names.get(t, t) for t in (away, home)},
+        line=betting_line(names.get(home, home), names.get(away, away),
+                          game.get("spread_line"), game.get("total_line")),
         selection=f"{season} {week_note}, the games before this one, opponent-adjusted",
         n_teams=len(off_table), matchups=matchups, situational=situational, leaders=leaders,
         injuries={t: reports[t][shown] for t in (away, home)}, injury_units=report_units,

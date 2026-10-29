@@ -278,6 +278,18 @@ def team_meta(raw: pd.DataFrame, info: pd.DataFrame,
     return colors, logos, nicks
 
 
+def team_names(raw: pd.DataFrame, info: pd.DataFrame,
+               sched: pd.DataFrame | None = None) -> dict[str, str]:
+    """School names ("Texas Tech") keyed by the abbreviation the pbp uses:
+    mascots alone repeat (dozens of Tigers)."""
+    ids = team_ids(raw, sched if sched is not None else pd.DataFrame(), info)
+    if info.empty or not {"team_id", "school"} <= set(info.columns):
+        return {}
+    school = info.drop_duplicates("team_id").set_index("team_id")["school"]
+    return {abbr: school[tid] for abbr, tid in zip(ids["abbr"], ids["id"])
+            if tid in school.index and isinstance(school[tid], str) and school[tid]}
+
+
 # ---------- live games ----------
 # What sportsdataverse's own fetch (CFBPlayProcess.espn_cfb_pbp) puts in place
 # of a key ESPN's summary leaves out, e.g. "drives" before kickoff.
