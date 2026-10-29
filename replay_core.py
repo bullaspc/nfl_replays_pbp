@@ -361,12 +361,27 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     stats = {team: _team_col(revealed, team) for team in [away, home]}
     return pd.DataFrame(stats, index=pd.Index(TEAM_STAT_ROWS, name="Stat"))
 
+# Team stats that pile up over a game: against whole games they only say
+# something once this one is over, so until then they get no percentile.
+GAME_TOTAL_ROWS = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays",
+                   "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
+
+
+def game_over(revealed: pd.DataFrame) -> bool:
+    """Whether `revealed` runs to the game's end: its last row is the END GAME
+    marker every source closes a finished game with."""
+    return not revealed.empty and str(revealed["desc"].iloc[-1]).startswith("END GAME")
+
+
 def stat_percentiles(df: pd.DataFrame, baselines: dict,
-                     lower_is_better: set = LOWER_IS_BETTER) -> pd.DataFrame:
+                     lower_is_better: set = LOWER_IS_BETTER, final: bool = True) -> pd.DataFrame:
     """Percentile of each Team stats cell vs the baseline seasons, 100 = best
-    (flipped for the stats in `lower_is_better`). NaN without a baseline."""
+    (flipped for the stats in `lower_is_better`). NaN without a baseline, and
+    for `GAME_TOTAL_ROWS` unless the game is `final`."""
     out = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
     for row in df.index:
+        if not final and row in GAME_TOTAL_ROWS:
+            continue
         arr = baselines.get(row, np.array([]))
         for team in df.columns:
             pct = percentile_of(float(df.at[row, team]), arr)
