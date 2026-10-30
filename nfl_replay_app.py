@@ -154,6 +154,8 @@ with st.sidebar:
     timeline = play_timeline(pbp_game)
     last_idx = len(pbp_game) - 1
     team_colors, team_logos, team_nicks = league.team_meta(season, stamp)
+    # Names where there's room (scoreboard, boxscore); other tables keep abbreviations.
+    _names = league.team_names(season, stamp)
 
     st.divider()
     st.subheader("Your viewing")
@@ -431,14 +433,19 @@ def _ticker() -> None:
 if not hide_ticker:
     _ticker()
 
-# One flex row that never wraps, so the scoreboard stays a single compact line
-# on phones (st.columns would stack the logos and score vertically there).
+# One flex row, so the scoreboard stays a single compact line on phones
+# (st.columns would stack the logos and score vertically there). Only a long
+# name ("Florida International") wraps, between words; the score never does.
+_name_css = ("font-size:clamp(0.95rem,4.2vw,2rem);font-weight:700;line-height:1.15;"
+             "flex:0 1 auto")
 st.markdown(
     "<div style='display:flex;align-items:center;justify-content:center;"
-    "gap:clamp(8px,3vw,24px);margin:0.25rem 0 0.5rem'>"
+    "gap:clamp(6px,2.5vw,20px);margin:0.25rem 0 0.5rem'>"
     f"{logo_img(away, team_logos)}"
+    f"<div style='{_name_css};text-align:right'>{_names.get(away, away)}</div>"
     f"<div style='font-size:clamp(1.3rem,6vw,2.4rem);font-weight:700;white-space:nowrap'>"
-    f"{away} {away_score} — {home_score} {home}</div>"
+    f"{away_score} — {home_score}</div>"
+    f"<div style='{_name_css};text-align:left'>{_names.get(home, home)}</div>"
     f"{logo_img(home, team_logos)}</div>",
     unsafe_allow_html=True)
 
@@ -568,7 +575,6 @@ st.divider()
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
-_names = league.team_names(season, stamp)
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
 
