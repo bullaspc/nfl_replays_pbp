@@ -217,9 +217,13 @@ with st.sidebar:
     auto = False if follow_live else st.checkbox("Auto-advance play by play",
                                                  value=_url.get("auto") == "1")
     auto_tick = 0
+    # debounce=False on every timer: debounced, the component restarts its
+    # countdown each time the page redraws it, and the fragments below redraw
+    # it all the time (the ticker every 30s, the AI polls every 3s), so a 30s
+    # or longer timer would rarely or never fire.
     if follow_live:
         # Fast enough that the delay above is honoured to within ~10s.
-        st_autorefresh(interval=10_000, key="live_follow")
+        st_autorefresh(interval=10_000, debounce=False, key="live_follow")
     elif auto:
         _intervals = [30, 45, 60, 90]
         _every = _url_int("every", 30, 30, 90)
@@ -229,12 +233,13 @@ with st.sidebar:
                                         format_func=lambda x: f"{x}s",
                                         key="refresh_interval_clock")
         # The timer's tick count: a play is revealed only when it changes (see
-        # the bottom of the file), not on every rerun.
-        auto_tick = st_autorefresh(interval=refresh_interval * 1000, key="autorefresh")
+        # the play cursor below), not on every rerun.
+        auto_tick = st_autorefresh(interval=refresh_interval * 1000, debounce=False,
+                                   key="autorefresh")
     elif source == "live" and live_state != "post":
         # Keep pulling new plays in. This only makes them available to the
         # ▶ buttons — it never moves the cursor or unlocks anything.
-        st_autorefresh(interval=30_000, key="live_refresh")
+        st_autorefresh(interval=30_000, debounce=False, key="live_refresh")
     awake = st.checkbox("Keep screen awake", value=True,
                         help="Stops your phone from dimming or locking while this "
                              "page is open. Needs HTTPS and a recent browser "
@@ -340,6 +345,19 @@ if follow_live:
         cursor_max = _live_target
     if _just_followed:
         cursor_idx = cursor_max
+
+# Auto-advance: one play per refresh tick, here before anything is drawn, so
+# the play shows on the tick that unlocked it. Only a tick advances: any other
+# rerun (a click, a fragment's st.rerun(), the first run of a session restored
+# from the URL) leaves the count where it was, so it can't reveal a play early.
+_new_tick = auto and auto_tick != st.session_state.get("_auto_tick", 0)
+st.session_state["_auto_tick"] = auto_tick
+if _new_tick and cursor_max < last_idx:
+    # Carry the view along only if it was already at the edge, so a replayed
+    # drive isn't yanked away mid-scrub.
+    if cursor_idx >= cursor_max:
+        cursor_idx = cursor_max + 1
+    cursor_max += 1
 st.session_state["_cursor_max"] = cursor_max
 st.session_state["_cursor_idx"] = cursor_idx
 st.session_state["_cursor_anchor"] = (cursor_anchor(timeline, cursor_idx),
@@ -1300,20 +1318,4 @@ if not revealed.empty:
         st.caption("No win probability data available.")
 else:
     st.caption("No plays revealed yet.")
-
-# ---------- Auto-advance to next play ----------
-# One play per refresh tick. Only a tick advances: any other rerun (a click, a
-# fragment's st.rerun(), the first run of a session restored from the URL)
-# leaves the count where it was, so it can't reveal a play early.
-_new_tick = auto and auto_tick != st.session_state.get("_auto_tick", 0)
-st.session_state["_auto_tick"] = auto_tick
-if _new_tick and cursor_max < last_idx:
-    _at_edge = cursor_idx >= cursor_max
-    st.session_state["_cursor_max"] = cursor_max + 1
-    if _at_edge:
-        st.session_state["_cursor_idx"] = cursor_max + 1
-    st.session_state["_cursor_anchor"] = (
-        cursor_anchor(timeline, int(st.session_state["_cursor_idx"])),
-        cursor_anchor(timeline, cursor_max + 1))
-    _save_url()
 
