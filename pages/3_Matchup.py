@@ -358,8 +358,7 @@ else:
         "numbers** is how far each group is from the players behind the numbers above, in "
         "full-time players: one out now takes away his share of those games' snaps (**Was**; "
         "half, if he missed half of them), one back adds the share he plays when he does "
-        "(**Now**) less what he had, and one acquired (a trade or a pickup) adds the share he had "
-        "with his old team. Gone counts the report's Out and Doubtful and the roster's "
+        "(**Now**) less what he had. Gone counts the report's Out and Doubtful and the roster's "
         "reserve lists, releases and trades (players on injured reserve aren't on the report); "
         f"the table lists what the report doesn't show, {LINEUP_SHOWN:.1f}+ players' worth. "
         f"From {avail.source}; reports as of {avail.as_of or 'the latest build'}.")
@@ -382,8 +381,7 @@ st.caption(
        "lineups (Availability, above), by what such losses have done to games since 2016: about "
        f"{abs(_epa['QB']):.2f} EPA/play less for each full-time QB gone, {abs(_epa['OL']):.2f} for "
        f"each lineman or skill player, and {_epa['Front']:.2f} more for each starter the defense "
-       "is missing; a player traded away counts as gone. Players back and players acquired "
-       "aren't counted: they've made no measurable difference."
+       "is missing. Players back aren't counted: they've made no measurable difference."
        if has_lineup else "")
     + (f" {' and '.join(map(nm, no_status))} {'has' if len(no_status) == 1 else 'have'} no game statuses "
        "on the report yet (they come on the final one, the day before the game), so w/ lineup "
@@ -486,9 +484,7 @@ effects fitted on the other seasons, it came closer to the game than Proj. for E
 winners instead of 61.5% (the betting favorite: 67.8%). The run game and sack rate didn't move, so
 they aren't adjusted.
 Players coming back aren't counted either: on their own, they made no measurable difference (a
-starting QB back: −0.02 ± 0.03 EPA/play against Proj.), and nor are players acquired in a trade
-or a pickup (an acquired starting QB: +0.06 ± 0.09; counting them didn't bring Proj. any closer).
-A player traded away counts as gone, like any other. The adjustment is small next to how far
+starting QB back: −0.02 ± 0.03 EPA/play against Proj.). The adjustment is small next to how far
 single games stray from any projection.
 
 **Matchup preview.** On request, the matchup tables, down and distance, key players and the injury
