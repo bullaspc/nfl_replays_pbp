@@ -567,7 +567,10 @@ st.divider()
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore")
-stat_table(boxscore(revealed, home, away), hide_index=True)
+# Team names: the boxscore is narrow enough for them on a phone.
+_names = league.team_names(season, stamp)
+stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
+           hide_index=True)
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
