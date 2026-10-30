@@ -1999,7 +1999,7 @@ def status_by_name(report: pd.DataFrame, team: str, ids: pd.DataFrame,
 # (a player there can be elevated).
 AVAILABLE_ROSTER = {"ACT", "INA", "DEV"}
 ROSTER_WHY = {"RES": "Reserve", "PUP": "Reserve", "NWT": "Reserve", "RSN": "Reserve",
-              "SUS": "Suspended", "CUT": "Released", "TRD": "Traded", "TRT": "Traded",
+              "SUS": "Suspended", "CUT": "Released", "TRD": "Traded", "TRT": "Traded", "TRC": "Traded",
               "RET": "Retired", "EXE": "Exempt"}
 LINEUP_COLS = ["Player", "Pos", "Unit", "Why", "Was", "Now", "Change"]
 # The units the Matchup page's injury adjustment groups players into.
@@ -2015,15 +2015,20 @@ def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFr
     """The players who make `team`'s lineup for `week` differ from the one
     behind its season numbers, the snap counts over `games` (its earlier
     games), each in his unit's phase (`UNIT_PHASE`): Why ("Out", "Doubtful"
-    on the week's injury report, "Reserve", "Released", "Traded", … or "Not
-    on roster" on the week's roster; "Back" for one listed Out or off the
-    roster in one of those weeks who's available now), Was (his share of
-    those games' snaps), Now (0 if gone; if back, his share in the games he
-    played) and Change (Now − Was: −1.0 is a full-time player fewer than the
+    on the week's injury report, "Reserve", "Released", "Traded" (on
+    another team's roster now, whatever the move), … or "Not on roster" on
+    the week's roster; "Back" for one listed Out or off the roster in one
+    of those weeks who's available now; "Acquired" for one on the week's
+    roster who played the phase for another team before `week` and not
+    for this one in `games`), Was (his share of those games' snaps; 0 if
+    acquired), Now (0 if gone; if back, his share in the games he played;
+    if acquired, his share of his old team's snaps in the games he played
+    there) and Change (Now − Was: −1.0 is a full-time player fewer than the
     numbers had). Players without a gsis id, or who never played the phase,
     are left out. `roster` is nflverse's weekly rosters (team, week,
-    gsis_id, status): the week's, or the team's latest before it (early in
-    a week the new one may not be out yet); none at all, and it isn't used."""
+    gsis_id, status), every team's: the week's, or each team's latest
+    before it (early in a week the new one may not be out yet); none at
+    all, and it isn't used."""
     if snaps.empty:
         return pd.DataFrame(columns=LINEUP_COLS)
     s = snaps[(snaps["team"] == team) & snaps["game_id"].isin(set(games))]
@@ -2041,6 +2046,12 @@ def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFr
     ros_week = ros.loc[ros["week"] <= week, "week"].max() if not ros.empty else np.nan
     ros_now = (dict(zip(ros.loc[ros["week"] == ros_week, "gsis_id"], ros.loc[ros["week"] == ros_week, "status"]))
                if pd.notna(ros_week) else None)
+    # Who's available on another team's roster now: where a player gone went.
+    elsewhere = set()
+    if ros_now is not None:
+        other = roster[(roster["team"] != team) & (roster["week"] <= week)]
+        other = other[other["week"] == other.groupby("team")["week"].transform("max")]
+        elsewhere = set(other.loc[other["status"].isin(AVAILABLE_ROSTER), "gsis_id"])
     gone_before = (set(ros.loc[ros["week"].isin(weeks) & ~ros["status"].isin(AVAILABLE_ROSTER), "gsis_id"])
                    if not ros.empty else set())
     rows = []
@@ -2058,7 +2069,8 @@ def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFr
         if status in LIKELY_OUT:
             why, now = status, 0.0
         elif ros_now is not None and ros_now.get(gid) not in AVAILABLE_ROSTER:
-            why = ROSTER_WHY.get(ros_now.get(gid), "Not on roster" if gid not in ros_now else "Unavailable")
+            why = ("Traded" if gid in elsewhere and ros_now.get(gid) in (None, "TRD", "TRT", "TRC")
+                   else ROSTER_WHY.get(ros_now.get(gid), "Not on roster" if gid not in ros_now else "Unavailable"))
             now = 0.0
         elif gid in out_before or gid in gone_before:
             why, now = "Back", n.sum() / totals.loc[played, label].sum()
@@ -2068,16 +2080,54 @@ def lineup_change(snaps: pd.DataFrame, injuries: pd.DataFrame, roster: pd.DataFr
             continue
         rows.append({"Player": p["player"].iloc[-1], "Pos": p["position"].iloc[-1], "Unit": unit,
                      "Why": why, "Was": was, "Now": now, "Change": now - was})
+    rows += _arrivals(snaps, team, week, ros_now, set(s["gsis_id"]), now_status)
     return pd.DataFrame(rows, columns=LINEUP_COLS).sort_values("Change", kind="stable").reset_index(drop=True)
+
+
+def _arrivals(snaps: pd.DataFrame, team: str, week: int, ros_now: dict | None, known: set,
+              now_status: dict) -> list[dict]:
+    """`lineup_change()`'s "Acquired" rows: players available on `team`'s
+    roster for `week` (`ros_now`, gsis id → status) who aren't among its own
+    snap counts (`known`) but played for other teams before `week`, with
+    Now their share of those teams' snaps in the phase, in the games they
+    played (a trade, or a pickup after a release elsewhere)."""
+    if not ros_now:
+        return []
+    new = {g for g, st in ros_now.items() if st in AVAILABLE_ROSTER and g not in known
+           and now_status.get(g) not in LIKELY_OUT}
+    s = snaps[(snaps["team"] != team) & (snaps["week"] < week)]
+    s = s[s["gsis_id"].isin(new)]
+    rows = []
+    for gid, p in s.groupby("gsis_id"):
+        unit = UNITS.get(p["position"].iloc[-1])
+        if unit is None:
+            continue
+        label = UNIT_PHASE[unit]
+        n, games = 0.0, 0.0
+        for old, q in p.groupby("team"):
+            q = q.set_index("game_id")[f"{SNAP_PHASES[label]}_snaps"]
+            played = q.index[q > 0]
+            if len(played):
+                totals = _phase_totals(snaps[(snaps["team"] == old) & snaps["game_id"].isin(set(played))])
+                n, games = n + q.sum(), games + totals.loc[played, label].sum()
+        if games <= 0 or n / games < 0.005:
+            continue
+        now = min(n / games, 1.0)
+        rows.append({"Player": p["player"].iloc[-1], "Pos": p["position"].iloc[-1], "Unit": unit,
+                     "Why": "Acquired", "Was": 0.0, "Now": now, "Change": now})
+    return rows
 
 
 def lineup_groups(change: pd.DataFrame, part: str = "net") -> pd.Series:
     """A `lineup_change()` summed by `LINEUP_GROUPS`, in full-time players:
     the net change in each group's snaps (−1.4: 1.4 fewer than the numbers
     had), or with `part` "lost" only the players gone, "back" only those
-    back."""
+    back, "new" only those acquired."""
     c = change["Change"]
-    c = c.clip(upper=0) if part == "lost" else c.clip(lower=0) if part == "back" else c
+    if part == "lost":
+        c = c.clip(upper=0)
+    elif part in ("back", "new"):
+        c = c.where(change["Why"] == ("Acquired" if part == "new" else "Back"), 0.0).clip(lower=0)
     return pd.Series({g: float(c[change["Unit"].isin(units)].sum()) for g, units in LINEUP_GROUPS.items()})
 
 
@@ -2085,9 +2135,11 @@ def lineup_groups(change: pd.DataFrame, part: str = "net") -> pd.Series:
 # a stat from Proj., on average: the offense's own QB, OL and skill players
 # lower it, the defense's front seven and secondary raise it. Fitted by
 # tools/validate_injuries.py on 2016–2025's offense-games from week 4 on
-# (4,194, opponent-adjusted Proj.), whoever filled in. Players back aren't
-# counted: fitted apart, they moved nothing measurable, and adding them made
-# no projection better. Only the stats where the adjustment came closer to
+# (4,194, opponent-adjusted Proj.), whoever filled in. A player traded away
+# counts as gone. Players back and players acquired (a trade or a pickup)
+# aren't counted: fitted apart, they moved nothing measurable (an acquired
+# QB +0.06 EPA/play ± 0.09, the other groups within ± 0.04 of 0), and adding
+# them made no projection better. Only the stats where the adjustment came closer to
 # the game, a season at a time out of sample (RMSE): EPA/play 0.1839 → 0.1814
 # (0.1946 → 0.1828 in the 471 games with the QB half a player or more off),
 # pass EPA/play 0.2990 → 0.2954, pass success rate 0.0938 → 0.0927. Run EPA
@@ -2097,7 +2149,6 @@ LINEUP_EFFECTS = {
     "Pass EPA/play": {"QB": -0.1398, "OL": -0.0296, "Skill": -0.0222, "Front": 0.0296, "DB": 0.026},
     "Pass SR": {"QB": -0.0406, "OL": -0.0088, "Skill": -0.0085, "Front": 0.0089, "DB": 0.0096},
 }
-
 
 def lineup_adjustment(offense: pd.DataFrame, defense: pd.DataFrame) -> pd.Series:
     """How far the players gone move an offense's Proj., per stat in

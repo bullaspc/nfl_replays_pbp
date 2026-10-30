@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import replay_core as core  # noqa: E402
 
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
+XRUSH_TABLE = Path(__file__).resolve().parent.parent / "models" / "xrush_yards.csv"
 STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1st Down %",
          "3rd Down %", "Sack %", "Stuff %", "Turnovers",
          "Lost Poss."]
@@ -34,9 +35,12 @@ STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1s
 def read_season(season: int, path: str | None = None) -> pd.DataFrame:
     """A season's regular-season pbp, with the betting line and result."""
     extra = list(core.NFLVERSE_NAME_COLS)
+    cols = [c for c in core.PBP_COLS if c != "xrush_yards"]  # added below, as the app does
     pbp = pd.read_parquet(path or PBP_URL.format(y=season),
-                          columns=core.PBP_COLS + extra + ["season_type", "spread_line", "result"])
+                          columns=cols + extra + ["season_type", "spread_line", "result"])
     pbp = core.name_nullified(pbp).drop(columns=extra)  # as leagues.nflverse_pbp() does
+    xrush = pd.read_csv(XRUSH_TABLE)
+    pbp = core.add_expected_rush(pbp, xrush[xrush["league"] == "NFL"].drop(columns="league"))
     return pbp[pbp["season_type"] == "REG"].sort_values(["game_id", "play_id"])
 
 

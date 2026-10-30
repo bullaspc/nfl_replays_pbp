@@ -7,7 +7,8 @@ what matters for a game is how its lineup differs from that one
 games' snaps he had (half, if he missed half of them), and a starter back
 adds the share he plays when he does. Who's gone is what was known before
 the game: Out or Doubtful on the week's injury report, or on a reserve
-list, released or traded on the week's roster.
+list, released or traded on the week's roster. Players acquired (on the
+week's roster, with snaps for another team before) add their old share.
 
 For every offense-game from `first_week` on in the seasons given, the
 projection tools/validate_matchup.py checks (opponent-adjusted, as the page
@@ -22,8 +23,8 @@ The fit is tested out of sample, a season at a time: each season's
 adjustments come from the effects fitted on the other seasons, and are
 compared with the projection plus its average miss alone (so the
 adjustment isn't credited with fixing a bias it didn't), for the net
-change, the players gone only, gone and back apart, and the QB's losses
-alone, and for the form the page uses: players gone only, without the
+change, the players gone only, gone and back apart, gone and acquired
+apart, and the QB's losses alone, and for the form the page uses: players gone only, without the
 fit's intercept (`replay_core.LINEUP_EFFECTS`: the effects fitted on every
 season are printed at the end, to paste there). The page adjusts the stats
 where that form beats Proj. out of sample. Then the projected EPA/play
@@ -53,8 +54,10 @@ OWN, OPP = ["QB", "OL", "Skill"], ["Front", "DB"]
 FEATURES = [f"own {g}" for g in OWN] + [f"opp {g}" for g in OPP]          # net changes
 LOST = [f"{f} lost" for f in FEATURES]                                     # players gone only
 BACK = [f"{f} back" for f in FEATURES]                                     # players back only
+NEW = [f"{f} new" for f in FEATURES]                                       # players acquired only
 VARIANTS = {"net change": FEATURES, "losses only": LOST, "losses and returns apart": LOST + BACK,
-            "QB losses only": ["own QB lost"]}
+            "losses and arrivals apart": LOST + NEW, "QB losses only": ["own QB lost"]}
+PAGE_FEATURES = "losses only"
 PAGE = "losses only, no intercept (the page's)"
 
 
@@ -76,7 +79,7 @@ def collect(season: int, first_week: int) -> pd.DataFrame:
     game's teams, betting line and result, each TARGETS stat's actual and
     Proj., and the lineup changes (FEATURES)."""
     cache = os.environ.get("VALIDATE_CACHE")
-    path = Path(cache) / f"lineups_{season}_{first_week}.pkl" if cache else None
+    path = Path(cache) / f"lineups_v2_{season}_{first_week}.pkl" if cache else None
     if path is not None and path.exists():
         return pd.read_pickle(path)
     rows, games = offense_games(read_season(season), first_week, kinds=("adjusted",), stats=TARGETS)
@@ -92,10 +95,10 @@ def collect(season: int, first_week: int) -> pd.DataFrame:
         change = core.lineup_change(snaps, injuries, roster, team, week, before) if len(before) else None
         groups[(team, week)] = {part: (core.lineup_groups(change, part) if change is not None
                                        else pd.Series(np.nan, index=GROUPS))
-                                for part in ("net", "lost", "back")}
+                                for part in ("net", "lost", "back", "new")}
     for side, names, key in (("own", OWN, "team"), ("opp", OPP, "opp")):
         for g in names:
-            for part, suffix in (("net", ""), ("lost", " lost"), ("back", " back")):
+            for part, suffix in (("net", ""), ("lost", " lost"), ("back", " back"), ("new", " new")):
                 wide[f"{side} {g}{suffix}"] = [groups[(t, w)][part][g] for t, w in zip(wide[key], wide["week"])]
     wide["season"] = season
     if path is not None:
@@ -128,8 +131,8 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
     df = df[covered]
     big = (df[FEATURES].abs() >= 0.5).any(axis=1)
     print("How far lineups were from the ones behind the season numbers (full-time players; "
-          "− = fewer), net and the players gone and back apart:")
-    print(df[FEATURES + LOST + BACK].describe(percentiles=[.05, .5, .95])
+          "− = fewer), net and the players gone, back and acquired apart:")
+    print(df[FEATURES + LOST + BACK + NEW].describe(percentiles=[.05, .5, .95])
           .loc[["mean", "5%", "50%", "95%"]].round(2).T.to_string())
     print(f"Games with a group at least half a full-time player off: {big.mean():.0%}\n")
 
@@ -137,10 +140,11 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
     for stat in TARGETS:
         d = df.dropna(subset=[f"actual {stat}", f"proj {stat}"])
         y = (d[f"actual {stat}"] - d[f"proj {stat}"]).to_numpy()
-        split = LOST + BACK
+        split = LOST + BACK + NEW
         beta, se = _ols(d[split].to_numpy(), y)
         print(f"== {stat}: how much the game's miss (actual − Proj.) moves per full-time player of "
-              f"change (lost: per player gone; back: per player back), n = {len(d)}")
+              f"change (lost: per player gone; back: per player back; new: per player acquired), "
+              f"n = {len(d)}")
         print(pd.DataFrame({"per player gone (−) or back (+)": [(-b if c in LOST else b) for b, c in zip(beta[1:], split)],
                             "± 2 SE": 2 * se[1:]}, index=split).round(4).to_string())
         # Out of sample, a season at a time.
@@ -156,7 +160,7 @@ def main(first: int = 2016, last: int = 2025, first_week: int = 4) -> None:
                 b, _ = _ols(d.loc[train, feats].to_numpy(), yt)
                 with_lineup[k][test] = (d.loc[test, f"proj {stat}"] + b[0]
                                         + d.loc[test, feats].to_numpy() @ b[1:])
-                if k == "losses only":
+                if k == PAGE_FEATURES:
                     with_lineup[PAGE][test] = d.loc[test, f"proj {stat}"] + d.loc[test, feats].to_numpy() @ b[1:]
         a = d[f"actual {stat}"]
         res = pd.DataFrame({"Proj.": _errors(a, d[f"proj {stat}"]),
