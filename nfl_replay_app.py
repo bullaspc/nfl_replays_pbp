@@ -803,18 +803,18 @@ def _summary_result() -> None:
 _summary_result()
 
 # ---------- Scoring timeline ----------
-st.subheader("Scoring timeline")
-if not revealed.empty:
-    _stl_df = scoring_timeline(revealed, home, away)
+# Collapsed like Recent plays; the label counts the revealed scores.
+_stl_df = scoring_timeline(revealed, home, away) if not revealed.empty else pd.DataFrame()
+with st.expander(f"Scoring timeline ({len(_stl_df)})", expanded=False):
     if not _stl_df.empty:
         _stl_cols = ["Q", "Clock", "Team", "Type", "Score"]
         if not hide_descriptions:
             _stl_cols = ["Q", "Clock", "Team", "Type", "Score", "Description"]
         stat_table(style_scoring_timeline(_stl_df[_stl_cols]), hide_index=True)
+    elif revealed.empty:
+        st.caption("No plays revealed yet.")
     else:
         st.caption("No scores yet.")
-else:
-    st.caption("No plays revealed yet.")
 
 # ---------- Recent plays (with pagination) ----------
 def _reset_recent_page():
