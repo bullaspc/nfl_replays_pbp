@@ -119,6 +119,24 @@ def read_team_info(season: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# Season rosters (CFBD's, through cfbfastR-data): school name, player name
+# and class year, 1 (freshman) to 4 (senior), 2004 onward.
+ROSTER_URL = "https://raw.githubusercontent.com/sportsdataverse/cfbfastR-data/main/rosters/parquet/rosters_{}.parquet"
+ROSTER_COLS = ["team", "first_name", "last_name", "year"]
+
+
+def read_rosters(season: int, names: dict[str, str]) -> pd.DataFrame:
+    """The season's rosters (`ROSTER_COLS`), team as the play-by-play's
+    abbreviation through `names` (abbreviation → school, `team_names()`);
+    schools it doesn't know are dropped. Empty if it can't be read."""
+    try:
+        r = pd.read_parquet(io.BytesIO(_get(ROSTER_URL.format(int(season)))), columns=ROSTER_COLS)
+    except Exception:
+        return pd.DataFrame(columns=ROSTER_COLS)
+    school_abbr = {school: abbr for abbr, school in names.items()}
+    return r.assign(team=r["team"].map(school_abbr)).dropna(subset=["team"]).reset_index(drop=True)
+
+
 def _utc(ts: pd.Series) -> pd.Series:
     return pd.to_datetime(ts, utc=True, errors="coerce")
 

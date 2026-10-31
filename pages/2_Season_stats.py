@@ -16,12 +16,12 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
+    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_schedule,
+    situational_table, team_schedule, with_class_year,
 )
 from views import (
     pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
@@ -63,6 +63,8 @@ st.caption("The replay's team and player stats over a season. This page shows re
            "it isn't spoiler-safe.")
 
 stamp = league.stamp()
+# College rosters' class years (Fr … Sr) for the player tables; empty for the NFL.
+class_years = league.class_years(season, stamp)
 try:
     with st.spinner(f"Loading the {season} season…"):
         pbp_all = league.season_pbp(season, stamp)
@@ -279,6 +281,7 @@ with tab_team:
             for kind, n in kinds:
                 df = tables[kind]
                 df = df[df["Team"] == team].drop(columns="Team").head(n) if not df.empty else df
+                df = with_class_year(df, class_years, team)
                 st.caption("Defense" if kind == "defenders" else kind.capitalize())
                 if df.empty:
                     st.caption("No data")
@@ -365,12 +368,13 @@ def _leaderboard(kind: str, c2, c3) -> None:
             min_value=0, value=_default_min(kind), step=5,
             key=f"_ss_min_{kind}_{_default_min(kind)}"))
         df = df[df[vol] >= min_plays]
-    numeric = [c for c in df.columns if c not in ("Player", "Team")]
+    numeric = [c for c in df.columns if c not in ("Player", "Team", CLASS_COL)]
     sort_by = c3.selectbox("Sort by", numeric,
                            index=numeric.index("Yds" if "Yds" in numeric else numeric[0]),
                            key=f"_ss_psort_{kind}")
     top_n = st.slider("Show", 10, 200, 50, step=10, key="_ss_topn")
     df = df.sort_values(sort_by, ascending=False, kind="stable").head(top_n).reset_index(drop=True)
+    df = with_class_year(df, class_years)
     df.index = df.index + 1
     if kind == "defenders":
         stat_table(style_defense_table(df))
@@ -384,6 +388,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
                    f"EPA/play colors rank each player among those with {min_plays}+ "
                    f"{PLAYER_VOLUME_COL[kind].lower()} · green = top · red = bottom. A traded "
                    "player has a row per team."
+                   + (" Yr is the class year on the season's roster." if class_years else "")
                    + (" SR% and EPA/play are adjusted for the defenses each player's plays "
                       "came against; counts and aDOT are as played." if adjusted else ""))
 

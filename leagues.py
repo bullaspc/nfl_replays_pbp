@@ -146,6 +146,12 @@ class League:
         (`NO_AVAILABILITY`) where the league has none."""
         return NO_AVAILABILITY
 
+    def class_years(self, season: int, stamp: str) -> dict[tuple[str, str], str]:
+        """(team, core.player_key(name)) → class year ("Fr" … "Sr") for the
+        leaders tables' Yr column (core.with_class_year); empty where the
+        league has none (the NFL)."""
+        return {}
+
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
         (scoreboard.ticker), never `row`'s: its live score would spoil it."""
@@ -624,6 +630,12 @@ def load_cfb_team_names(season: int, stamp: str) -> dict[str, str]:
                                cfb_feed.read_team_info(season), load_cfb_schedule(season))
 
 
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_cfb_class_years(season: int, stamp: str) -> dict[tuple[str, str], str]:
+    """The season's rosters as core.class_year_keys(); empty if unavailable."""
+    return core.class_year_keys(cfb_feed.read_rosters(season, load_cfb_team_names(season, stamp)))
+
+
 @st.cache_data(max_entries=2)
 def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
@@ -715,6 +727,9 @@ class CollegeLeague(League):
 
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return cfb_feed.missing_leader_stats(pbp)
+
+    def class_years(self, season: int, stamp: str) -> dict[tuple[str, str], str]:
+        return load_cfb_class_years(season, stamp)
 
     def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         try:
@@ -1071,7 +1086,10 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
     matchups = {away: core.matchup_table(off_table, def_table, away, home, rows, adjustments.get(away)),
                 home: core.matchup_table(off_table, def_table, home, away, rows, adjustments.get(home))}
 
+    years = league.class_years(season, stamp)
+
     def _with_status(df: pd.DataFrame, team: str) -> pd.DataFrame:
+        df = core.with_class_year(df, years, team)
         status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
         if not any(status):
             return df

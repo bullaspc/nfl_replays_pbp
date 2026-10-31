@@ -23,7 +23,8 @@ from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MA
                          PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
                          availability_summary, head_to_head, injury_report, lineup_adjustment,
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
-                         season_qualified, situational_matchup, status_by_name, team_snaps)
+                         season_qualified, situational_matchup, status_by_name, team_snaps,
+                         with_class_year)
 from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_availability_summary,
                    style_defense_table, style_head_to_head, style_injury_report, style_lineup_change,
                    style_lineup_groups, style_matchup_table, style_player_table,
@@ -59,6 +60,8 @@ with st.sidebar:
                                  max_value=LATEST_SEASON, value=LATEST_SEASON, key="_mu_season"))
 
 stamp = league.stamp()
+# College rosters' class years (Fr … Sr) for Key players; empty for the NFL.
+class_years = league.class_years(season, stamp)
 try:
     with st.spinner(f"Loading the {season} season…"):
         upcoming = league.upcoming(season, stamp)
@@ -206,7 +209,8 @@ def _off_report(team: str) -> pd.DataFrame:
 
 def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
     """A leaders table with a Status column after Player, if any of its
-    players has a game status."""
+    players has a game status, and a college player's class year (Yr)."""
+    df = with_class_year(df, class_years, team)
     status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
     if not any(status):
         return df
