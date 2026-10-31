@@ -46,7 +46,7 @@ RAW_COLS = [
     "period", "clock.displayValue", "start.adj_TimeSecsRem",
     "type.text", "text", "start.down", "start.distance", "start.yardsToEndzone",
     "goal_to_go", "statYardage", "homeScore", "awayScore",
-    "EPA", "home_wp_before", "away_wp_before", "home_wp_after", "away_wp_after",
+    "EPA", "EP_start", "home_wp_before", "away_wp_before", "home_wp_after", "away_wp_after",
     "pass", "rush", "completion", "sack", "int", "fumble_lost",
     "touchdown", "pass_td", "rush_td", "safety",
     "kickoff_play", "punt", "fg_attempt", "field_goal_result", "kneel_down",
@@ -411,7 +411,7 @@ _PLAYER = rf"#\d+ ({_NAME})"
 # Where the ball carrier's own play ends: a turnover, a return, a flag, a
 # review note. A tackle after it is made by the other side.
 _PLAY_END = re.compile(r"\s(?:fumbled? by|intercepted|PENALTY|return|recovered by|lateral)\b", re.I)
-_REVIEW = re.compile(r"\s(?:The previous play is under|\(Original Play)")
+_REVIEW = re.compile(r"\s(?:The previous play is under|\S+ is challenging the ruling|\(Original Play)")
 _TACKLED = re.compile(r"\bto the [^()]*?\((#\d+ [^()]*)\)")
 _HURRY = re.compile(rf"QB hurried by (#\d+ {_NAME}(?:(?:,| and|, and) #\d+ {_NAME})*)")
 
@@ -675,7 +675,12 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     scrimmage = play_type.isin(["pass", "run"]) & ~two_pt
     pass_att = (play_type == "pass") & ~two_pt
     rush_att = play_type.isin(["run", "qb_kneel"]) & ~two_pt
-    complete = pass_att & _b(df["completion"])
+    # A review that took a touchdown away: the feed keeps the original call's
+    # type and flags ('Passing Touchdown', completion, on a pass ruled
+    # incomplete), and sportsdataverse scored it as a touchdown. The text
+    # before the review note is the ruling.
+    lost_td = _overturned_td(text, _b(df["touchdown"]))
+    complete = pass_att & _b(df["completion"]) & ~(lost_td & text.str.contains(r" pass incomplete\b"))
     out["yards_gained"] = _num(df["statYardage"]).where(play_type != "no_play", 0.0)
     out["pass_attempt"] = pass_att.astype(float)
     out["rush_attempt"] = rush_att.astype(float)
@@ -702,7 +707,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["pass_length"] = zone[0].where(real_pass)
     out["pass_location"] = zone[1].where(real_pass)
 
-    live = ~no_play
+    live = ~no_play & ~lost_td
     out["touchdown"] = (_b(df["touchdown"]) & live).astype(float)
     out["pass_touchdown"] = (_b(df["pass_td"]) & live).astype(float)
     out["rush_touchdown"] = (_b(df["rush_td"]) & live).astype(float)
@@ -753,7 +758,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["total_home_score"], out["total_away_score"] = _clean_scores(df)
     out["home_wp"] = _num(df["home_wp_before"])
     out["away_wp"] = _num(df["away_wp_before"])
-    out["epa"] = _num(df["EPA"])
+    out["epa"] = _num(df["EPA"]).mask(lost_td, _review_epa(df))
 
     # Standalone two-point tries (the alternating tries from the third OT on).
     pre_h = out["total_home_score"].groupby(gid).shift(1).where(~first_row, 0.0)
@@ -778,6 +783,29 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
         if c not in full.columns:
             full[c] = np.nan
     return full
+
+
+def _overturned_td(text: pd.Series, touchdown: pd.Series) -> pd.Series:
+    """Rows the feed flags as touchdowns whose ruling after review isn't one."""
+    ruling = text.str.split(_REVIEW.pattern, n=1, regex=True).str[0]
+    return touchdown & (ruling != text) & ~ruling.str.contains("TOUCHDOWN")
+
+
+def _review_epa(df: pd.DataFrame) -> pd.Series:
+    """EPA from the next snap's EP, as sportsdataverse computes it on plays
+    it reads right: the next snap's EP_start (negated if the other team has
+    the ball), or 0 when the half or the game ends first. NaN while a live
+    game has no next snap yet."""
+    ep = _num(df["EP_start"])
+    snap = ep.notna() & df["type.text"].ne("Timeout")
+    s = pd.DataFrame({"ep": ep, "pos": df["pos_team_id"], "gid": df["game_id"],
+                      "half": np.where(df["period"] <= 2, 1, np.where(df["period"] <= 4, 2, df["period"]))})[snap]
+    nxt = s.groupby("gid")[["ep", "pos", "half"]].shift(-1)
+    ep_end = np.where(nxt["half"] != s["half"], 0.0,
+                      np.where(nxt["pos"] == s["pos"], nxt["ep"], -nxt["ep"]))
+    over = _b(df["status_type_completed"])[snap]
+    ep_end = pd.Series(ep_end, index=s.index).where(nxt["half"].notna(), np.where(over, 0.0, np.nan))
+    return (ep_end - s["ep"]).reindex(df.index)
 
 
 def _clean_scores(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
