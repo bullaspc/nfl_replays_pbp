@@ -810,7 +810,7 @@ _summary_result()
 # ---------- Scoring timeline ----------
 # Collapsed like Recent plays; the label counts the revealed scores.
 _stl_df = scoring_timeline(revealed, home, away) if not revealed.empty else pd.DataFrame()
-with st.expander(f"Scoring timeline ({len(_stl_df)})", expanded=False):
+with st.expander(f"Scoring timeline ({len(_stl_df)})", expanded=False, key="_exp_scoring"):
     if not _stl_df.empty:
         _stl_cols = ["Q", "Clock", "Team", "Type", "Score"]
         if not hide_descriptions:
@@ -828,7 +828,9 @@ def _reset_recent_page():
 
 _DOWN_NAMES = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}
 # Filters sit inside the expander, so its label counts what is revealed.
-with st.expander(f"Recent plays ({len(revealed)})", expanded=False):
+# The count-labelled expanders are keyed: an unkeyed expander is identified by
+# its label, so each new play would redraw it collapsed.
+with st.expander(f"Recent plays ({len(revealed)})", expanded=False, key="_exp_recent"):
     st.markdown(
         '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
         '<span style="background:#ffd0a6;padding:2px 8px;border-radius:3px;margin-right:6px">4th-down attempt</span>'
@@ -922,7 +924,7 @@ if not revealed.empty:
         _sr_str = f"{_drive_sr:.0f}%" if not pd.isna(_drive_sr) else "—"
         drive_df = build_plays_df(_drive_raw, hide_descriptions)
         with st.expander(f"Current drive ({_possession_team} · {_drive_plays} plays)",
-                         expanded=True):
+                         expanded=True, key="_exp_drive"):
             st.caption(
                 f"**{_possession_team}** · {_drive_plays} plays · "
                 f"Success rate: {_sr_str} · Time of possession: {_top_str}"
@@ -1125,7 +1127,7 @@ elif not revealed.empty:
 if not revealed.empty:
     _exp_df = explosive_plays(revealed)
     _exp_count = len(_exp_df)
-    with st.expander(f"Explosive plays ({_exp_count})", expanded=False):
+    with st.expander(f"Explosive plays ({_exp_count})", expanded=False, key="_exp_explosive"):
         if not _exp_df.empty:
             exp_display = build_plays_df(_exp_df, hide_descriptions, reverse=False)
             plays_table(exp_display)
@@ -1146,7 +1148,7 @@ if not revealed.empty:
                    "● start · ▶ end · one segment per play, ticks mark each snap · "
                    "latest drive on top")
     if not _dc.empty:
-        with st.expander(f"Drive table ({len(_dc)})", expanded=False):
+        with st.expander(f"Drive table ({len(_dc)})", expanded=False, key="_exp_drive_table"):
             stat_table(style_drive_chart(_dc), hide_index=True)
     else:
         st.caption("No drive data available.")
