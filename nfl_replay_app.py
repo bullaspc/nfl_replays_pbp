@@ -33,8 +33,9 @@ from replay_core import (
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, with_class_year, wp_crossings,
-    FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
+    FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
+    PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
 )
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
@@ -969,8 +970,37 @@ for col, team in zip(st.columns(2), (away, home)):
         st.caption(f"Timeouts {timeout_pips(_t, max(3, _t or 0))}"
                    + (f" · {_t} left" if _t is not None else ""))
 
+def _margin_label(m: int) -> str:
+    """The `PASS_MARGIN_BINS` bin a margin falls in, in words."""
+    if m == 0:
+        return "tied"
+    edges = PASS_MARGIN_BINS
+    for lo, hi in zip(edges, edges[1:]):
+        if lo < m <= hi:
+            a, b = (abs(hi), abs(lo) - 1) if m < 0 else (lo + 1, hi)
+            a, b = min(a, b), max(a, b)
+            span = f"{a}+" if b >= 98 else (f"{a}" if a == b else f"{a}–{b}")
+            return f"{'down' if m < 0 else 'up'} {span}"
+    return ""
+
+
+def _fmt_timeouts(v: float) -> str:
+    return f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"≈ {v:.1f}"
+
+
+def _clock_range(r) -> str:
+    if r["Ball back with"] <= 0:
+        return "0:00, time runs out"
+    out = fmt_clock(r["Ball back with"])
+    if r["High"] - r["Low"] >= 5:
+        out += f" ({fmt_clock(r['Low'])}–{fmt_clock(r['High'])})"
+    return out
+
+
+_pass_rates = leagues.pass_rate_table(league.key)
 if _snap is not None:
     _P, _D, _h = _snap.posteam, _snap.defteam, _snap.half_secs
+    _lead = _snap.score[_P] - _snap.score[_D]
     if _snap.kickoff:
         _where = "receives the kickoff"
     else:
@@ -983,9 +1013,23 @@ if _snap is not None:
         _bits.append("clock running" if _snap.running else "clock stopped")
     st.caption(" · ".join(_bits) + " (estimated from the last play)")
 
+    # The call teams make here: a trailing offense throws more, the later it gets.
+    _down, _dist = (1, 10.0) if _snap.kickoff else (_snap.down, _snap.ydstogo)
+    _p = pass_rate(_pass_rates, _down, _dist, _lead, _snap.qtr, _h)
+    if _p is not None:
+        _phase = PASS_PHASES[pass_phase(_snap.qtr, _h)]
+        _dist_label = "1–2" if _dist <= 2 else "3–6" if _dist <= 6 else "7–10" if _dist <= 10 else "11+"
+        st.markdown(f"Play call: **{_p:.0%} pass** · {1 - _p:.0%} run")
+        st.progress(_p)
+        st.caption(f"How often {league.name if league.key == 'NFL' else 'FBS'} offenses pass on "
+                   f"{_down}{'st' if _down == 1 else 'nd' if _down == 2 else 'rd' if _down == 3 else 'th'} "
+                   f"& {_dist_label}, {_margin_label(_lead)}, {_phase}"
+                   + (" (after the kickoff)" if _snap.kickoff else "")
+                   + (" when they go for it" if _down == 4 else "")
+                   + ": teams that trail throw more, the later it gets.")
+
     _late = _h is not None and _h <= SCENARIO_SECS and _snap.qtr in (2, 4, 5, 6, 7, 8)
     if _late:
-        _lead = _snap.score[_P] - _snap.score[_D]
         _end = "the half" if _snap.qtr == 2 else "the game"
         _notes = []
         if _lead > 0:
@@ -1006,22 +1050,44 @@ if _snap is not None:
                           + (" plus the two-minute warning" if _stops > _tos_p else "")
                           + f" to stop the clock: about **{plays_left(_h, _stops)} plays** at a "
                             "hurry-up pace.")
+            if _snap.qtr >= 4 and not _snap.kickoff:
+                # Late and behind, it goes for it on 4th: a stop hands the leader the ball at the spot.
+                _tod = three_and_out(_snap, league.clock, _pass_rates, go_for_it=True)
+                if not _tod.empty and _tod["Ball back with"].iloc[0] > 0:
+                    _r = _tod.iloc[0]
+                    _k = first_downs_to_kneel(after_three_and_out(_snap, _r.to_dict()), league.clock)
+                    _then = ("can kneel it out" if _k == 0 else
+                             "needs one first down to kneel it out" if _k == 1 else
+                             f"needs {_k} first downs to kneel it out" if _k is not None else
+                             f"still has to hold {_P} off")
+                    _notes.append(f"If **{_P}** turns it over on downs, **{_D}** gets the ball with "
+                                  f"≈ {fmt_clock(_r['Ball back with'])} and {_then}.")
         for _note in _notes:
             st.markdown(f"- {_note}")
 
-        _tao = three_and_out(_snap, league.clock) if _lead >= 0 else pd.DataFrame()
+        _tao = three_and_out(_snap, league.clock, _pass_rates) if _lead >= 0 else pd.DataFrame()
         if not _tao.empty:
             _fg = _snap.yardline_100 <= FG_RANGE
             _runs = max(4 - _snap.down, 0)
             _kick = "kicks a field goal" if _fg else "punts"
-            _how = ("goes three-and-out running the ball and " + _kick if _runs == 3
-                    else f"runs {_runs} more time{'s' if _runs > 1 else ''} without a first down and {_kick}"
-                    if _runs else _kick)
+            _pr = _tao["Pass rate"].iloc[0]
+            _known = not pd.isna(_pr) and _pass_rates is not None
+            if _runs == 1:
+                _how = (f"doesn't convert on {_snap.down}rd down"
+                        + (f" (teams pass there {_pr:.0%} of the time at this score and clock)" if _known else "")
+                        + f" and {_kick}")
+            elif _runs:
+                _how = (f"doesn't convert on its next {_runs} downs"
+                        + (f", passing on about {_pr:.0%} of them as teams do at this score and clock," if _known
+                           else "")
+                        + f" and {_kick}")
+            else:
+                _how = _kick
             st.markdown(f"If **{_P}** {_how}, **{_D}** gets the ball back with:")
             _tbl = pd.DataFrame({
-                f"{_D} timeouts used": _tao["Timeouts used"],
-                "Clock left": _tao["Ball back with"].map(lambda v: fmt_clock(v) if v > 0 else "0:00, time runs out"),
-                f"{_D} timeouts left": _tao["Timeouts left"],
+                f"{_D} timeouts used": _tao["Timeouts used"].map(_fmt_timeouts),
+                "Clock left": _tao.apply(_clock_range, axis=1),
+                f"{_D} timeouts left": _tao["Timeouts left"].map(_fmt_timeouts),
                 f"{_D} plays": _tao["Plays"].where(_tao["Ball back with"] > 0).map(
                     lambda v: "—" if pd.isna(v) else f"≈ {int(v)}"),
             })
@@ -1034,8 +1100,14 @@ if _snap is not None:
                         if _over[i] else w for i, w in enumerate(_wps)]
                 _tbl[f"{_D} win probability"] = ["—" if w is None else f"{w:.0%}" for w in _wps]
             stat_table(_tbl, hide_index=True)
-            st.caption(f"≈ {RUNOFF_SECS + RUN_SECS}s a run with the clock running "
-                       f"(a leading offense's pace, 2024 NFL), "
+            _ro = runoff_secs(_lead)
+            st.caption(f"≈ {_ro + RUN_SECS}s a snap with the clock running "
+                       f"({'a leading' if _lead > 0 else 'a tied'} offense's pace, NFL 2019–2025); "
+                       + (f"{PASS_STOP_SHARE:.0%} of passes and few runs stop the clock in a series "
+                          "that doesn't convert (incomplete, out of bounds), so the clock is an "
+                          "average, with the middle 80% of outcomes in brackets; "
+                          if _pass_rates is not None else "every down a run; ")
+                       + f"{_D} spends a timeout only when the clock is running; "
                        + ("the field goal good and a touchback on the kickoff"
                           if _fg else f"a {NET_PUNT}-yard net punt")
                        + ("; the two-minute warning stops the clock once"

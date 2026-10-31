@@ -202,6 +202,22 @@ def xrush_table(league_key: str) -> pd.DataFrame | None:
     return None if t.empty else t
 
 
+PASS_RATE_TABLE = Path(__file__).parent / "models" / "pass_rate.csv"
+
+
+@st.cache_resource
+def pass_rate_table(league_key: str) -> pd.DataFrame | None:
+    """How often the league's offenses pass by down, distance, score margin and
+    clock (tools/build_pass_rate_table.py), or None if it isn't there: Game
+    management's scenarios then run on every down."""
+    try:
+        t = pd.read_csv(PASS_RATE_TABLE)
+    except OSError:
+        return None
+    t = t[t["league"] == league_key].drop(columns="league")
+    return None if t.empty else t.astype({k: float for k in core.PASS_KEYS})
+
+
 def with_xrush(pbp: pd.DataFrame, league_key: str) -> pd.DataFrame:
     """`pbp` with each designed run's expected yards (`xrush_yards`)."""
     return core.add_expected_rush(pbp, xrush_table(league_key))

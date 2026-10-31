@@ -3,11 +3,13 @@ Check the Game management estimates against what happened next.
 
 For every snap in a season of nflverse pbp, `next_snap()` is given the plays
 up to the one before it and its estimate (offense, down, distance, spot,
-clock, timeouts) is compared with that snap. Then every three-and-out late in
-a half (runs on 1st to 3rd down, then a punt, inside the last 6 minutes) is
-replayed with `three_and_out()` and its "ball back with" clock, for the
-timeouts the defense really used, compared with the receiving team's first
-snap. Last, for each drive a trailing team ran until the clock ran out,
+clock, timeouts) is compared with that snap; the clock of a running-clock
+snap with the flat RUNOFF_SECS and with runoff_secs() by the offense's margin.
+Then every three-and-out late in a half (passes or runs on 1st to 3rd down,
+then a punt, inside the last 6 minutes) is replayed with `three_and_out()`,
+with every down a run and with models/pass_rate.csv's pass rates, and its
+"ball back with" clock, for the timeouts the defense really used, compared
+with the receiving team's first snap. Last, for each drive a trailing team ran until the clock ran out,
 `plays_left()` from its first snap is compared with the snaps it got.
 
     python tools/validate_game_management.py 2025 [path] [n_games]
@@ -22,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import replay_core as core  # noqa: E402
 
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
+RATES = Path(__file__).resolve().parent.parent / "models" / "pass_rate.csv"
 SNAPS = ["pass", "run", "punt", "field_goal", "qb_kneel", "qb_spike"]
 
 
@@ -31,7 +34,11 @@ def _half_secs(r) -> float:
 
 
 def main(season: int, path: str | None = None, n_games: int | None = None) -> None:
-    pbp = pd.read_parquet(path or PBP_URL.format(y=season), columns=core.PBP_COLS)
+    pbp = pd.read_parquet(path or PBP_URL.format(y=season))
+    # The published pbp has no xrush_yards (the app adds it on loading).
+    pbp = pbp[[c for c in core.PBP_COLS if c in pbp.columns]]
+    rates = pd.read_csv(RATES)
+    rates = rates[rates["league"] == "NFL"].drop(columns="league").astype({k: float for k in core.PASS_KEYS})
     pbp = pbp[pbp["qtr"] <= 4].sort_values(["game_id", "play_id"])
     games = pbp["game_id"].unique()[:n_games]
     rows, tao, drill = [], [], []
@@ -54,14 +61,22 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
                 "clock_err": (est.half_secs - core.RUNOFF_SECS * est.running - _half_secs(r)
                               if est.half_secs is not None and est.half_secs <= core.SCENARIO_SECS
                               else np.nan),
+                # The same with the runoff by the offense's margin (runoff_secs()).
+                "clock_err_margin": (est.half_secs - core.runoff_secs(est.score[est.posteam] - est.score[est.defteam])
+                                     * est.running - _half_secs(r)
+                                     if est.half_secs is not None and est.half_secs <= core.SCENARIO_SECS
+                                     else np.nan),
                 "running": est.running,
                 "timeouts": (est.timeouts[r["home_team"]] == r["home_timeouts_remaining"])
                             and (est.timeouts[r["away_team"]] == r["away_timeouts_remaining"]),
             })
-        # Three-and-outs on runs late in a half.
+        # Three-and-outs late in a half: passes or runs on 1st to 3rd down,
+        # then a punt. Each is replayed with every down a run and with the
+        # league's pass rates.
         for _, d in g[g["drive"].notna()].groupby("drive"):
             sc = d[d["play_type"].isin(SNAPS)]
-            if (len(sc) != 4 or list(sc["play_type"]) != ["run"] * 3 + ["punt"]
+            if (len(sc) != 4 or not set(sc["play_type"].iloc[:3]) <= {"run", "pass"}
+                    or sc["play_type"].iloc[3] != "punt"
                     or list(sc["down"]) != [1, 2, 3, 4] or sc["qb_kneel"].sum() > 0):
                 continue
             first = sc.index[0]
@@ -74,9 +89,14 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
                 continue
             used = int(est.timeouts[est.defteam] - back.iloc[0][
                 "home_timeouts_remaining" if est.defteam == g["home_team"].iloc[0] else "away_timeouts_remaining"])
-            tbl = core.three_and_out(est, core.NFL_CLOCK)
-            pick = tbl.iloc[(tbl["Timeouts used"] - used).abs().argsort()[:1]]
-            tao.append(float(pick["Ball back with"].iloc[0]) - _half_secs(back.iloc[0]))
+            real = _half_secs(back.iloc[0])
+            row = {"passes": int((sc["play_type"].iloc[:3] == "pass").sum()),
+                   "margin": est.score[est.posteam] - est.score[est.defteam]}
+            for name, table in (("runs", None), ("rates", rates)):
+                tbl = core.three_and_out(est, core.NFL_CLOCK, table)
+                pick = tbl.iloc[(tbl["Timeouts used"] - used).abs().argsort()[:1]]
+                row[name] = float(pick["Ball back with"].iloc[0]) - real
+            tao.append(row)
         # Drives a trailing team ran until the clock ran out: plays_left()
         # from its first snap vs the snaps it got.
         for _, d in g[g["drive"].notna()].groupby("drive"):
@@ -101,11 +121,21 @@ def main(season: int, path: str | None = None, n_games: int | None = None) -> No
     for running, d in df.dropna(subset=["clock_err"]).groupby("running"):
         ce = d["clock_err"].abs()
         print(f"  clock, last {core.SCENARIO_SECS // 60} min of a half, {'running' if running else 'stopped'}: "
-              f"{len(ce)} snaps, |err| median {ce.median():.0f}s, within 10s {(ce <= 10).mean():7.2%}")
-    t = np.abs(tao)
+              f"{len(ce)} snaps, |err| median {ce.median():.0f}s, within 10s {(ce <= 10).mean():7.2%}"
+              + (f"; runoff by margin: median {d['clock_err_margin'].abs().median():.0f}s, within 10s "
+                 f"{(d['clock_err_margin'].abs() <= 10).mean():7.2%}" if running else ""))
+    t = pd.DataFrame(tao)
     if len(t):
-        print(f"three-and-outs: {len(t)}  ball-back |err| median {np.median(t):.0f}s  "
-              f"within 15s {(t <= 15).mean():.0%}  mean signed err {np.mean(tao):+.0f}s")
+        print(f"three-and-outs ending in a punt, last {core.SCENARIO_SECS // 60} min of a half: {len(t)}")
+        groups = [("all", t), ("no passes", t[t["passes"] == 0]), ("1+ passes", t[t["passes"] > 0]),
+                  ("offense ahead", t[t["margin"] > 0]), ("tied", t[t["margin"] == 0]),
+                  ("offense behind", t[t["margin"] < 0])]
+        for label, d in groups:
+            if d.empty:
+                continue
+            print(f"  {label:15s} {len(d):4d}  " + "  ".join(
+                f"{name}: |err| median {d[name].abs().median():3.0f}s within 15s {(d[name].abs() <= 15).mean():4.0%} "
+                f"mean {d[name].mean():+4.0f}s" for name in ("runs", "rates")))
     if drill:
         e = np.abs(drill)
         print(f"trailing drives to 0:00: {len(e)}  plays |err| median {np.median(e):.0f}  "
