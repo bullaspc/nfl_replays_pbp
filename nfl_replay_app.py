@@ -32,7 +32,7 @@ from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
-    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, wp_crossings,
+    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, with_class_year, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, RUNOFF_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
 )
@@ -390,6 +390,8 @@ revealed = pbp_game.iloc[: cursor_idx + 1].copy()
 # Player-leader columns this game's data can't fill (e.g. tackles in older
 # college games), dropped rather than shown as zeros.
 missing_stats = league.missing_stats(revealed)
+# College rosters' class years (Fr … Sr) for the leaders tables; empty for the NFL.
+class_years = league.class_years(season, stamp)
 # Line play's QB Hit % drops out where the data has no QB hits (college).
 _line_drop = frozenset({"QB Hit %"}) if "QB Hits" in missing_stats else frozenset()
 # elapsed_s is still derived because the win probability chart caps its x-axis
@@ -741,10 +743,12 @@ else:
             top_wpa=top_plays_wpa(revealed, home, away),
             explosive=explosive_plays(revealed),
             leaders={
-                **{(t, k): top_players(revealed, t, k, n, drop=missing_stats)
+                **{(t, k): with_class_year(top_players(revealed, t, k, n, drop=missing_stats),
+                                           class_years, t)
                    for t in (away, home)
                    for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
-                **{(t, "defense"): top_defenders(revealed, t, 10, drop=missing_stats)
+                **{(t, "defense"): with_class_year(top_defenders(revealed, t, 10, drop=missing_stats),
+                                                   class_years, t)
                    for t in (away, home)},
             },
         )
@@ -1174,20 +1178,23 @@ if not hide_leaders:
     st.caption(f"SR%, aDOT and EPA/play colors show percentile vs player games in the "
                f"{league.baseline_label} · green = top · red = bottom · only players with "
                f"{PLAYER_MIN_PLAYS['passing']}+ dropbacks, {PLAYER_MIN_PLAYS['rushing']}+ "
-               f"carries or {PLAYER_MIN_PLAYS['receiving']}+ targets are colored")
+               f"carries or {PLAYER_MIN_PLAYS['receiving']}+ targets are colored"
+               + (" · Yr: class year on the season's roster" if class_years else ""))
     col_a, col_h = st.columns(2)
     for col, team in [(col_a, away), (col_h, home)]:
         with col:
             st.markdown(f"**{team}**")
             for _kind, _n in [("passing", 3), ("rushing", 4), ("receiving", 8)]:
-                _lead_df = top_players(revealed, team, _kind, _n, drop=missing_stats)
+                _lead_df = with_class_year(top_players(revealed, team, _kind, _n, drop=missing_stats),
+                                           class_years, team)
                 st.caption(_kind.capitalize())
                 if not _lead_df.empty:
                     stat_table(style_player_table(_lead_df, _kind, _player_baselines),
                                hide_index=True)
                 else:
                     st.caption("No data yet")
-            _def_df = top_defenders(revealed, team, 10, drop=missing_stats)
+            _def_df = with_class_year(top_defenders(revealed, team, 10, drop=missing_stats),
+                                      class_years, team)
             st.caption("Defense")
             if not _def_df.empty:
                 stat_table(style_defense_table(_def_df), hide_index=True)

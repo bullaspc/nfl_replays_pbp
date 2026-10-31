@@ -1826,6 +1826,57 @@ def player_ids(pbp: pd.DataFrame) -> pd.DataFrame:
     return ids[~ids.duplicated(["team", "name"], keep=False)].reset_index(drop=True)
 
 
+# ---------- Class year (college) ----------
+# A roster's year (1–4) as the leaders tables show it.
+CLASS_YEARS = {1: "Fr", 2: "So", 3: "Jr", 4: "Sr"}
+CLASS_COL = "Yr"
+_NAME_SUFFIX = re.compile(r"\b(?:jr|sr|ii|iii|iv)\b\.?")
+
+
+def player_key(name) -> str:
+    """A name reduced to its letters, lower case, without Jr/Sr/II/III/IV,
+    so the feed's spellings meet a roster's: 'D.J. McKinney' and 'DJ McKinney'
+    → 'djmckinney', "J'Marion Burnette" and 'JMarion Burnette' alike."""
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[^a-z]", "", _NAME_SUFFIX.sub("", name.lower()))
+
+
+def class_year_keys(roster: pd.DataFrame) -> dict[tuple[str, str], str]:
+    """(team, `player_key`) → class year ("Fr" … "Sr") from a roster with
+    team, first_name, last_name and year. Each player goes in under his full
+    name and as stat-crew text writes it ("D.Lee"); a key two players of a
+    team share with different years is left out rather than guessed."""
+    if roster.empty:
+        return {}
+    r = roster[roster["year"].isin(list(CLASS_YEARS))]
+    first = r["first_name"].fillna("").astype(str).str.strip()
+    last = r["last_name"].fillna("").astype(str).str.strip()
+    yr = r["year"].map(CLASS_YEARS)
+    rows = pd.concat([
+        pd.DataFrame({"team": r["team"], "key": (first + " " + last).map(player_key), "yr": yr}),
+        pd.DataFrame({"team": r["team"], "key": (first.str[:1] + "." + last).map(player_key), "yr": yr}),
+    ])
+    rows = rows[rows["key"] != ""].drop_duplicates()
+    rows = rows[~rows.duplicated(["team", "key"], keep=False)]
+    return {(t, k): y for t, k, y in zip(rows["team"], rows["key"], rows["yr"])}
+
+
+def with_class_year(df: pd.DataFrame, years: dict, team: str | None = None) -> pd.DataFrame:
+    """A leaders table with a `CLASS_COL` column after Player, where `years`
+    (`class_year_keys`) knows any of its players. The team is `team`, or
+    each row's Team column (the Season stats page's league-wide tables)."""
+    if not years or df.empty or "Player" not in df.columns:
+        return df
+    teams = df["Team"] if team is None and "Team" in df.columns else [team] * len(df)
+    yr = [years.get((t, player_key(p)), "") for t, p in zip(teams, df["Player"])]
+    if not any(yr):
+        return df
+    out = df.copy()
+    out.insert(out.columns.get_loc("Player") + 1, CLASS_COL, yr)
+    return out
+
+
 def _phase_totals(s: pd.DataFrame) -> pd.DataFrame:
     """One team's snaps per game and phase (game_id × `SNAP_PHASES` labels),
     read off its fullest-playing player in each (snaps ÷ share)."""
