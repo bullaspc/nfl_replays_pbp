@@ -8,7 +8,8 @@ function of DataFrames, importable from tools and tests.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import product
 from typing import NamedTuple
 
 import numpy as np
@@ -2688,61 +2689,247 @@ def next_snap(revealed: pd.DataFrame, rules: ClockRules) -> Snap | None:
                 season, home, receives_2h)
 
 
+# How often an offense passes (a pass play: attempts and sacks; scrambles
+# count as runs, as in nflfastR's play_type) by down, distance, its score
+# margin and the clock: a trailing team throws more, the later it gets (in the
+# last 2:00 of the 4th, 2019-2025 NFL: 83-91% trailing, 71% tied, 11-20%
+# leading). tools/build_pass_rate_table.py fits it into models/pass_rate.csv,
+# one table per league. A cell is shrunk toward its down × distance × phase
+# rate (and that toward down × distance) by PASS_SHRINK plays.
+PASS_DIST_BINS = [0, 2, 6, 10, 99]                  # ydstogo: 1-2, 3-6, 7-10, 11+
+PASS_MARGIN_BINS = [-99, -9, -4, -1, 0, 3, 8, 99]   # down 9+, 4-8, 1-3, tied, up 1-3, 4-8, 9+
+PASS_PHASES = ["1st half", "last 2:00 of the 1st half", "3rd quarter", "4th, 15:00-10:00",
+               "4th, 10:00-5:00", "4th, 5:00-2:00", "4th, last 2:00"]
+PASS_KEYS = ["down", "dist_bin", "margin_bin", "phase"]
+PASS_SHRINK = 30
+
+
+def pass_phase(qtr, half_secs) -> int:
+    """`PASS_PHASES` index of a snap in `qtr` with `half_secs` left in the
+    half (in overtime, the period; None if untimed: like the 4th's last 5:00)."""
+    if qtr > 4:
+        return 6 if half_secs is not None and pd.notna(half_secs) and half_secs <= TWO_MINUTES else 5
+    if qtr <= 2:
+        return int(qtr == 2 and pd.notna(half_secs) and half_secs <= TWO_MINUTES)
+    if qtr == 3:
+        return 2
+    if pd.isna(half_secs):
+        return 5
+    return 3 if half_secs > 600 else 4 if half_secs > 300 else 5 if half_secs > TWO_MINUTES else 6
+
+
+def _pass_bins(down, togo, margin, phase) -> pd.DataFrame:
+    return pd.DataFrame({
+        "down": np.asarray(down, dtype=float),
+        "dist_bin": pd.cut(np.asarray(togo, dtype=float), PASS_DIST_BINS, labels=False),
+        "margin_bin": pd.cut(np.asarray(margin, dtype=float), PASS_MARGIN_BINS, labels=False),
+        "phase": np.asarray(phase, dtype=float)})
+
+
+def pass_calls(pbp: pd.DataFrame) -> pd.DataFrame:
+    """`pbp`'s passes and runs on downs (no kneels or spikes), binned
+    (`PASS_KEYS`) with `pass` 1 for a pass play. `pbp` must hold whole games,
+    in order (the margin is the score before the snap)."""
+    margin = pre_play_margin(pbp)
+    margin = margin.where(pbp["posteam"] == pbp["home_team"], -margin)
+    gsr = pbp["game_seconds_remaining"]
+    half = gsr.where(pbp["qtr"] > 2, gsr - 1800)
+    phase = [pass_phase(q, h) for q, h in zip(pbp["qtr"], half)]
+    out = _pass_bins(pbp["down"], pbp["ydstogo"], margin, phase).set_index(pbp.index)
+    out["pass"] = (pbp["play_type"] == "pass").astype(float)
+    keep = (pbp["play_type"].isin(["pass", "run"]) & pbp["down"].between(1, 4)
+            & (pbp["qb_kneel"].fillna(0) != 1) & (pbp["qb_spike"].fillna(0) != 1))
+    return out[keep].dropna(subset=PASS_KEYS)
+
+
+def fit_pass_rate(pbp: pd.DataFrame) -> pd.DataFrame:
+    """The pass-rate table (`PASS_KEYS`, rate, plays) over every cell, from
+    `pass_calls(pbp)` (or `pbp` already binned)."""
+    calls = pbp if "pass" in pbp.columns and "phase" in pbp.columns else pass_calls(pbp)
+    grid = pd.MultiIndex.from_product(
+        [[1, 2, 3, 4], range(len(PASS_DIST_BINS) - 1), range(len(PASS_MARGIN_BINS) - 1),
+         range(len(PASS_PHASES))], names=PASS_KEYS).to_frame(index=False).astype(float)
+    overall = calls["pass"].mean()
+
+    def level(keys, prior):
+        g = calls.groupby(keys)["pass"].agg(["sum", "size"]).reset_index()
+        t = grid[keys].drop_duplicates().merge(g, on=keys, how="left").fillna({"sum": 0, "size": 0})
+        if prior is None:
+            t["rate"] = (t["sum"] + PASS_SHRINK * overall) / (t["size"] + PASS_SHRINK)
+        else:
+            t = t.merge(prior[[*prior_keys(prior), "rate"]].rename(columns={"rate": "_p"}),
+                        on=prior_keys(prior), how="left")
+            t["rate"] = (t["sum"] + PASS_SHRINK * t["_p"]) / (t["size"] + PASS_SHRINK)
+        return t
+
+    def prior_keys(t):
+        return [k for k in PASS_KEYS if k in t.columns]
+
+    t = level(["down", "dist_bin"], None)
+    t = level(["down", "dist_bin", "phase"], t)
+    t = level(PASS_KEYS, t)
+    return t.rename(columns={"size": "plays"})[[*PASS_KEYS, "rate", "plays"]]
+
+
+def pass_rate(table: pd.DataFrame | None, down, togo, margin, qtr, half_secs) -> float | None:
+    """The share of offenses that pass in this down, distance, score margin
+    (the offense's) and clock, from `table` (fit_pass_rate()); None without
+    one."""
+    if table is None or table.empty or pd.isna(down) or pd.isna(togo):
+        return None
+    key = _pass_bins([min(max(down, 1), 4)], [max(togo, 1)], [margin], [pass_phase(qtr, half_secs)])
+    hit = key.merge(table, on=PASS_KEYS, how="left")["rate"]
+    return None if hit.isna().all() else float(hit.iloc[0])
+
+
+def add_expected_pass(pbp: pd.DataFrame, table: pd.DataFrame) -> pd.Series:
+    """Each of `pass_calls(pbp)`'s plays' pass rate from `table`."""
+    calls = pass_calls(pbp)
+    r = calls.reset_index().merge(table[[*PASS_KEYS, "rate"]], on=PASS_KEYS, how="left").set_index("index")
+    return r["rate"]
+
+
+# A play the clock stops after, late in a half, in a series that doesn't
+# convert (2019-2025 NFL, last 6:00 of the 2nd and 4th): 58% of passes
+# (incomplete, out of bounds, a flag), 4% of runs.
+PASS_STOP_SHARE = 0.58
+RUN_STOP_SHARE = 0.04
+# Whistle to the next snap with the clock running, last 6:00 of the 4th
+# (2019-2025 NFL, snap to snap less the play): a leading offense milks it, a
+# trailing one hurries, by its margin (`PASS_MARGIN_BINS`' edges): down 9+,
+# down 1-8, tied, ahead.
+RUNOFF_BY_MARGIN = ((-9, 23), (-1, 31), (0, 34))
+
+
+def runoff_secs(margin: int) -> int:
+    """Whistle to the next snap with the clock running, for an offense
+    `margin` points ahead (behind if negative)."""
+    for upto, secs in RUNOFF_BY_MARGIN:
+        if margin <= upto:
+            return secs
+    return RUNOFF_SECS
+
+
 def _burn(secs_left: float, running: bool, stop_tos: int, plays: list[float],
-          two_min: bool) -> tuple[float, int]:
+          two_min: bool, stops: list[bool] | None = None,
+          runoff: float = RUNOFF_SECS) -> tuple[float, int]:
     """Clock left after the offense snaps `plays` (each play's seconds) and
-    lets the clock run between them, while the other side spends up to
-    `stop_tos` timeouts stopping it, and the two-minute warning stops it once
-    if `two_min`. Returns (seconds left after the last play, timeouts spent)."""
+    lets the clock run between them (`runoff`), while the other side spends
+    up to `stop_tos` timeouts stopping it, and the two-minute warning stops it
+    once if `two_min`. `stops` marks the plays the clock stops after on its
+    own (an incomplete pass, out of bounds). Returns (seconds left after the
+    last play, timeouts spent)."""
     h, used = secs_left, 0
-    for p in plays:
+    for i, p in enumerate(plays):
         if running:
             if used < stop_tos:
                 used += 1
             else:
-                nxt = h - RUNOFF_SECS
+                nxt = h - runoff
                 h = TWO_MINUTES if two_min and h > TWO_MINUTES >= nxt else nxt
         if h <= 0:
             return 0.0, used
         start, h = h, h - p
-        running = not (two_min and start > TWO_MINUTES >= h)
+        running = not (two_min and start > TWO_MINUTES >= h) and not (stops and stops[i])
         if h <= 0:
             return 0.0, used
     return h, used
 
 
-def three_and_out(snap: Snap, rules: ClockRules) -> pd.DataFrame:
-    """If the offense runs on each down left before 4th and then kicks (a
-    punt, or a field goal in range), when the other team gets the ball back,
-    one row per number of timeouts it spends stopping the clock, most first.
-    Columns: Timeouts used, Ball back with (seconds), Timeouts left, Plays
-    (about how many it can run then, `plays_left()`); plus the
-    other team's state then for a win probability model (`wp_state`)."""
+def _expected_burn(secs_left: float, running: bool, stop_tos: int, plays: list[float],
+                   two_min: bool, stop_probs: list[float], runoff: float) -> tuple[float, float, float, float]:
+    """`_burn()` over every way the clock could stop or run after each play,
+    weighted by `stop_probs`. Returns the expected clock left, the expected
+    timeouts spent, and the clock's 10th and 90th percentiles."""
+    out = []
+    for stops in product((False, True), repeat=len(plays)):
+        w = float(np.prod([q if s else 1 - q for s, q in zip(stops, stop_probs)]))
+        if w > 0:
+            out.append((*_burn(secs_left, running, stop_tos, plays, two_min, list(stops), runoff), w))
+    left, used, w = (np.array(c, dtype=float) for c in zip(*out))
+    w = w / w.sum()
+    order = np.argsort(left)
+    cum = np.cumsum(w[order])
+    pct = lambda q: float(left[order][np.searchsorted(cum, q)])  # noqa: E731
+    return float(left @ w), float(used @ w), pct(0.1), pct(0.9)
+
+
+def series_calls(snap: Snap, pass_rates: pd.DataFrame | None, plays: int) -> list[float]:
+    """The pass rate of each of the offense's next `plays` snaps if none of
+    them gains (the down goes up, the distance stays), from `pass_rates`; 0
+    (runs) without a table."""
+    margin = snap.score[snap.posteam] - snap.score[snap.defteam]
+    out = []
+    for i in range(plays):
+        p = pass_rate(pass_rates, snap.down + i, snap.ydstogo, margin, snap.qtr, snap.half_secs)
+        out.append(0.0 if p is None else p)
+    return out
+
+
+def three_and_out(snap: Snap, rules: ClockRules, pass_rates: pd.DataFrame | None = None,
+                  go_for_it: bool = False) -> pd.DataFrame:
+    """If the offense doesn't gain a first down on the downs left before 4th
+    and then kicks (a punt, or a field goal in range), when the other team
+    gets the ball back, one row per number of timeouts it's willing to spend
+    stopping the clock, most first. Each down is a pass or a run as often as
+    offenses call one there (`pass_rates`, by the score and clock: a trailing
+    team throws, and an incomplete pass stops the clock); without a table,
+    every down is a run. With `go_for_it`, the offense also runs a 4th down
+    and turns it over on downs at the spot.
+    Columns: Timeouts used and Timeouts left (expected), Ball back with
+    (expected seconds), Low / High (its 10th / 90th percentiles), Pass rate (the
+    downs' mean), Plays (about how many the other team can run then,
+    `plays_left()`); plus the other team's state then for a win probability
+    model (`wp_state`)."""
     if snap.half_secs is None or snap.down > 4:
         return pd.DataFrame()
-    fg = snap.yardline_100 <= FG_RANGE
-    runs = max(4 - snap.down, 0)
+    fg = snap.yardline_100 <= FG_RANGE and not go_for_it
+    downs = max((5 if go_for_it else 4) - snap.down, 0)
+    calls = series_calls(snap, pass_rates, downs)
+    stop_probs = [p * PASS_STOP_SHARE + (1 - p) * RUN_STOP_SHARE for p in calls]
+    margin = snap.score[snap.posteam] - snap.score[snap.defteam]
     two_min = rules.two_minute(snap.season) and snap.qtr in (2, 4)
     tos = snap.timeouts.get(snap.defteam) or 0
+    # A defense that leads doesn't stop the clock for the offense.
+    spend = 0 if margin < 0 else tos
+    plays = [RUN_SECS] * downs + ([] if go_for_it else [FG_SECS if fg else PUNT_SECS])
+    probs = stop_probs + ([] if go_for_it else [1.0])   # a kick changes possession: the clock stops
     rows, seen = [], set()
-    for k in range(tos, -1, -1):
-        left, used = _burn(snap.half_secs, snap.running, k, [RUN_SECS] * runs + [FG_SECS if fg else PUNT_SECS],
-                           two_min)
-        if (left, used) in seen:
+    for k in range(spend, -1, -1):
+        left, used, low, high = _expected_burn(snap.half_secs, snap.running, k, plays, two_min, probs,
+                                               runoff_secs(margin))
+        key = (round(left), round(used, 1))
+        if key in seen:
             continue
-        seen.add((left, used))
+        seen.add(key)
+        back = int(round(tos - used))   # for the models, which read whole timeouts
         if left <= 0:   # the clock runs out first: no kick
             yl, lead = 75.0, 0
+        elif go_for_it:
+            yl, lead = 100 - snap.yardline_100, 0
         elif fg:
             yl, lead = float(rules.touchback(snap.season)), 3
         else:
             yl = 80.0 if snap.yardline_100 - NET_PUNT < 20 else 100 - (snap.yardline_100 - NET_PUNT)
             lead = 0
-        rows.append({"Timeouts used": used, "Ball back with": left, "Timeouts left": tos - used,
-                     "Plays": plays_left(left, clock_stops(snap, snap.defteam, left, tos - used, rules)),
-                     **wp_state(snap, snap.defteam, left, tos - used,
+        rows.append({"Timeouts used": used, "Ball back with": left, "Low": low, "High": high,
+                     "Timeouts left": tos - used, "Pass rate": float(np.mean(calls)) if calls else np.nan,
+                     "Plays": plays_left(left, clock_stops(snap, snap.defteam, left, back, rules)),
+                     **wp_state(snap, snap.defteam, left, back,
                                 snap.timeouts.get(snap.posteam), yl, -lead)})
     return pd.DataFrame(rows)
+
+
+def after_three_and_out(snap: Snap, row: dict) -> Snap:
+    """The other team's first snap after `three_and_out()`'s `row`: 1st & 10
+    at the row's spot with its clock (stopped: the ball changed hands) and
+    timeouts."""
+    tos = dict(snap.timeouts)
+    tos[snap.defteam] = int(row["_posteam_timeouts_remaining"]) \
+        if pd.notna(row["_posteam_timeouts_remaining"]) else None
+    return replace(snap, posteam=snap.defteam, defteam=snap.posteam, half_secs=float(row["Ball back with"]),
+                   running=False, down=1, ydstogo=10.0, yardline_100=float(row["_yardline_100"]),
+                   timeouts=tos, kickoff=False)
 
 
 # A trailing offense's pace late in a half, from 2024 NFL plays (trailing by
