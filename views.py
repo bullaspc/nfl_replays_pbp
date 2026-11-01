@@ -866,15 +866,26 @@ def _nowrap(v) -> str:
 # The column that stays put while a wide table scrolls sideways on a phone.
 PINNED_COL = "Player"
 # Streamlit's page background, which the pinned cells need to hide the
-# columns scrolling under them. Streamlit doesn't expose it to CSS.
+# columns scrolling under them. Streamlit doesn't expose it to CSS, so it's
+# read from .streamlit/config.toml's [theme.light] / [theme.dark], with
+# Streamlit's defaults where those aren't set.
 _PAGE_BG = {"light": "#ffffff", "dark": "#0e1117"}
+
+
+def _page_bg() -> str:
+    kind = st.context.theme.type if st.context.theme.type in _PAGE_BG else "light"
+    try:
+        configured = st.get_option(f"theme.{kind}.backgroundColor")
+    except Exception:  # an older Streamlit without the per-mode sections
+        configured = None
+    return configured or st.get_option("theme.backgroundColor") or _PAGE_BG[kind]
 
 
 def _pinned_props() -> list[tuple[str, str]]:
     """CSS that pins a column (header and cells) to the left edge, with an
     inset line as its border: a collapsed table border stays behind."""
     return [("position", "sticky"), ("left", "0"), ("z-index", "1"),
-            ("background-color", _PAGE_BG.get(st.context.theme.type, _PAGE_BG["light"])),
+            ("background-color", _page_bg()),
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
