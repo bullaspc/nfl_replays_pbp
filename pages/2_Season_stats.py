@@ -24,13 +24,14 @@ from replay_core import (
     situational_table, team_schedule, with_class_year,
 )
 from views import (
-    pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
+    mobile_css, section_nav, pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
     style_team_schedule, style_weekly_snaps,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
+mobile_css()  # the Team tab's sticky section links
 
 QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 
@@ -197,7 +198,12 @@ with tab_team:
     team = st.selectbox("Team", shown_teams, key=f"_ss_team_{league.name}")
     sit_plays = leagues.season_plays(league, season, stamp, weeks, part, play_filter)
     pbp = venue_plays(sit_plays, VENUES[venue])
-    st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"))
+    # The tab runs about fifteen phone screens: one sticky row of links to its sections.
+    section_nav([("Season", "ss-season"), ("Schedule", "ss-schedule"),
+                 ("Situations", "ss-situations"), ("Tendencies", "ss-tendencies"),
+                 ("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
+                + ([("Injuries", "ss-injuries")] if league.availability(season).source else []))
+    st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"), anchor="ss-season")
     col_o, col_d = st.columns(2)
     for col, side_label in [(col_o, "Offense"), (col_d, "Defense (allowed)")]:
         side = SIDES[side_label]
@@ -218,7 +224,7 @@ with tab_team:
     sel_games = leagues.season_plays(league, season, stamp, weeks, part)
     if VENUES[venue]:
         sel_games = sel_games[sel_games[VENUES[venue]] == team]
-    st.markdown("**Schedule**")
+    st.markdown("<span id='ss-schedule'></span>**Schedule**", unsafe_allow_html=True)
     try:
         upcoming = league.upcoming(season, stamp)
     except leagues.GameLoadError:
@@ -229,13 +235,14 @@ with tab_team:
     if schedule.empty:
         st.caption("No games in this selection.")
     else:
-        stat_table(style_team_schedule(schedule), hide_index=True)
+        stat_table(style_team_schedule(schedule), hide_index=True, pin="Opp")
         st.caption("Each game's final score (games still to play: the kickoff date), the offense's EPA/play and what the defense allowed "
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
                    "defense. Colors rank each game against every team-game in the selection: "
                    "green = top, red = bottom.")
 
-    st.markdown("**Situational success rates**")
+    st.markdown("<span id='ss-situations'></span>**Situational success rates**",
+                unsafe_allow_html=True)
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
     if team in tables["situational_team"].index:  # raw, or adjusted for the defenses faced
         own = tables["situational_team"].loc[team]
@@ -249,7 +256,7 @@ with tab_team:
                + (f" {team}'s numbers are adjusted for the defenses faced; the league's are as "
                   "played." if adjusted else ""))
 
-    st.markdown("**Tendencies**")
+    st.markdown("<span id='ss-tendencies'></span>**Tendencies**", unsafe_allow_html=True)
     tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
                                       key="_ss_tend_downs", label_visibility="collapsed") or "All downs"
     tend_base = leagues.season_tendencies(league, season, stamp, weeks, part,
@@ -271,7 +278,7 @@ with tab_team:
     st.caption("From the offense's side, as on the replay; the grey dash and hover compare "
                "with the whole league over the same games. Colors are EPA/play.")
 
-    st.markdown("**Player leaders**")
+    st.markdown("<span id='ss-leaders'></span>**Player leaders**", unsafe_allow_html=True)
     player_min = {k: _default_min(k) for k in PLAYER_MIN_PLAYS}
     player_dists = season_player_distributions({k: tables[k] for k in PLAYER_MIN_PLAYS}, player_min)
     col_a, col_b = st.columns(2)
@@ -295,7 +302,7 @@ with tab_team:
     # so they follow the selection's games (weeks, games, venue) but not its
     # quarter, garbage-time or clutch filters.
     avail = league.availability(season)
-    st.markdown("**Snap counts**")
+    st.markdown("<span id='ss-snaps'></span>**Snap counts**", unsafe_allow_html=True)
     if not avail.source:
         st.caption(f"No snap counts or injury reports for {league.name} in this app's data.")
     else:
@@ -327,7 +334,7 @@ with tab_team:
                            "counted, by week (blank: no snap in this phase that week), and Total over "
                            "those games. Bye weeks and games not counted yet have no column.")
 
-        st.markdown("**Injury report**")
+        st.markdown("<span id='ss-injuries'></span>**Injury report**", unsafe_allow_html=True)
         team_reports = (avail.injuries[avail.injuries["team"] == team] if not avail.injuries.empty
                         else avail.injuries)
         if avail.injuries.empty:
@@ -342,14 +349,17 @@ with tab_team:
             if not units.empty:
                 stat_table(style_availability_summary(units), hide_index=True)
             stat_table(style_injury_report(report), hide_index=True)
-            st.caption(
-                f"Week {report_week}, {team}'s latest report (as of {avail.as_of or 'the latest build'}). "
-                "**Status** is the game status on the final report: Out, Doubtful (rarely plays) or "
-                "Questionable (may play); before it there's only practice participation. **Snaps** "
-                "is his share of the team's snaps this season in the phase he plays most (O, D, "
-                "ST), **Starter** his slot on the latest depth chart; **Snaps out** adds up the "
-                "out-or-doubtful players' shares of the unit's phase (1.0 = one full-time player). "
-                f"From {avail.source}.")
+            st.caption(f"Week {report_week}, {team}'s latest report (as of "
+                       f"{avail.as_of or 'the latest build'}).")
+            # The column notes run about eight lines on a phone: collapsed, as on Matchup.
+            with st.expander("How to read the report", expanded=False, key="_ss_exp_report_help"):
+                st.caption(
+                    "**Status** is the game status on the final report: Out, Doubtful (rarely plays) or "
+                    "Questionable (may play); before it there's only practice participation. **Snaps** "
+                    "is his share of the team's snaps this season in the phase he plays most (O, D, "
+                    "ST), **Starter** his slot on the latest depth chart; **Snaps out** adds up the "
+                    "out-or-doubtful players' shares of the unit's phase (1.0 = one full-time player). "
+                    f"From {avail.source}.")
 
 # ---------- Players ----------
 def _leaderboard(kind: str, c2, c3) -> None:
@@ -405,8 +415,8 @@ _bands = {lbl.split(" · ")[1]: dist for lbl, _, dist in SR_SITUATIONS}
 _band = lambda k: (f"{_bands[k][0]}+" if _bands[k][1] >= 99 else f"{_bands[k][0]}–{_bands[k][1]}")
 _college = league.season_group_label == "Conference"
 st.divider()
-st.subheader("Methodology")
-st.markdown(f"""
+with st.expander("Methodology", expanded=False, key="_ss_exp_method"):
+    st.markdown(f"""
 **Data.** {"College play-by-play from ESPN as published by sportsdataverse, with its college "
            "EPA model; games count when an FBS team played in them, and only FBS teams are "
            "ranked (FCS opponents still count as opponents)" if _college else

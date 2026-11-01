@@ -25,12 +25,13 @@ from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MA
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
                          season_qualified, situational_matchup, status_by_name, team_snaps,
                          with_class_year)
-from views import (MATCHUP_TINTS, logo_img, stat_table, status_badge, style_availability_summary,
+from views import (MATCHUP_TINTS, logo_img, mobile_css, section_nav, stat_table, status_badge, style_availability_summary,
                    style_defense_table, style_head_to_head, style_injury_report, style_lineup_change,
                    style_lineup_groups, style_matchup_table, style_player_table,
                    style_situational_matchup)
 
 st.set_page_config(page_title="Matchup", layout="wide", page_icon="🆚")
+mobile_css()  # the section links' sticky row
 
 SIDES = {"Offense": "posteam", "Defense (allowed)": "defteam"}
 LEADERS = MATCHUP_LEADERS
@@ -242,7 +243,11 @@ st.caption(f"Season numbers: {sel_note} · places among the {n_teams} teams with
 # short still counts), the first run to get here with it set starts the job
 # on a worker thread, and a fragment polls for the result. The page has no
 # timer of its own, but any widget change reruns it while the model writes.
-st.subheader("🧠 Matchup preview")
+# One row of links to the sections, sticky under Streamlit's header: the
+# page runs about a dozen phone screens.
+section_nav([("Preview", "preview"), ("Availability", "availability"), ("Matchups", "matchups"),
+             ("Head to head", "head-to-head"), ("Downs", "downs"), ("Players", "key-players")])
+st.subheader("🧠 Matchup preview", anchor="preview")
 preview_key = (league.name, season, game["game_id"])
 _providers = game_summary.configured_providers(_setting)
 _job = st.session_state.get("_mu_job")
@@ -328,7 +333,7 @@ def _preview_result() -> None:
 _preview_result()
 
 # ---------- Availability ----------
-st.subheader("Availability")
+st.subheader("Availability", anchor="availability")
 if not avail.source:
     st.caption(f"No injury reports or snap counts for {league.name} in this app's data.")
 elif avail.injuries.empty:
@@ -340,15 +345,24 @@ else:
             if reports[team].empty:
                 st.caption("Not filed yet: teams file the first one about three days before the game.")
             else:
+                # The unit summary up front, the players behind it collapsed:
+                # on a phone both teams' full lists ran several screens
+                # before the Matchups.
                 if not report_units[team].empty:
                     stat_table(style_availability_summary(report_units[team]), hide_index=True)
-                stat_table(style_injury_report(reports[team]), hide_index=True)
+                with st.expander(f"Injury report ({len(reports[team])} players)", expanded=False,
+                                 key=f"_mu_exp_report_{'away' if team == away else 'home'}"):
+                    stat_table(style_injury_report(reports[team]), hide_index=True)
             if not avail.snaps.empty:
                 st.markdown(f"**{nm(team)}** · lineup vs the season numbers")
                 stat_table(style_lineup_groups(lineup_net[team]), hide_index=True)
                 if not _off_report(team).empty:
-                    stat_table(style_lineup_change(_off_report(team)), hide_index=True)
-    st.caption(
+                    with st.expander(f"Not on the report ({len(_off_report(team))} players)",
+                                     expanded=False,
+                                     key=f"_mu_exp_lineup_{'away' if team == away else 'home'}"):
+                        stat_table(style_lineup_change(_off_report(team)), hide_index=True)
+    with st.expander("How to read availability", expanded=False, key="_mu_exp_avail_help"):
+        st.caption(
         "**Status** is the game status on the final report, the day before the game (Wednesday for "
         "a Thursday game): Out, Doubtful (rarely plays) or Questionable (may play); before it there's "
         "only practice participation. **Snaps** is the player's share of his team's snaps this "
@@ -364,7 +378,7 @@ else:
         f"From {avail.source}; reports as of {avail.as_of or 'the latest build'}.")
 
 # ---------- Matchups ----------
-st.subheader("Matchups")
+st.subheader("Matchups", anchor="matchups")
 _epa = LINEUP_EFFECTS["EPA/play"]
 for col, (off, def_) in zip(st.columns(2), ((away, home), (home, away))):
     with col:
@@ -388,7 +402,7 @@ st.caption(
        "counts only roster moves." if no_status else ""))
 
 # ---------- Head to head ----------
-st.subheader("Head to head")
+st.subheader("Head to head", anchor="head-to-head")
 side_label = st.segmented_control("Side", list(SIDES), default="Offense", key="_mu_side",
                                   label_visibility="collapsed") or "Offense"
 side = SIDES[side_label]
@@ -400,7 +414,7 @@ st.caption(f"{side_label}: each team's value and place. **Δ** is {nm(away)} ({a
            f"{tint_note} (none within {EDGE_EVEN} percentile points).")
 
 # ---------- Down and distance ----------
-st.subheader("By down and distance")
+st.subheader("By down and distance", anchor="downs")
 for off, def_ in ((away, home), (home, away)):  # stacked: seven columns each
     st.markdown(f"**{nm(off)} offense** vs {nm(def_)} defense · O = offense, D = defense allowed")
     stat_table(style_situational_matchup(situational[off], off, def_, tints))
@@ -410,7 +424,7 @@ st.caption("Success rate (EPA > 0), the season's plays in brackets. Early downs 
            "plays there.")
 
 # ---------- Key players ----------
-st.subheader("Key players")
+st.subheader("Key players", anchor="key-players")
 games_max = int(tables["offense"]["Games"].max())
 player_min = {k: max(1, round(PLAYER_MIN_PLAYS[k] * games_max * tables["play_share"]))
               for k in PLAYER_MIN_PLAYS}
@@ -436,8 +450,8 @@ st.caption("Season totals over the same games. SR%, aDOT and EPA/play are colore
 
 # ---------- How to read this ----------
 st.divider()
-st.subheader("How to read this")
-st.markdown(f"""
+with st.expander("How to read this", expanded=False, key="_mu_exp_howto"):
+    st.markdown(f"""
 **Data.** The Season stats page's numbers, over the finished games picked in the sidebar (and
 any postseason games played so far); the game previewed hasn't been played. Teams with fewer than
 {SEASON_MIN_PLAYS} plays in the selection aren't ranked. Opponent-adjusted (the default here) takes

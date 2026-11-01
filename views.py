@@ -889,12 +889,14 @@ def _pinned_props() -> list[tuple[str, str]]:
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
-def stat_table(table, hide_index: bool = False) -> None:
+def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     """A table (DataFrame or Styler) as a static st.table: on a phone it
     scrolls with the page instead of catching swipes, its cells are tighter
     than st.dataframe's, and its columns can't be sorted or dragged. A
-    Description column wraps, and a `PINNED_COL` column stays at the left
-    edge while the table scrolls sideways. st.table drops white-space styles,
+    Description column wraps, and the row labels stay at the left edge while
+    the table scrolls sideways: the `pin` column, else a `PINNED_COL` column,
+    else the index where it's shown (one level: Stat, Team, Situation; its
+    header cell too). Only one, since each sticks at left 0. st.table drops white-space styles,
     so the other text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither")
     are displayed with non-breaking spaces and hyphens to stay on one line.
     Only the display changes, so styles keyed on the values still match."""
@@ -907,9 +909,15 @@ def stat_table(table, hide_index: bool = False) -> None:
     if "Description" in df.columns:
         styled = styled.set_properties(
             subset=["Description"], **{"min-width": "260px", "text-align": "left"})
-    if PINNED_COL in df.columns:
+    col = pin if pin in df.columns else PINNED_COL if PINNED_COL in df.columns else None
+    if col is not None:
         styled = styled.set_table_styles(
-            {PINNED_COL: [{"selector": "", "props": _pinned_props()}]}, overwrite=False)
+            {col: [{"selector": "", "props": _pinned_props()}]}, overwrite=False)
+    elif not hide_index and df.index.nlevels == 1:
+        props = _pinned_props()
+        styled = styled.set_table_styles(
+            [{"selector": "th.row_heading", "props": props},
+             {"selector": "th.blank", "props": props}], overwrite=False)
     st.table(styled, hide_index=hide_index)
 
 
