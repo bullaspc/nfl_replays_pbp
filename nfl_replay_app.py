@@ -622,14 +622,9 @@ if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to get a preview of the game.")
 else:
-    with st.container(key="row_pv"):
-        _pv_btn, _pv_pick = st.columns([3, 2], wrap=False)
+    # The default provider (SUMMARY_PROVIDER, else Kimi, else the one with a key).
     _pv_prov = next(iter(_providers))
-    if len(_providers) > 1:
-        _pv_prov = _pv_pick.selectbox(
-            "Model", list(_providers), label_visibility="collapsed", key="_pv_provider",
-            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
-    _pv_btn.button("Writing the preview…" if _pv_job is not None and _pv_job["key"] == _pv_key
+    st.button("Writing the preview…" if _pv_job is not None and _pv_job["key"] == _pv_key
                    else ("Update preview" if _pv_key in st.session_state.get("_pv_previews", {})
                          else "Preview this game"),
                    disabled=_pv_job is not None,
@@ -733,15 +728,9 @@ if not _providers:
 elif revealed.empty:
     st.caption("No plays revealed yet.")
 else:
-    with st.container(key="row_sum"):
-        _sum_btn, _sum_pick = st.columns([3, 2], wrap=False)
-    _prov = next(iter(_providers))
-    if len(_providers) > 1:
-        _prov = _sum_pick.selectbox(
-            "Model", list(_providers), label_visibility="collapsed",
-            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
+    _prov = next(iter(_providers))  # the default provider, as for the preview
     _has_summary = (st.session_state.get("_summary") or {}).get("game_id") == game_id
-    _sum_btn.button("Writing the summary…" if _job is not None and _job["game_id"] == game_id
+    st.button("Writing the summary…" if _job is not None and _job["game_id"] == game_id
                     else ("Update summary" if _has_summary else "Explain the score so far"),
                     disabled=_job is not None,
                     on_click=lambda gid=game_id: st.session_state.update(_summary_requested=gid),
