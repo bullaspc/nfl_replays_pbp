@@ -599,6 +599,38 @@ def _playback() -> None:
                          format_func=lambda x: f"{x}s", key="_v_every")
 
 
+@st.dialog("🔴 This game is live")
+def _ask_follow_live() -> None:
+    """Offer Follow live once per game when a live game is opened. Yes switches
+    the Playback popover's toggle on (and sets its delay); either answer, or
+    closing the box, leaves the choice to the popover from then on."""
+    st.write("Follow it as it airs? New plays appear on their own, each held back "
+             "so the feed can't run ahead of your TV or stream.")
+    delay = st.slider("Your broadcast runs behind the feed by (seconds)",
+                      min_value=0, max_value=180, value=_url_int("delay", 45, 0, 180),
+                      step=5, help="Cable is usually close to live; streaming apps "
+                                   "often run 30–90s behind.")
+    st.caption("You can change this any time under **Playback**, below the time bar.")
+    yes, no = st.columns(2)
+    if yes.button("Follow live", type="primary", use_container_width=True):
+        # The toggle's own key; the delay slider isn't drawn until Follow live is
+        # on, so its default (the URL's value) is what it starts from.
+        st.session_state["_v_follow"] = True
+        st.session_state.pop("_v_delay", None)
+        _url["delay"] = str(delay)
+        st.rerun()
+    if no.button("Not now", use_container_width=True):
+        st.rerun()
+
+
+# Asked once per game and session; not on a session restored from a URL that
+# already names this game (it was answered there), nor when it's already on.
+_asked = st.session_state.setdefault("_live_asked", set())
+if live_open and not follow_live and game_id not in _asked:
+    _asked.add(game_id)
+    if _url.get("game") != game_id:
+        _ask_follow_live()
+
 _playback()
 
 # ---------- Reveal gate ----------
