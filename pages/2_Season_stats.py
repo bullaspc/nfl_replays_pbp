@@ -349,14 +349,17 @@ with tab_team:
             if not units.empty:
                 stat_table(style_availability_summary(units), hide_index=True)
             stat_table(style_injury_report(report), hide_index=True)
-            st.caption(
-                f"Week {report_week}, {team}'s latest report (as of {avail.as_of or 'the latest build'}). "
-                "**Status** is the game status on the final report: Out, Doubtful (rarely plays) or "
-                "Questionable (may play); before it there's only practice participation. **Snaps** "
-                "is his share of the team's snaps this season in the phase he plays most (O, D, "
-                "ST), **Starter** his slot on the latest depth chart; **Snaps out** adds up the "
-                "out-or-doubtful players' shares of the unit's phase (1.0 = one full-time player). "
-                f"From {avail.source}.")
+            st.caption(f"Week {report_week}, {team}'s latest report (as of "
+                       f"{avail.as_of or 'the latest build'}).")
+            # The column notes run about eight lines on a phone: collapsed, as on Matchup.
+            with st.expander("How to read the report", expanded=False, key="_ss_exp_report_help"):
+                st.caption(
+                    "**Status** is the game status on the final report: Out, Doubtful (rarely plays) or "
+                    "Questionable (may play); before it there's only practice participation. **Snaps** "
+                    "is his share of the team's snaps this season in the phase he plays most (O, D, "
+                    "ST), **Starter** his slot on the latest depth chart; **Snaps out** adds up the "
+                    "out-or-doubtful players' shares of the unit's phase (1.0 = one full-time player). "
+                    f"From {avail.source}.")
 
 # ---------- Players ----------
 def _leaderboard(kind: str, c2, c3) -> None:
