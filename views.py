@@ -1047,7 +1047,11 @@ def ticker_html(games: list[TickerGame]) -> str:
 # - row_* (other wrap=False rows: the Recent plays pager, Game management's
 #   two team cards): no narrower than their content instead of 8rem, so they
 #   stay one row on a phone.
+# - .secnav (section_nav()'s links): its element sticks under Streamlit's
+#   header, and a section it scrolls to stops below it (scroll-margin).
 _MOBILE_CSS = """<style>
+[data-testid="stElementContainer"]:has(.secnav) { position: sticky; top: 3.75rem; z-index: 99; }
+[data-testid="stMain"] [id] { scroll-margin-top: 6.5rem; }
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
   .st-key-page_head h1 { font-size: 1.6rem; padding: 0.25rem 0 0; }
@@ -1061,6 +1065,20 @@ _MOBILE_CSS = """<style>
   .st-key-stepbar button { padding-left: 0; padding-right: 0; min-width: 0; }
 }
 </style>"""
+
+
+def section_nav(links: list[tuple[str, str]]) -> None:
+    """A row of links to the page's sections, (label, anchor) each: one line
+    that scrolls sideways on a phone, sticky under the header (_MOBILE_CSS),
+    on the page's background so the content scrolls under it."""
+    chip = ("display:inline-block;padding:0.15rem 0.7rem;margin-right:0.35rem;"
+            "border:1px solid rgba(128,128,128,0.4);border-radius:1rem;"
+            "text-decoration:none;color:inherit;font-size:0.85rem")
+    items = "".join(f"<a href='#{a}' target='_self' style='{chip}'>{escape(t)}</a>"
+                    for t, a in links)
+    st.markdown(f"<nav class='secnav' style='white-space:nowrap;overflow-x:auto;"
+                f"scrollbar-width:none;padding:0.4rem 0;background:{_page_bg()}'>{items}</nav>",
+                unsafe_allow_html=True)
 
 
 def mobile_css() -> None:
