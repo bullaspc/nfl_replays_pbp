@@ -1043,7 +1043,11 @@ def ticker_html(games: list[TickerGame]) -> str:
 # - stepbar (the replay's step buttons, one row with wrap=False): its columns
 #   lose Streamlit's 8rem minimum, which would push the row past a phone's
 #   edge, and below 680px of its own width (a phone, or a tablet with the
-#   sidebar open) the buttons show their icons alone.
+#   sidebar open) the buttons show their icons alone;
+# - row_* (other wrap=False rows: the Recent plays pager, Game management's
+#   two team cards, the AI buttons with their model picker): no narrower
+#   than their content instead of 8rem, so they stay one row on a phone (the
+#   AI rows' columns can go narrower still: the picker cuts a long model name).
 _MOBILE_CSS = """<style>
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
@@ -1052,6 +1056,9 @@ _MOBILE_CSS = """<style>
 }
 .st-key-stepbar { container-type: inline-size; }
 .st-key-stepbar [data-testid="stColumn"] { min-width: 0; }
+[class*="st-key-row_"] [data-testid="stColumn"] { min-width: min-content; }
+.st-key-row_pv [data-testid="stColumn"],
+.st-key-row_sum [data-testid="stColumn"] { min-width: 0; }
 @container (max-width: 680px) {
   .st-key-stepbar button [data-testid="stMarkdownContainer"] { display: none; }
   .st-key-stepbar button { padding-left: 0; padding-right: 0; min-width: 0; }

@@ -47,6 +47,19 @@ from views import (
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
 
+
+# Charts a swipe scrolls past: no toolbar, and no drag-to-zoom or pan, which
+# on a touchscreen would catch the finger scrolling the page. Hover still
+# shows the values, and a legend tap still hides a team. The WP chart's
+# x-axis stays capped at the cursor either way.
+_STATIC_CHART = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
+
+
+def _touch_safe(fig):
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    return fig.update_layout(dragmode=False)
+
 FULL_GAME = "Full game"
 
 
@@ -609,7 +622,8 @@ if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to get a preview of the game.")
 else:
-    _pv_btn, _pv_pick = st.columns([3, 2])
+    with st.container(key="row_pv"):
+        _pv_btn, _pv_pick = st.columns([3, 2], wrap=False)
     _pv_prov = next(iter(_providers))
     if len(_providers) > 1:
         _pv_prov = _pv_pick.selectbox(
@@ -719,7 +733,8 @@ if not _providers:
 elif revealed.empty:
     st.caption("No plays revealed yet.")
 else:
-    _sum_btn, _sum_pick = st.columns([3, 2])
+    with st.container(key="row_sum"):
+        _sum_btn, _sum_pick = st.columns([3, 2], wrap=False)
     _prov = next(iter(_providers))
     if len(_providers) > 1:
         _prov = _sum_pick.selectbox(
@@ -878,7 +893,9 @@ with st.expander(f"Recent plays ({len(revealed)})", expanded=False, key="_exp_re
         _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
         recent_df = build_plays_df(_slice, hide_descriptions, reverse=False)
         plays_table(recent_df)
-        col_prev, col_info, col_next = st.columns([1, 4, 1])
+        with st.container(key="row_pager"):
+            col_prev, col_info, col_next = st.columns([1, 4, 1], wrap=False,
+                                                      vertical_alignment="center")
         with col_prev:
             if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
                 st.session_state.recent_plays_page = _page - 1
@@ -970,7 +987,9 @@ if not hide_wp and not revealed.empty:
     elif revealed["home_wp"].notna().any():
         _hwp = float(revealed["home_wp"].dropna().iloc[-1])
         _wp_team = {home: _hwp, away: 1 - _hwp}
-for col, team in zip(st.columns(2), (away, home)):
+with st.container(key="row_wp"):
+    _wp_cols = st.columns(2, wrap=False)
+for col, team in zip(_wp_cols, (away, home)):
     with col:
         _ball = " 🏈" if _snap is not None and _snap.posteam == team else ""
         if team in _wp_team:
@@ -1356,7 +1375,7 @@ if not hide_wp:
                         annotation_font_size=10,
                     )
                 fig_mom.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
-                st.plotly_chart(fig_mom, width='stretch')
+                st.plotly_chart(_touch_safe(fig_mom), width='stretch', config=_STATIC_CHART)
         else:
             st.caption("Not enough plays for momentum chart.")
 
@@ -1381,7 +1400,7 @@ if not hide_wp:
         for _x in wp_crossings(revealed, _el_min):
             fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(_touch_safe(fig), width='stretch', config=_STATIC_CHART)
 
 # ---------- Top plays by win probability added ----------
 st.subheader("Top plays by win probability added")
