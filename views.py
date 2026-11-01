@@ -1035,6 +1035,35 @@ def ticker_html(games: list[TickerGame]) -> str:
             f'{cards}</div>')
 
 
+# Narrow-screen rules. They target keyed containers, whose key Streamlit adds
+# as an `st-key-<key>` class:
+# - page_head (title + tagline): on a phone (640px, where Streamlit stacks
+#   columns too), a smaller title and no tagline, so the score and time bar
+#   show on the first screen;
+# - stepbar (the replay's step buttons, one row with wrap=False): its columns
+#   lose Streamlit's 8rem minimum, which would push the row past a phone's
+#   edge, and below 680px of its own width (a phone, or a tablet with the
+#   sidebar open) the buttons show their icons alone.
+_MOBILE_CSS = """<style>
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
+  .st-key-page_head h1 { font-size: 1.6rem; padding: 0.25rem 0 0; }
+  .st-key-page_head [data-testid="stCaptionContainer"] { display: none; }
+}
+.st-key-stepbar { container-type: inline-size; }
+.st-key-stepbar [data-testid="stColumn"] { min-width: 0; }
+@container (max-width: 680px) {
+  .st-key-stepbar button [data-testid="stMarkdownContainer"] { display: none; }
+  .st-key-stepbar button { padding-left: 0; padding-right: 0; min-width: 0; }
+}
+</style>"""
+
+
+def mobile_css() -> None:
+    """The phone layout's CSS (`_MOBILE_CSS`); takes no space on the page."""
+    st.html(_MOBILE_CSS)
+
+
 def keep_screen_awake(enabled: bool) -> None:
     """Hold (or release) a Screen Wake Lock so a phone doesn't dim or lock mid-game.
 

@@ -36,7 +36,7 @@ Dependencies: pandas 2.x (`<3`). NFL data comes through `nflreadpy`, nflverse's 
 
 ## Architecture
 
-**Theme:** `.streamlit/config.toml` follows the device's light/dark setting (`[theme.light]` / `[theme.dark]`), with a teal accent (not red, which the tables use for red-zone cells and Out badges), a 14px base font (one more stat column fits on a phone), small radii and widget borders.
+**Theme:** `.streamlit/config.toml` follows the device's light/dark setting (`[theme.light]` / `[theme.dark]`), with a teal accent (not red, which the tables use for red-zone cells and Out badges), a 14px base font (one more stat column fits on a phone), small radii and widget borders. `views.mobile_css()` (the replay page) adds narrow-screen rules on keyed containers: on a phone (≤ 640px) `page_head` gets a smaller title and no tagline, so the score and time bar fit the first screen; `stepbar` keeps the step buttons in one row (`st.columns(5, wrap=False)` without Streamlit's 8rem column minimum) and, below 680px of its own width (a container query: a phone, or a tablet with the sidebar open), shows their material icons alone (⏮ ◀ ▶ ▶▶ ⏭, the glyphs the captions name).
 
 Python 3.11. The app covers the NFL and college football. A sidebar **League** radio picks a `League` object, and nothing else in the page branches on the league: both leagues produce play-by-play in the same nflfastR column layout (`PBP_COLS`).
 

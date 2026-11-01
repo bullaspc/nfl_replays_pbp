@@ -39,7 +39,7 @@ from replay_core import (
 )
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
-    logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
+    logo_img, mobile_css, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
@@ -95,8 +95,10 @@ with st.sidebar:
                            if _url.get("league") in _league_names else 0)
     league = leagues.LEAGUES[league_name]
 
-st.title(league.title)
-st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
+mobile_css()
+with st.container(key="page_head"):
+    st.title(league.title)
+    st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
     season = int(st.number_input("Season", min_value=league.first_season,
@@ -521,19 +523,26 @@ _drive_to = min(_drive_end(cursor_idx), _step_max) if cursor_idx < _step_max els
 _drive_open = (source == "live" and live_state != "post" and not follow_live
                and _drive_to == last_idx)
 
-_b1, _b2, _b3, _b4, _b5 = st.columns(5)
-if _b1.button("⏮ Start", key="bar_start", width='stretch', disabled=cursor_idx <= 0):
+# One row on a phone too (wrap=False), where mobile_css() shows the icons
+# alone. The icons are the glyphs the captions and help texts name.
+with st.container(key="stepbar"):
+    _b1, _b2, _b3, _b4, _b5 = st.columns(5, wrap=False)
+if _b1.button("Start", icon=":material/skip_previous:", key="bar_start", width='stretch',
+              disabled=cursor_idx <= 0):
     _move_cursor(0)
-if _b2.button("◀ Prev", key="bar_prev", width='stretch', disabled=cursor_idx <= 0):
+if _b2.button("Prev", icon=":material/arrow_left:", key="bar_prev", width='stretch',
+              disabled=cursor_idx <= 0):
     _move_cursor(cursor_idx - 1)
-if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= _step_max):
+if _b3.button("Next play", icon=":material/play_arrow:", key="bar_next", width='stretch',
+              disabled=cursor_idx >= _step_max):
     _move_cursor(cursor_idx + 1, unlock=True)
-if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch',
+if _b4.button("Next drive", icon=":material/fast_forward:", key="bar_drive", width='stretch',
               disabled=cursor_idx >= _step_max or _drive_open,
               help="This drive is still being played: step through it with ▶ Next play."
                    if _drive_open else None):
     _move_cursor(_drive_to, unlock=True)
-if _b5.button("⏭ Catch up", key="bar_catchup", width='stretch', disabled=cursor_idx >= cursor_max):
+if _b5.button("Catch up", icon=":material/skip_next:", key="bar_catchup", width='stretch',
+              disabled=cursor_idx >= cursor_max):
     _move_cursor(cursor_max)
 
 if cursor_idx >= 0:
