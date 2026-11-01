@@ -1,0 +1,22 @@
+# Follows the device's light/dark setting. The accent avoids red, which the
+# tables use for red-zone cells and Out badges. A 14px base fits about one
+# more stat column on a phone before a table scrolls sideways.
+# views._PAGE_BG reads the two backgroundColor values (the pinned Player
+# column paints the page background behind it).
+[theme]
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap"
+baseFontSize = 14
+baseRadius = "small"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#14866d"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f2f4f3"
+textColor = "#1a1d1c"
+
+[theme.dark]
+primaryColor = "#2bb594"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1a1f26"
+textColor = "#e6e8e7"

@@ -253,14 +253,10 @@ if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to get an AI preview of the matchup.")
 else:
-    _btn, _pick = st.columns([3, 2])
+    # The default provider (SUMMARY_PROVIDER, else Kimi, else the one with a key).
     _prov = next(iter(_providers))
-    if len(_providers) > 1:
-        _prov = _pick.selectbox(
-            "Model", list(_providers), label_visibility="collapsed", key="_mu_provider",
-            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
     _has = preview_key in st.session_state.get("_mu_previews", {})
-    _btn.button("Writing the preview…" if _job is not None and _job["key"] == preview_key
+    st.button("Writing the preview…" if _job is not None and _job["key"] == preview_key
                 else ("Update preview" if _has else "Write a matchup preview"),
                 disabled=_job is not None,
                 on_click=lambda k=preview_key: st.session_state.update(_mu_requested=k),

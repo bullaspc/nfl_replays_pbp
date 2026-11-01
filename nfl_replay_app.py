@@ -39,13 +39,29 @@ from replay_core import (
 )
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
-    logo_img, pass_tendency_figure, plays_table, run_tendency_figure, smap, style_drive_chart,
+    logo_img, mobile_css, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
 
 st.set_page_config(page_title="Football Replay Boxscore", layout="wide", page_icon="🏈")
+
+
+# Charts a swipe scrolls past: no toolbar, and no drag-to-zoom or pan, which
+# on a touchscreen would catch the finger scrolling the page. Hover still
+# shows the values, and a legend tap still hides a team. The WP chart's
+# x-axis stays capped at the cursor either way.
+# Auto-advance's choices of seconds between plays.
+INTERVALS = [30, 45, 60, 90]
+
+_STATIC_CHART = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
+
+
+def _touch_safe(fig):
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    return fig.update_layout(dragmode=False)
 
 FULL_GAME = "Full game"
 
@@ -95,8 +111,10 @@ with st.sidebar:
                            if _url.get("league") in _league_names else 0)
     league = leagues.LEAGUES[league_name]
 
-st.title(league.title)
-st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
+mobile_css()
+with st.container(key="page_head"):
+    st.title(league.title)
+    st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
     season = int(st.number_input("Season", min_value=league.first_season,
@@ -164,20 +182,13 @@ with st.sidebar:
     # Watching the game as it airs: follow the feed instead of a typed clock.
     # Plays are revealed only once they've sat in the feed for `live_delay`
     # seconds, so a stream that runs behind ESPN never shows a play first.
-    follow_live = False
-    live_delay = 0
-    if source == "live" and live_state != "post":
-        follow_live = st.toggle(
-            "🔴 Follow live", value=_url.get("follow") == "1",
-            help="Keep up with the game as it airs. New plays appear on their own, "
-                 "each held back by the delay below so the feed can't run ahead "
-                 "of your TV or stream.")
-        if follow_live:
-            live_delay = st.slider(
-                "Hold each new play back (seconds)", min_value=0, max_value=180,
-                value=_url_int("delay", 45, 0, 180), step=5,
-                help="How far your broadcast runs behind ESPN's play feed. Cable is "
-                     "usually close to live; streaming apps often run 30–90s behind.")
+    # Follow live, its delay and Auto-advance are drawn in the Playback
+    # popover under the time bar (`_playback()`), where they're at hand on a
+    # phone, but the cursor needs them before that: they're read here from
+    # their keys, with the URL's values until the popover has drawn them.
+    live_open = source == "live" and live_state != "post"
+    follow_live = live_open and st.session_state.get("_v_follow", _url.get("follow") == "1")
+    live_delay = st.session_state.get("_v_delay", _url_int("delay", 45, 0, 180)) if follow_live else 0
 
     if follow_live:
         st.caption("Following the live feed. Scrub back any time — you'll stay "
@@ -217,8 +228,10 @@ with st.sidebar:
     # OT in pbp is qtr=5; treat it as starting after Q4 ends.
     completed_qtrs = qtr_idx - 1
     baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-    auto = False if follow_live else st.checkbox("Auto-advance play by play",
-                                                 value=_url.get("auto") == "1")
+    auto = not follow_live and st.session_state.get("_v_auto", _url.get("auto") == "1")
+    _every = _url_int("every", 30, 30, 90)
+    refresh_interval = st.session_state.get("_v_every", _every if _every in INTERVALS else 30)
+    st.caption("Follow live and Auto-advance: **Playback**, under the time bar.")
     auto_tick = 0
     # debounce=False on every timer: debounced, the component restarts its
     # countdown each time the page redraws it, and the fragments below redraw
@@ -228,13 +241,6 @@ with st.sidebar:
         # Fast enough that the delay above is honoured to within ~10s.
         st_autorefresh(interval=10_000, debounce=False, key="live_follow")
     elif auto:
-        _intervals = [30, 45, 60, 90]
-        _every = _url_int("every", 30, 30, 90)
-        refresh_interval = st.selectbox("Refresh interval", _intervals,
-                                        index=_intervals.index(_every)
-                                        if _every in _intervals else 0,
-                                        format_func=lambda x: f"{x}s",
-                                        key="refresh_interval_clock")
         # The timer's tick count: a play is revealed only when it changes (see
         # the play cursor below), not on every rerun.
         auto_tick = st_autorefresh(interval=refresh_interval * 1000, debounce=False,
@@ -521,19 +527,26 @@ _drive_to = min(_drive_end(cursor_idx), _step_max) if cursor_idx < _step_max els
 _drive_open = (source == "live" and live_state != "post" and not follow_live
                and _drive_to == last_idx)
 
-_b1, _b2, _b3, _b4, _b5 = st.columns(5)
-if _b1.button("⏮ Start", key="bar_start", width='stretch', disabled=cursor_idx <= 0):
+# One row on a phone too (wrap=False), where mobile_css() shows the icons
+# alone. The icons are the glyphs the captions and help texts name.
+with st.container(key="stepbar"):
+    _b1, _b2, _b3, _b4, _b5 = st.columns(5, wrap=False)
+if _b1.button("Start", icon=":material/skip_previous:", key="bar_start", width='stretch',
+              disabled=cursor_idx <= 0):
     _move_cursor(0)
-if _b2.button("◀ Prev", key="bar_prev", width='stretch', disabled=cursor_idx <= 0):
+if _b2.button("Prev", icon=":material/arrow_left:", key="bar_prev", width='stretch',
+              disabled=cursor_idx <= 0):
     _move_cursor(cursor_idx - 1)
-if _b3.button("▶ Next play", key="bar_next", width='stretch', disabled=cursor_idx >= _step_max):
+if _b3.button("Next play", icon=":material/play_arrow:", key="bar_next", width='stretch',
+              disabled=cursor_idx >= _step_max):
     _move_cursor(cursor_idx + 1, unlock=True)
-if _b4.button("▶▶ Next drive", key="bar_drive", width='stretch',
+if _b4.button("Next drive", icon=":material/fast_forward:", key="bar_drive", width='stretch',
               disabled=cursor_idx >= _step_max or _drive_open,
               help="This drive is still being played: step through it with ▶ Next play."
                    if _drive_open else None):
     _move_cursor(_drive_to, unlock=True)
-if _b5.button("⏭ Catch up", key="bar_catchup", width='stretch', disabled=cursor_idx >= cursor_max):
+if _b5.button("Catch up", icon=":material/skip_next:", key="bar_catchup", width='stretch',
+              disabled=cursor_idx >= cursor_max):
     _move_cursor(cursor_max)
 
 if cursor_idx >= 0:
@@ -559,6 +572,35 @@ else:
                + ("Plays show up here as they air." if follow_live
                   else "Press **▶ Next play** to begin."))
 
+
+def _playback() -> None:
+    """Follow live (and its delay) or Auto-advance (and its interval), next to
+    the controls they drive. Drawn before the reveal gate, which can stop the
+    script: a keyed widget not drawn in a run loses its value."""
+    label = (f"Live · {live_delay}s behind" if follow_live
+             else f"Auto-advance · every {refresh_interval}s" if auto else "Playback")
+    with st.popover(label, icon=":material/tune:"):
+        if live_open:
+            st.toggle("🔴 Follow live", value=_url.get("follow") == "1", key="_v_follow",
+                      help="Keep up with the game as it airs. New plays appear on their own, "
+                           "each held back by the delay below so the feed can't run ahead "
+                           "of your TV or stream.")
+            if follow_live:
+                st.slider("Hold each new play back (seconds)", min_value=0, max_value=180,
+                          value=_url_int("delay", 45, 0, 180), step=5, key="_v_delay",
+                          help="How far your broadcast runs behind ESPN's play feed. Cable "
+                               "is usually close to live; streaming apps often run 30–90s "
+                               "behind.")
+                return
+        st.checkbox("Auto-advance play by play", value=_url.get("auto") == "1", key="_v_auto",
+                    help="Unlocks the next play on a timer, as if it just aired.")
+        if auto:
+            st.selectbox("Every", INTERVALS, index=INTERVALS.index(refresh_interval),
+                         format_func=lambda x: f"{x}s", key="_v_every")
+
+
+_playback()
+
 # ---------- Reveal gate ----------
 if blur_until_ready:
     if "revealed_ok" not in st.session_state:
@@ -575,8 +617,17 @@ if blur_until_ready:
 
 st.divider()
 
+# ---------- Section links ----------
+# One row of links to the sections, sticky under Streamlit's header
+# (mobile_css()), so a section is a tap away from anywhere on the page.
+section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
+             ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
+             ("Line", "line-play"), ("Tendencies", "tendencies")]
+            + ([] if hide_leaders else [("Players", "player-leaders")])
+            + ([] if hide_wp else [("WP", "momentum")]))
+
 # ---------- Boxscore ----------
-st.subheader("Boxscore")
+st.subheader("Boxscore", anchor="boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
@@ -600,13 +651,9 @@ if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to get a preview of the game.")
 else:
-    _pv_btn, _pv_pick = st.columns([3, 2])
+    # The default provider (SUMMARY_PROVIDER, else Kimi, else the one with a key).
     _pv_prov = next(iter(_providers))
-    if len(_providers) > 1:
-        _pv_prov = _pv_pick.selectbox(
-            "Model", list(_providers), label_visibility="collapsed", key="_pv_provider",
-            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
-    _pv_btn.button("Writing the preview…" if _pv_job is not None and _pv_job["key"] == _pv_key
+    st.button("Writing the preview…" if _pv_job is not None and _pv_job["key"] == _pv_key
                    else ("Update preview" if _pv_key in st.session_state.get("_pv_previews", {})
                          else "Preview this game"),
                    disabled=_pv_job is not None,
@@ -710,14 +757,9 @@ if not _providers:
 elif revealed.empty:
     st.caption("No plays revealed yet.")
 else:
-    _sum_btn, _sum_pick = st.columns([3, 2])
-    _prov = next(iter(_providers))
-    if len(_providers) > 1:
-        _prov = _sum_pick.selectbox(
-            "Model", list(_providers), label_visibility="collapsed",
-            format_func=lambda k: f"{_providers[k].label} · {_providers[k].model}")
+    _prov = next(iter(_providers))  # the default provider, as for the preview
     _has_summary = (st.session_state.get("_summary") or {}).get("game_id") == game_id
-    _sum_btn.button("Writing the summary…" if _job is not None and _job["game_id"] == game_id
+    st.button("Writing the summary…" if _job is not None and _job["game_id"] == game_id
                     else ("Update summary" if _has_summary else "Explain the score so far"),
                     disabled=_job is not None,
                     on_click=lambda gid=game_id: st.session_state.update(_summary_requested=gid),
@@ -808,6 +850,7 @@ def _summary_result() -> None:
 _summary_result()
 
 # ---------- Scoring timeline ----------
+st.markdown('<div id="plays"></div>', unsafe_allow_html=True)  # the nav's Plays link
 # Collapsed like Recent plays; the label counts the revealed scores.
 _stl_df = scoring_timeline(revealed, home, away) if not revealed.empty else pd.DataFrame()
 with st.expander(f"Scoring timeline ({len(_stl_df)})", expanded=False, key="_exp_scoring"):
@@ -869,7 +912,9 @@ with st.expander(f"Recent plays ({len(revealed)})", expanded=False, key="_exp_re
         _slice = _all_rev.iloc[(_page - 1) * _PAGE_SIZE : _page * _PAGE_SIZE]
         recent_df = build_plays_df(_slice, hide_descriptions, reverse=False)
         plays_table(recent_df)
-        col_prev, col_info, col_next = st.columns([1, 4, 1])
+        with st.container(key="row_pager"):
+            col_prev, col_info, col_next = st.columns([1, 4, 1], wrap=False,
+                                                      vertical_alignment="center")
         with col_prev:
             if st.button("◀ Prev", disabled=(_page <= 1), key="prev_plays"):
                 st.session_state.recent_plays_page = _page - 1
@@ -939,7 +984,7 @@ else:
 # Timeouts, win probability and the end-of-half clock. The next snap is
 # estimated from the last revealed play (next_snap), never read from the play
 # after it, which isn't revealed.
-st.subheader("Game management")
+st.subheader("Game management", anchor="game-management")
 
 
 def _scenario_wp(states: list[dict]) -> list[float] | None:
@@ -961,7 +1006,9 @@ if not hide_wp and not revealed.empty:
     elif revealed["home_wp"].notna().any():
         _hwp = float(revealed["home_wp"].dropna().iloc[-1])
         _wp_team = {home: _hwp, away: 1 - _hwp}
-for col, team in zip(st.columns(2), (away, home)):
+with st.container(key="row_wp"):
+    _wp_cols = st.columns(2, wrap=False)
+for col, team in zip(_wp_cols, (away, home)):
     with col:
         _ball = " 🏈" if _snap is not None and _snap.posteam == team else ""
         if team in _wp_team:
@@ -1135,7 +1182,7 @@ if not revealed.empty:
             st.caption("No explosive plays yet.")
 
 # ---------- Drive chart ----------
-st.subheader("Drive chart")
+st.subheader("Drive chart", anchor="drive-chart")
 if not revealed.empty:
     _dc = drive_chart(revealed)
     _spots = drive_field_spots(revealed)
@@ -1156,7 +1203,7 @@ else:
     st.caption("No plays revealed yet.")
 
 # ---------- Team stats ----------
-st.subheader("Team stats")
+st.subheader("Team stats", anchor="team-stats")
 stat_df = team_stats(revealed, home, away)
 _baselines = leagues.stat_baselines(league, season)
 stat_table(style_stat_table(stat_df, away, home, _baselines, final=game_over(revealed)))
@@ -1169,7 +1216,7 @@ st.caption(f"Colors show percentile vs {league.baseline_label} · green = top ·
            "distance and field position")
 
 # ---------- Situational success rates ----------
-st.subheader("Situational success rates")
+st.subheader("Situational success rates", anchor="situational")
 st.caption(f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom · "
            "CPOE and RYOE as in Team stats")
 _sr_subtotals = st.toggle("Early/late subtotals", value=False,
@@ -1200,7 +1247,7 @@ st.caption("EPA/play and SR (EPA > 0) count snaps a penalty wiped out, as above;
            f"{league.baseline_label}.")
 
 # ---------- Line play ----------
-st.subheader("Line play")
+st.subheader("Line play", anchor="line-play")
 st.caption(f"Each team's offensive line; the other column is its defensive front's side. "
            f"Colors show percentile vs {league.baseline_label} · green = top · red = bottom")
 line_df = line_play_stats(revealed, home, away, drop=_line_drop)
@@ -1211,7 +1258,7 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
            f"offense, per snap (pass, run or no-play).")
 
 # ---------- Tendencies ----------
-st.subheader("Tendencies")
+st.subheader("Tendencies", anchor="tendencies")
 _tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
                                    key="_tend_downs", label_visibility="collapsed") or "All downs"
 _tend_base = leagues.tendency_baselines(league, season).get(_tend_downs, {})
@@ -1247,7 +1294,7 @@ elif not revealed.empty:
 
 # ---------- Player leaders ----------
 if not hide_leaders:
-    st.subheader("Player leaders")
+    st.subheader("Player leaders", anchor="player-leaders")
     _player_baselines = leagues.player_baselines(league, season)
     st.caption(f"SR%, aDOT and EPA/play colors show percentile vs player games in the "
                f"{league.baseline_label} · green = top · red = bottom · only players with "
@@ -1280,7 +1327,7 @@ if not hide_leaders:
 # regulation (and untimed college OT gets room) instead of on top of Q4.
 _el_min = pd.Series(timeline.iloc[: len(revealed)].to_numpy() / 60.0, index=revealed.index)
 if not hide_wp:
-    st.subheader("Momentum")
+    st.subheader("Momentum", anchor="momentum")
     if not revealed.empty:
         _mom_scrimmage = revealed[
             (revealed["pass_attempt"].fillna(0) == 1) |
@@ -1347,7 +1394,7 @@ if not hide_wp:
                         annotation_font_size=10,
                     )
                 fig_mom.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
-                st.plotly_chart(fig_mom, width='stretch')
+                st.plotly_chart(_touch_safe(fig_mom), width='stretch', config=_STATIC_CHART)
         else:
             st.caption("Not enough plays for momentum chart.")
 
@@ -1372,7 +1419,7 @@ if not hide_wp:
         for _x in wp_crossings(revealed, _el_min):
             fig.add_vline(x=_x, line_dash="dash", line_color="gray", opacity=0.5)
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(_touch_safe(fig), width='stretch', config=_STATIC_CHART)
 
 # ---------- Top plays by win probability added ----------
 st.subheader("Top plays by win probability added")

@@ -866,15 +866,26 @@ def _nowrap(v) -> str:
 # The column that stays put while a wide table scrolls sideways on a phone.
 PINNED_COL = "Player"
 # Streamlit's page background, which the pinned cells need to hide the
-# columns scrolling under them. Streamlit doesn't expose it to CSS.
+# columns scrolling under them. Streamlit doesn't expose it to CSS, so it's
+# read from .streamlit/config.toml's [theme.light] / [theme.dark], with
+# Streamlit's defaults where those aren't set.
 _PAGE_BG = {"light": "#ffffff", "dark": "#0e1117"}
+
+
+def _page_bg() -> str:
+    kind = st.context.theme.type if st.context.theme.type in _PAGE_BG else "light"
+    try:
+        configured = st.get_option(f"theme.{kind}.backgroundColor")
+    except Exception:  # an older Streamlit without the per-mode sections
+        configured = None
+    return configured or st.get_option("theme.backgroundColor") or _PAGE_BG[kind]
 
 
 def _pinned_props() -> list[tuple[str, str]]:
     """CSS that pins a column (header and cells) to the left edge, with an
     inset line as its border: a collapsed table border stays behind."""
     return [("position", "sticky"), ("left", "0"), ("z-index", "1"),
-            ("background-color", _PAGE_BG.get(st.context.theme.type, _PAGE_BG["light"])),
+            ("background-color", _page_bg()),
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
@@ -1022,6 +1033,57 @@ def ticker_html(games: list[TickerGame]) -> str:
     return (f'<div style="display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;'
             f'margin-bottom:0.25rem;-webkit-overflow-scrolling:touch;scrollbar-width:thin">'
             f'{cards}</div>')
+
+
+# Narrow-screen rules. They target keyed containers, whose key Streamlit adds
+# as an `st-key-<key>` class:
+# - page_head (title + tagline): on a phone (640px, where Streamlit stacks
+#   columns too), a smaller title and no tagline, so the score and time bar
+#   show on the first screen;
+# - stepbar (the replay's step buttons, one row with wrap=False): its columns
+#   lose Streamlit's 8rem minimum, which would push the row past a phone's
+#   edge, and below 680px of its own width (a phone, or a tablet with the
+#   sidebar open) the buttons show their icons alone;
+# - row_* (other wrap=False rows: the Recent plays pager, Game management's
+#   two team cards): no narrower than their content instead of 8rem, so they
+#   stay one row on a phone.
+# - .secnav (section_nav()'s links): its element sticks under Streamlit's
+#   header, and a section it scrolls to stops below it (scroll-margin).
+_MOBILE_CSS = """<style>
+[data-testid="stElementContainer"]:has(.secnav) { position: sticky; top: 3.75rem; z-index: 99; }
+[data-testid="stMain"] [id] { scroll-margin-top: 6.5rem; }
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
+  .st-key-page_head h1 { font-size: 1.6rem; padding: 0.25rem 0 0; }
+  .st-key-page_head [data-testid="stCaptionContainer"] { display: none; }
+}
+.st-key-stepbar { container-type: inline-size; }
+.st-key-stepbar [data-testid="stColumn"] { min-width: 0; }
+[class*="st-key-row_"] [data-testid="stColumn"] { min-width: min-content; }
+@container (max-width: 680px) {
+  .st-key-stepbar button [data-testid="stMarkdownContainer"] { display: none; }
+  .st-key-stepbar button { padding-left: 0; padding-right: 0; min-width: 0; }
+}
+</style>"""
+
+
+def section_nav(links: list[tuple[str, str]]) -> None:
+    """A row of links to the page's sections, (label, anchor) each: one line
+    that scrolls sideways on a phone, sticky under the header (_MOBILE_CSS),
+    on the page's background so the content scrolls under it."""
+    chip = ("display:inline-block;padding:0.15rem 0.7rem;margin-right:0.35rem;"
+            "border:1px solid rgba(128,128,128,0.4);border-radius:1rem;"
+            "text-decoration:none;color:inherit;font-size:0.85rem")
+    items = "".join(f"<a href='#{a}' target='_self' style='{chip}'>{escape(t)}</a>"
+                    for t, a in links)
+    st.markdown(f"<nav class='secnav' style='white-space:nowrap;overflow-x:auto;"
+                f"scrollbar-width:none;padding:0.4rem 0;background:{_page_bg()}'>{items}</nav>",
+                unsafe_allow_html=True)
+
+
+def mobile_css() -> None:
+    """The phone layout's CSS (`_MOBILE_CSS`); takes no space on the page."""
+    st.html(_MOBILE_CSS)
 
 
 def keep_screen_awake(enabled: bool) -> None:
