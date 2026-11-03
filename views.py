@@ -610,6 +610,55 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
     return fig
 
 
+def qb_3d_figure(df: pd.DataFrame, epa_label: str = "EPA/play") -> go.Figure:
+    """The Season stats passers in three dimensions: time to throw (x),
+    completed air yards per completion (y) and EPA/play (z), one point per
+    passer (`df`: a leaderboard with Player, Team, Att, TTT, CAY, EPA/play),
+    sized by dropbacks and colored by EPA/play like the tendency charts. A
+    stem drops each point to the floor so its spot on the TTT × CAY plane
+    reads from any angle."""
+    d = df.dropna(subset=["TTT", "CAY", "EPA/play"])
+    epa = d["EPA/play"].astype(float)
+    span = max(float(epa.abs().max()), 0.1) if len(d) else 0.1
+    floor = float(epa.min()) - 0.05 if len(d) else -0.1
+    stems_x, stems_y, stems_z = [], [], []
+    for x, y, z in zip(d["TTT"], d["CAY"], epa):
+        stems_x += [x, x, None]
+        stems_y += [y, y, None]
+        stems_z += [floor, z, None]
+    att = d["Att"].astype(float)
+    size = 6 + 12 * (att - att.min()) / (att.max() - att.min()) if att.max() > att.min() else 10
+    fig = go.Figure([
+        go.Scatter3d(x=stems_x, y=stems_y, z=stems_z, mode="lines", hoverinfo="skip",
+                     line=dict(color="rgba(120,120,120,0.75)", width=3), showlegend=False),
+        # Each passer's shadow on the floor: where he sits on time × depth.
+        go.Scatter3d(x=d["TTT"], y=d["CAY"], z=[floor] * len(d), mode="markers",
+                     hoverinfo="skip", showlegend=False,
+                     marker=dict(size=3, color="rgba(120,120,120,0.8)")),
+        go.Scatter3d(
+            x=d["TTT"], y=d["CAY"], z=epa, mode="markers+text",
+            text=d["Player"], textposition="top center", textfont=dict(size=10),
+            marker=dict(size=size, color=epa, colorscale=_EPA_SCALE, cmin=-span, cmax=span,
+                        line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.95),
+            customdata=d[["Team", "Att"]].to_numpy(),
+            hovertemplate=("<b>%{text}</b> · %{customdata[0]}<br>Time to throw %{x:.2f}s<br>"
+                           "CAY %{y:.1f} yds<br>" + epa_label + " %{z:+.2f}<br>"
+                           "%{customdata[1]} dropbacks<extra></extra>"),
+            showlegend=False),
+    ])
+    fig.update_layout(
+        height=560, margin=dict(l=0, r=0, t=0, b=0),
+        scene=dict(
+            xaxis=dict(title="Time to throw (s)", spikecolor="rgba(128,128,128,0.6)"),
+            yaxis=dict(title="Completed air yards", spikecolor="rgba(128,128,128,0.6)"),
+            zaxis=dict(title=epa_label, spikecolor="rgba(128,128,128,0.6)",
+                       range=[floor, float(epa.max()) + 0.05] if len(d) else None),
+            camera=dict(eye=dict(x=1.4, y=-1.4, z=0.6), center=dict(x=0, y=0, z=-0.2)),
+            aspectmode="cube"),
+    )
+    return fig
+
+
 def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None) -> go.Figure:
     """Depth × side grid as the quarterback sees it, deepest row on top: each
     cell's color is EPA/play, its text attempts, share and completions."""

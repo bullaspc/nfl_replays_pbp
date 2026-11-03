@@ -25,7 +25,8 @@ from replay_core import (
     situational_table, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
-    mobile_css, section_nav, pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
+    mobile_css, section_nav, pass_tendency_figure, qb_3d_figure, run_tendency_figure, stat_table,
+    style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
     style_team_schedule, style_weekly_snaps,
@@ -383,6 +384,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
             min_value=0, value=_default_min(kind), step=5,
             key=f"_ss_min_{kind}_{_default_min(kind)}"))
         df = df[df[vol] >= min_plays]
+    qualified = df  # every player over the minimum, for the 3D chart
     numeric = [c for c in df.columns if c not in ("Player", "Team", CLASS_COL)]
     sort_by = c3.selectbox("Sort by", numeric,
                            index=numeric.index("Yds" if "Yds" in numeric else numeric[0]),
@@ -411,6 +413,30 @@ def _leaderboard(kind: str, c2, c3) -> None:
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:
             st.caption(_ngs_note(kind))
+        if kind == "passing" and has_ngs:
+            _qb_3d(qualified, min_plays)
+
+
+def _qb_3d(qualified: pd.DataFrame, min_plays: int) -> None:
+    """Time to throw × completed air yards × EPA/play for the passers over the
+    minimum, in a collapsed expander: dragging it turns the chart, so on a
+    phone it would catch the swipes that scroll the page."""
+    shown = qualified.dropna(subset=["TTT", "CAY", "EPA/play"])
+    with st.expander(f"3D chart: time to throw × air yards × EPA/play ({len(shown)} passers)",
+                     expanded=False, key="_ss_exp_qb3d"):
+        if shown.empty:
+            st.caption("No passer over the minimum has Next Gen Stats in this selection.")
+            return
+        label = "EPA/play (adj.)" if adjusted else "EPA/play"
+        st.plotly_chart(qb_3d_figure(shown, label), width="stretch",
+                        config={"displayModeBar": False, "scrollZoom": False})
+        st.caption(f"Each passer with {min_plays}+ dropbacks and Next Gen Stats: **time to throw** "
+                   "(snap to release, NGS) across, **completed air yards** per completion (NGS) "
+                   f"in depth, **{label}** up, also the color (green good, red bad). Size is "
+                   "dropbacks; each stem drops to the floor to show where he sits on time × "
+                   "depth. Drag to turn it, tap or hover a point for its numbers."
+                   + (" EPA/play is opponent-adjusted; TTT and CAY are as played." if adjusted
+                      else ""))
 
 
 def _ngs_note(kind: str) -> str:
