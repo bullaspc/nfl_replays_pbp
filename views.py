@@ -13,9 +13,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAY_SPLIT_GROUPS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
-                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label, success_emoji, yl_label)
+                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
+                         SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
 
@@ -249,7 +250,7 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
 
 
 _PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}",
-                   "Total EPA": "{:+.1f}"}
+                   "Total EPA": "{:+.1f}", **NGS_FORMATS}
 def style_defense_table(df: pd.DataFrame):
     """A defensive leaders table: counts, shown as 1 or 0.5 (half sacks and
     half TFLs) rather than 1.0."""
@@ -258,8 +259,9 @@ def style_defense_table(df: pd.DataFrame):
 
 def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None,
                        min_plays: int | None = None):
-    """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`)
-    colored by percentile vs `baselines[kind]`; players with fewer than
+    """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`,
+    and the Next Gen Stats ones in `NGS_RATE_COLS` where the Season stats
+    page adds them) colored by percentile vs `baselines[kind]`; players with fewer than
     `min_plays` (default `PLAYER_MIN_PLAYS`, the baseline's) stay plain."""
     arrs = (baselines or {}).get(kind, {})
     min_plays = PLAYER_MIN_PLAYS[kind] if min_plays is None else min_plays
@@ -272,7 +274,8 @@ def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = Non
 
     styled = df.style.format({c: f for c, f in _PLAYER_FORMATS.items() if c in df.columns},
                              na_rep="—")
-    rate_cols = [c for c in PLAYER_RATE_COLS[kind] if c in df.columns]
+    rate_cols = [c for c in [*PLAYER_RATE_COLS[kind], *NGS_RATE_COLS.get(kind, [])]
+                 if c in df.columns]
     return styled.apply(_colors, subset=rate_cols) if rate_cols else styled
 
 
@@ -345,11 +348,11 @@ def _season_format(col: str):
         return fmt_top
     if col in _RATE_ROWS or (col.endswith("%") and col not in LINE_COUNT_ROWS):
         f = "{:.1%}"
-    elif col in _EPA_ROWS:
+    elif col in _EPA_ROWS or col.endswith("EPA/play"):  # the charting's PA / Blitz EPA/play too
         f = "{:+.2f}"
     elif col in _OE_FORMATS:
         f = _OE_FORMATS[col]
-    elif col == "aDoT" or col in SEASON_PER_GAME:
+    elif col in ("aDoT", "Rushers") or col in SEASON_PER_GAME:
         f = "{:.1f}"
     else:
         f = "{:.0f}"
@@ -604,6 +607,90 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
                    ticktext=[f"{k}<br><b>{n}</b>" + (f" · {y:.1f}" if n else "")
                              for k, n, y in zip(runs.index, runs["Plays"], runs["Yds/Play"])]),
         yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False),
+    )
+    return fig
+
+
+# The players chart's neutral color scale, for metrics that aren't good or bad.
+_STYLE_SCALE = "Viridis"
+# Names drawn on the players chart at most (the rest show on hover).
+SCATTER_MAX_LABELS = 30
+
+
+def _metric_text(col: str, v) -> str:
+    """A players chart value as the leaderboard writes it."""
+    if pd.isna(v):
+        return "—"
+    fmt = _PLAYER_FORMATS.get(col)
+    if fmt:
+        return fmt.format(v)
+    return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+
+
+def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = None,
+                          size: str | None = None, labels: dict | None = None,
+                          glossary: dict | None = None, label_by: str | None = None,
+                          max_labels: int = SCATTER_MAX_LABELS) -> go.Figure:
+    """A leaderboard's players as a scatter of any two of its columns, with a
+    third as the color and a fourth as the size (None for neither). Dotted
+    lines mark the plotted players' medians. Colors run red → green where
+    higher is better (`SCATTER_HIGHER_IS_BETTER`), reversed where lower is
+    (`SCATTER_LOWER_IS_BETTER`), and on a neutral scale for style and volume;
+    sizes run from the smallest value to the largest. `labels` renames
+    columns on the axes and hover ("EPA/play (adj.)"); `glossary` (column →
+    description) spells out the axis titles. With more than `max_labels`
+    players only the ones highest in `label_by` (their volume) are named, so
+    the names stay readable; the rest show on hover. Fixed axes, no drag, so
+    a swipe over it scrolls the page."""
+    labels, glossary = labels or {}, glossary or {}
+    name = lambda c: labels.get(c, c)
+    title = lambda c: f"{name(c)} · {glossary[c].split(' (')[0]}" if c in glossary else name(c)
+    cols = [c for c in dict.fromkeys([x, y, color, size]) if c]
+    d = df.dropna(subset=cols)
+    marker = dict(line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.9)
+    if size:
+        v = d[size].astype(float)
+        marker["size"] = (8 + 20 * (v - v.min()) / (v.max() - v.min())) if v.max() > v.min() else 14
+    else:
+        marker["size"] = 12
+    if color:
+        v = d[color].astype(float)
+        if color in SCATTER_HIGHER_IS_BETTER or color in SCATTER_LOWER_IS_BETTER:
+            scale = _EPA_SCALE if color in SCATTER_HIGHER_IS_BETTER else _EPA_SCALE[::-1]
+            if color in SCATTER_LOWER_IS_BETTER:
+                scale = [[1 - p, c] for p, c in scale]
+            half = max(float((v - v.median()).abs().max()), 1e-9)
+            marker.update(cmin=float(v.median()) - half, cmax=float(v.median()) + half)
+        else:
+            scale = _STYLE_SCALE
+        marker.update(color=v, colorscale=scale, colorbar=dict(
+            title=dict(text=name(color), side="top"), orientation="h", x=0.5, xanchor="center",
+            y=-0.18, yanchor="top", thickness=8, len=0.5))
+    else:
+        marker["color"] = "rgba(0,150,136,0.8)"
+    hover = []
+    for _, r in d.iterrows():
+        lines = [f"<b>{r['Player']}</b> · {r['Team']}"]  # hover names everyone
+        lines += [f"{name(c)} {_metric_text(c, r[c])}" for c in cols]
+        hover.append("<br>".join(lines))
+    names = d["Player"]
+    if label_by in d.columns and len(d) > max_labels:
+        top = d[label_by].astype(float).rank(method="first", ascending=False) <= max_labels
+        names = names.where(top, "")
+    fig = go.Figure(go.Scatter(
+        x=d[x], y=d[y], mode="markers+text", text=names, textposition="top center",
+        textfont=dict(size=10), cliponaxis=False, marker=marker, hovertext=hover,
+        hovertemplate="%{hovertext}<extra></extra>", showlegend=False))
+    for med, axis in [(d[x].median(), "x"), (d[y].median(), "y")]:
+        if pd.notna(med):
+            line = dict(dash="dot", color="rgba(128,128,128,0.6)", width=1)
+            (fig.add_vline if axis == "x" else fig.add_hline)(med, line=line)
+    fig.update_layout(
+        height=540, margin=dict(l=50, r=20, t=20, b=110 if color else 50), dragmode=False,
+        xaxis=dict(title=title(x), fixedrange=True, zeroline=False,
+                   ticksuffix="%" if x.endswith("%") else ""),
+        yaxis=dict(title=title(y), fixedrange=True, zeroline=False,
+                   ticksuffix="%" if y.endswith("%") else ""),
     )
     return fig
 

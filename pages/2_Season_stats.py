@@ -16,15 +16,18 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
+    ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
+    NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
+    PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_schedule, with_class_year,
+    situational_table, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
-    mobile_css, section_nav, pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
+    mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
+    style_availability_summary, SCATTER_MAX_LABELS,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
     style_team_schedule, style_weekly_snaps,
@@ -42,6 +45,7 @@ TEAM_VIEWS = {
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
+    "Charting": ["Games", *CHART_ROWS],  # FTN's, NFL 2022 on
     "All": None,
 }
 SIDES = {"Offense": "posteam", "Defense (allowed)": "defteam"}
@@ -171,27 +175,53 @@ with tab_teams:
                                 key="_ss_view") or "Efficiency"
     side = SIDES[side_label]
     full = team_tables["offense" if side == "posteam" else "defense"]
-    lower = season_lower_is_better(side)
-    ranks = season_ranks(full, lower)
-    cols = [c for c in (TEAM_VIEWS[view] or full.columns) if c in full.columns]
-    sortable = [c for c in cols if c != "Games"]
-    default_sort = "EPA/play" if "EPA/play" in sortable else sortable[0]
-    sort_by = c3.selectbox("Sort by", sortable, index=sortable.index(default_sort),
-                           key=f"_ss_sort_{view}")
-    # Best first: by rank, so "lower is better" stats sort the right way.
-    order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
-    table = full.loc[[t for t in order if t in shown_teams], cols]
-    stat_table(style_season_table(table, ranks))
-    st.caption(
-        f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
-        f"among the {len(full)} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
-        f"with {min_team_plays}+ plays "
-        "(green = best, red = worst"
-        + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
-           if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
-        "colored: volume isn't good or bad. Sorted best first."
-        + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
-           + " faced; play counts and penalties are as played." if adjusted else ""))
+    charting = CHART_ROWS[0] in full.columns  # FTN's charting: NFL 2022 on
+    if view == "Charting" and not charting:
+        st.info(f"FTN's charting covers the NFL from {leagues.CHART_FIRST_SEASON} on."
+                if league.season_group_label == "Conference" or season < leagues.CHART_FIRST_SEASON
+                else f"FTN's charting of {season} couldn't be read. Try again later.")
+    else:
+        lower = season_lower_is_better(side)
+        ranks = season_ranks(full, lower)
+        cols = [c for c in (TEAM_VIEWS[view] or full.columns) if c in full.columns]
+        sortable = [c for c in cols if c != "Games"]
+        default_sort = "EPA/play" if "EPA/play" in sortable else sortable[0]
+        sort_by = c3.selectbox("Sort by", sortable, index=sortable.index(default_sort),
+                               key=f"_ss_sort_{view}")
+        # Best first: by rank, so "lower is better" stats sort the right way.
+        order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
+        table = full.loc[[t for t in order if t in shown_teams], cols]
+        stat_table(style_season_table(table, ranks))
+        n_charted, n_games = tables["charted"]
+        st.caption(
+            f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
+            f"among the {len(full)} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
+            f"with {min_team_plays}+ plays "
+            "(green = best, red = worst"
+            + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
+               if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
+            "colored: volume isn't good or bad"
+            + ("; nor are the charting's choices (motion, under center, no-huddle, RPO, play "
+               "action, screens, blitzes, rushers, 8+ box)" if charting and view in ("Charting", "All")
+               else "") + ". Sorted best first."
+            + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
+               + " faced; play counts, penalties and the charting's choices are as played."
+               if adjusted else ""))
+        if charting and view in ("Charting", "All"):
+            st.caption(
+                "**Charting** by FTN Data via nflverse (CC-BY-SA 4.0), downs only, over the plays "
+                "FTN has charted"
+                + (f": {n_charted} of the selection's {n_games} games so far" if n_charted < n_games
+                   else "") + ". Motion %, Under C % (under center), No-huddle % and RPO % are "
+                "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with "
+                f"a blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
+                f"{HEAVY_BOX}+ in the box"
+                + (": the defense's own calls, the rest what it faced" if side == "defteam" else
+                   ": the defenses' calls") + ". PA EPA/play is per play-action dropback, Blitz "
+                "EPA/play per dropback against a blitz"
+                + (" (when this defense blitzed)" if side == "defteam" else "") + ". Catchable % "
+                "is throws FTN charted catchable, of those aimed (no throwaways); Drop % is drops "
+                "per catchable ball; INT-worthy % throws that should have been picked, per throw.")
 
 # ---------- Team ----------
 with tab_team:
@@ -369,6 +399,10 @@ def _leaderboard(kind: str, c2, c3) -> None:
         st.info("No players in this selection.")
         return
     df = df[df["Team"].isin(shown_teams)]
+    ngs = nextgen.get(kind)
+    if ngs is not None:
+        df = with_nextgen(df, ngs, leagues.season_player_ids(league, season, stamp))
+    has_ngs = any(c in df.columns for c in NGS_COLS.get(kind, []))
     if kind == "defenders":
         min_plays = None
     else:
@@ -378,6 +412,9 @@ def _leaderboard(kind: str, c2, c3) -> None:
             min_value=0, value=_default_min(kind), step=5,
             key=f"_ss_min_{kind}_{_default_min(kind)}"))
         df = df[df[vol] >= min_plays]
+    qualified = df  # every player over the minimum, for the passers chart
+    # Next Gen Stats only the chart plots stay out of the table.
+    df = df.drop(columns=[c for c in NGS_CHART_COLS.get(kind, []) if c in df.columns])
     numeric = [c for c in df.columns if c not in ("Player", "Team", CLASS_COL)]
     sort_by = c3.selectbox("Sort by", numeric,
                            index=numeric.index("Yds" if "Yds" in numeric else numeric[0]),
@@ -392,7 +429,10 @@ def _leaderboard(kind: str, c2, c3) -> None:
             st.caption("College tackles, TFLs and hurries come from the play text's stat-crew "
                        "notes, which only some games have, so season totals undercount.")
     else:
-        dists = season_player_distributions({kind: tables[kind]}, {kind: min_plays})
+        base = tables[kind]
+        if has_ngs:
+            base = with_nextgen(base, ngs, leagues.season_player_ids(league, season, stamp))
+        dists = season_player_distributions({kind: base}, {kind: min_plays})
         stat_table(style_player_table(df, kind, dists, min_plays))
         st.caption(f"Season totals ({sel_note}); dropbacks include sacks. SR%, aDOT and "
                    f"EPA/play colors rank each player among those with {min_plays}+ "
@@ -401,7 +441,106 @@ def _leaderboard(kind: str, c2, c3) -> None:
                    + (" Yr is the class year on the season's roster." if class_years else "")
                    + (" SR% and EPA/play are adjusted for the defenses each player's plays "
                       "came against; counts and aDOT are as played." if adjusted else ""))
+        if has_ngs:
+            st.caption(_ngs_note(kind))
+        _player_scatter(kind, qualified, min_plays)
 
+
+# The players chart's starting picks per leaderboard: with Next Gen Stats
+# where the season has them, else from the leaderboard's own columns.
+# Color and size can be "None".
+SCATTER_DEFAULTS = {
+    "passing": {"ngs": {"x": "TTT", "y": "CAY", "color": "EPA/play", "size": "Cmp%"},
+                "pbp": {"x": "aDOT", "y": "SR%", "color": "EPA/play", "size": "Att"}},
+    "receiving": {"ngs": {"x": "aDOT", "y": "Sep", "color": "EPA/play", "size": "Tgt"},
+                  "pbp": {"x": "aDOT", "y": "Yds", "color": "EPA/play", "size": "Tgt"}},
+    "rushing": {"ngs": {"x": "8+D%", "y": "RYOE/att", "color": "EPA/play", "size": "Att"},
+                "pbp": {"x": "SR%", "y": "Yds", "color": "EPA/play", "size": "Att"}},
+}
+SCATTER_NOUNS = {"passing": "Passers", "rushing": "Rushers", "receiving": "Receivers"}
+_NONE = "None"
+
+
+def _player_scatter(kind: str, qualified: pd.DataFrame, min_plays: int) -> None:
+    """A leaderboard's players over the minimum as a scatter
+    (`player_scatter_figure`): the viewer picks the metric on each axis, the
+    color and the size from the leaderboard's columns and its chart-only
+    Next Gen Stats ones."""
+    metrics = [c for c in qualified.columns if c not in ("Player", "Team", CLASS_COL)
+               and pd.api.types.is_numeric_dtype(qualified[c]) and qualified[c].notna().any()]
+    if len(qualified) < 3 or len(metrics) < 2:
+        return
+    noun = SCATTER_NOUNS[kind]
+    st.markdown(f"**{noun} chart**")
+    # Keyed by the options too: a season with Next Gen Stats offers more.
+    tag = "ngs" if any(c in metrics for c in NGS_COLS.get(kind, [])) else "pbp"
+    defaults = SCATTER_DEFAULTS[kind][tag]
+    picks = {}
+    for col, (part, label) in zip(st.columns(4), [("x", "X axis"), ("y", "Y axis"),
+                                                  ("color", "Color"), ("size", "Size")]):
+        options = metrics if part in ("x", "y") else [_NONE, *metrics]
+        default = defaults[part] if defaults[part] in metrics else options[0]
+        if part == "y" and default == picks.get("x"):
+            default = next(m for m in metrics if m != picks["x"])
+        picks[part] = col.selectbox(label, options, index=options.index(default),
+                                    key=f"_ss_scatter_{kind}_{part}_{tag}")
+    color = None if picks["color"] == _NONE else picks["color"]
+    size = None if picks["size"] == _NONE else picks["size"]
+    chosen = list(dict.fromkeys(c for c in [picks["x"], picks["y"], color, size] if c))
+    shown = qualified.dropna(subset=chosen)
+    if len(shown) < 3:
+        st.caption(f"Too few {noun.lower()} over the minimum have all of these metrics in this "
+                   "selection.")
+        return
+    adj = {c: f"{c} (adj.)" for c in ("SR%", "EPA/play", "Total EPA")} if adjusted else {}
+    glossary = {**PLAYER_GLOSSARY[kind], **NGS_GLOSSARY}
+    vol_col = PLAYER_VOLUME_COL[kind]
+    st.plotly_chart(player_scatter_figure(shown, picks["x"], picks["y"], color, size, adj, glossary,
+                                          label_by=vol_col),
+                    width="stretch",
+                    config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    what = "; ".join(f"**{c}** {glossary[c]}" for c in chosen if c in glossary)
+    if color in SCATTER_HIGHER_IS_BETTER or color in SCATTER_LOWER_IS_BETTER:
+        tint = f"Color: {color}, green good, red bad, white at the median of these {noun.lower()}. "
+    elif color:
+        tint = f"Color: {color}, which isn't good or bad, from dark (low) to yellow (high). "
+    else:
+        tint = ""
+    vol = {"passing": "dropbacks", "rushing": "carries", "receiving": "targets"}[kind]
+    st.caption(f"{len(shown)} {noun.lower()} with {min_plays}+ {vol} and every metric picked. "
+               + (f"{what}. " if what else "") + tint
+               + (f"Size: {size}, smallest to largest. " if size else "")
+               + "The dotted lines are the medians. "
+               + (f"Names on the {SCATTER_MAX_LABELS} with the most {vol}; tap or hover any point "
+                  "for his name and numbers." if len(shown) > SCATTER_MAX_LABELS
+                  else "Tap or hover a point for his numbers.")
+               + (" SR% and EPA are opponent-adjusted; the rest are as played." if adjusted else ""))
+
+
+def _ngs_note(kind: str) -> str:
+    """The Players tab's caption on its Next Gen Stats columns."""
+    cols = ", ".join(f"**{c}** {NGS_GLOSSARY[c]}" for c in NGS_COLS[kind])
+    colored = NGS_RATE_COLS.get(kind)
+    partial = not nextgen[kind].attrs.get("whole_season")
+    return (f"Next Gen Stats (the NFL's player tracking, via nflverse): {cols}. "
+            + (f"{', '.join(colored)} are colored like the rates; the rest are style, not "
+               "good or bad. " if colored else "Uncolored: they're style, not good or bad. ")
+            + "Whole games, as played: the situation filters and opponent adjustment don't "
+              "apply to them. "
+            + ("Here they add up NGS's weekly lines (the selection isn't the whole regular "
+               "season, or NGS hasn't published its last week yet), which list a player only "
+               "in games he met NGS's minimum; a part-time player's are from his bigger games. "
+               if partial else
+               "NGS's own season line; a player traded in-season, or under its season "
+               "minimum, adds up his weekly lines, which list only games he met NGS's minimum. ")
+            + {"receiving": "NGS lists wide receivers and tight ends only. ",
+               "rushing": "NGS lists running backs only. "}.get(kind, "")
+            + "A dash: NGS doesn't list him.")
+
+
+# Next Gen Stats for the leaderboards (NFL, 2016 on): whole games in the
+# selection's weeks, games and venue.
+nextgen = leagues.season_nextgen(league, season, stamp, weeks, part, venue)
 
 with tab_players:
     c1, c2, c3 = st.columns([3, 2, 2])
@@ -439,7 +578,20 @@ flags) per snap.
 probability model per pass{" (the college data has none, so it's blank)" if _college else ""}. RYOE/att
 is rushing yards over expected per designed run: each run's yards less the league's average
 designed run from the same down, distance and field position (`models/xrush_yards.csv`).
-
+{"" if _college else f'''
+**Charting** (Teams' Charting view, {leagues.CHART_FIRST_SEASON} on). FTN Data's charting of every
+snap, via nflverse (CC-BY-SA 4.0), published weekly during the season; it can be a game or two
+behind the play-by-play, so each number counts the charted plays only, on downs. Motion %, Under C %
+(QB under center, not in the shotgun or pistol), No-huddle % and RPO % are per snap; PA % (play
+action) and Screen % per dropback (pass attempts plus sacks, no spikes); Blitz % is the dropbacks
+where FTN counted a blitzer, Rushers the average pass rushers per dropback, and 8+ Box % the
+designed runs against {HEAVY_BOX} or more defenders in the box. They're choices rather than results,
+so they aren't colored or adjusted; for a defense Blitz %, Rushers and 8+ Box % are its own calls
+and the others what it faced. PA EPA/play is EPA per play-action dropback and Blitz EPA/play per
+dropback against a blitz (for a defense, when it blitzed). Catchable % is the throws FTN rated
+catchable among those aimed at a receiver (throwaways left out), Drop % the drops per catchable
+ball and INT-worthy % the throws that should have been intercepted, per throw.
+'''}
 **Per game and colors.** Counts and yards are divided by the games each team played. Every
 colored cell is the team's percentile within its column among the ranked teams: green is best,
 red worst. Where lower is better (turnovers, penalties, sacks, stuffs …) the scale is flipped,
@@ -460,6 +612,31 @@ minimum ({PLAYER_MIN_PLAYS["passing"]} dropbacks, {PLAYER_MIN_PLAYS["rushing"]} 
 {PLAYER_MIN_PLAYS["receiving"]} targets) times the most games a team played.{" College tackles, "
 "TFLs and hurries need the stat-crew play text, which only some games have, so they undercount."
 if _college else ""}
+{"" if _college else '''
+**Next Gen Stats** (Players tab, 2016 on). The NFL's player-tracking numbers as nflverse publishes
+them, matched to the leaderboards by gsis id. Passers get time to throw and air yards: TTT,
+completed air yards (CAY), the air yards differential (CAY less intended air yards; the table's
+aDOT already gives the intended depth), air yards to the sticks and the longest completed air
+distance. Receivers get all of NGS's rates: cushion, separation, intended air yards, share of the
+team's intended air yards, catch %, YAC, expected YAC and YAC over expected per reception
+(separation, catch % and YAC over expected are colored). Rushers get all of NGS's rates too:
+efficiency (yards run per yard gained), the share of carries against 8+ defenders in the box,
+time to the line of scrimmage, yards per carry, expected yards per carry, rushing yards over
+expected (total and per carry; NGS's model, not the team tables' RYOE) and the share of carries
+that beat their expected yards (the last two colored). NGS lists receiving for wide receivers and
+tight ends only and rushing for running backs only. They're whole games and as played, so the
+situation filters and the opponent adjustment don't apply. Over the whole regular season they're
+NGS's own season line; over some of the weeks, the postseason or one venue they're NGS's weekly
+lines added up, weighted by attempts, completions, carries, targets or receptions. NGS lists a
+player in a week only when he met its minimum that game, so those totals leave out a part-time
+player's smaller games.
+
+**Players charts** (under each leaderboard). The players over the minimum, plotted on any two of
+the leaderboard's numbers, with a third as the color and a fourth as the size (the passers' chart
+can also use NGS's completion %, expected completion %, completion % over expected and
+aggressiveness). Colors run red to green where higher is better, reversed for interceptions,
+sacks, hits and stuffs, with white at the plotted players' median; numbers that are style or
+volume rather than good or bad get a neutral scale. The dotted lines are the medians.'''}
 
 **Opponent adjustment** (Stats: Opponent-adjusted). Each offense's season value is reduced by
 the average *strength* of the defenses it faced, and each defense's by that of the offenses it

@@ -146,6 +146,19 @@ class League:
         (`NO_AVAILABILITY`) where the league has none."""
         return NO_AVAILABILITY
 
+    def nextgen(self, season: int) -> dict[str, pd.DataFrame]:
+        """The season's Next Gen Stats by kind ("passing", "receiving"), one
+        row per player and week (week 0: the regular season), as nflverse
+        publishes them; empty where the league has none (college)."""
+        return {}
+
+    def charting(self, season: int) -> pd.DataFrame:
+        """FTN's charting of the season's plays, one row per play keyed by
+        nflverse_game_id / nflverse_play_id (core.with_charting); empty
+        where the league has none (college, NFL before
+        `CHART_FIRST_SEASON`)."""
+        return pd.DataFrame()
+
     def class_years(self, season: int, stamp: str) -> dict[tuple[str, str], str]:
         """(team, core.player_key(name)) → class year ("Fr" … "Sr") for the
         leaders tables' Yr column (core.with_class_year); empty where the
@@ -453,6 +466,29 @@ def load_snap_counts(season: int, stamp: str) -> pd.DataFrame:
     return snaps.assign(gsis_id=snaps["pfr_player_id"].map(p.set_index("pfr_id")["gsis_id"]))
 
 
+@st.cache_data(max_entries=4)
+def load_nextgen(season: int, kind: str, stamp: str) -> pd.DataFrame:
+    """NGS's `kind` stats ("passing", "rushing", "receiving") for `season`,
+    one row per player and week, from 2016; empty if nflverse has none."""
+    try:
+        return nflreadpy.load_nextgen_stats([season], kind).to_pandas()
+    except Exception:
+        return pd.DataFrame()
+
+
+CHART_FIRST_SEASON = 2022  # FTN's charting starts in 2022
+
+
+@st.cache_data(max_entries=2)
+def load_charting(season: int, stamp: str) -> pd.DataFrame:
+    """FTN's charting of `season` (nflverse's ftn_charting release, weekly
+    during the season), one row per play; empty if nflverse has none."""
+    try:
+        return nflreadpy.load_ftn_charting([season]).to_pandas()
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(max_entries=2)
 def load_roster_status(season: int, stamp: str) -> pd.DataFrame:
     """Each team's weekly roster: team, week, gsis_id and status (ACT,
@@ -560,6 +596,17 @@ class NFLLeague(League):
             roster=load_roster_status(season, nflverse_stamp("weekly_rosters")),
             source="the NFL's injury reports, PFR snap counts and ESPN depth charts, via nflverse",
             as_of="" if injuries_stamp.startswith("unknown") else injuries_stamp)
+
+    def nextgen(self, season: int) -> dict[str, pd.DataFrame]:
+        if season < 2016:  # NGS starts in 2016
+            return {}
+        stamp = nflverse_stamp("nextgen_stats")
+        return {kind: load_nextgen(season, kind, stamp) for kind in core.NGS_COLS}
+
+    def charting(self, season: int) -> pd.DataFrame:
+        if season < CHART_FIRST_SEASON:
+            return pd.DataFrame()
+        return load_charting(season, nflverse_stamp("ftn_charting"))
 
     def scenario_wp(self, states: pd.DataFrame) -> np.ndarray | None:
         models, _, _ = load_nflfastr_models()
@@ -919,9 +966,11 @@ def _scrimmage(pbp: pd.DataFrame) -> int:
 @st.cache_data(max_entries=6, show_spinner=False)
 def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
                    part: str, play_filter: core.PlayFilter, venue: str | None,
-                   adjusted: bool) -> dict:
+                   adjusted: bool, chart_stamp: str = "") -> dict:
     league = LEAGUES[league_name]
-    pbp = season_plays(league, season, stamp, weeks, part, play_filter)
+    # FTN's charting adds core.CHART_ROWS to the team tables (chart_stamp keys the cache).
+    pbp = core.with_charting(season_plays(league, season, stamp, weeks, part, play_filter),
+                             league.charting(season))
     every = _scrimmage(season_plays(league, season, stamp, weeks, part))
     ranked = list(league.season_teams(season, stamp).index)
     missing = league.missing_stats(pbp)
@@ -974,6 +1023,7 @@ def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, 
         "situational": core.situational_distributions_from(situational),
         "missing": missing,
         "play_share": _scrimmage(pbp) / every if every else 1.0,
+        "charted": core.charted_games(pbp),
     }
 
 
@@ -993,9 +1043,49 @@ def season_tables(league: League, season: int, stamp: str, weeks: tuple[int, int
     success and player rates are adjusted for the opponents faced
     (`core.opponent_adjust` / `core.adjust_players`), opponent strengths
     from all games (`core.apply_strength` for a venue); counts, penalties
-    and defenders aren't."""
+    and defenders aren't. Where the league has FTN's charting
+    (`League.charting`), the team tables add `core.CHART_ROWS`, and
+    "charted" is (games charted, games) in the selection."""
+    chart_stamp = (nflverse_stamp("ftn_charting")
+                   if isinstance(league, NFLLeague) and season >= CHART_FIRST_SEASON else "")
     return _season_tables(league.name, season, stamp, tuple(weeks), part, play_filter,
-                          core.VENUES[venue], SEASON_ADJUST[adjust])
+                          core.VENUES[venue], SEASON_ADJUST[adjust], chart_stamp)
+
+
+@st.cache_data(max_entries=6, show_spinner=False)
+def _season_nextgen(league_name: str, season: int, stamp: str, ngs_stamp: str,
+                    weeks: tuple[int, int], part: str, venue: str | None) -> dict:
+    league = LEAGUES[league_name]
+    ngs = league.nextgen(season)
+    if not ngs:
+        return {}
+    pbp_all = league.season_pbp(season, stamp)
+    pbp = season_plays(league, season, stamp, weeks, part)  # whole games: no situation filter
+    reg_weeks = pbp_all.loc[~pbp_all["postseason"], "week"].dropna()
+    post_weeks = pbp_all.loc[pbp_all["postseason"], "week"].dropna().unique()
+    out = {}
+    for kind, df in ngs.items():
+        # Week 0 is NGS's own regular season: used when that's the selection
+        # and NGS has the same weeks published as the play-by-play.
+        ngs_reg = df.loc[(df["season_type"] == "REG") & (df["week"] > 0), "week"] if not df.empty else []
+        whole = (SEASON_PARTS[part] == (True, False) and venue is None and len(reg_weeks)
+                 and tuple(weeks) == (int(reg_weeks.min()), int(reg_weeks.max()))
+                 and len(ngs_reg) and int(max(ngs_reg)) == int(reg_weeks.max()))
+        out[kind] = core.ngs_season(df, kind, core.team_games(pbp, venue), post_weeks, bool(whole))
+        out[kind].attrs["whole_season"] = bool(whole)  # for the page's caption
+    return out
+
+
+def season_nextgen(league: League, season: int, stamp: str, weeks: tuple[int, int], part: str,
+                   venue: str = "All") -> dict[str, pd.DataFrame]:
+    """Next Gen Stats per (gsis_id, team) for the Season stats leaderboards
+    (`core.ngs_season`, `core.NGS_COLS`) over the selection's weeks, games
+    and venue; whole games, so the situation filters don't apply. Each
+    table's attrs["whole_season"] says whether it's NGS's own season line.
+    Empty where the league has none."""
+    ngs_stamp = nflverse_stamp("nextgen_stats") if isinstance(league, NFLLeague) else ""
+    return _season_nextgen(league.name, season, stamp, ngs_stamp, tuple(weeks), part,
+                           core.VENUES[venue])
 
 
 @st.cache_data(max_entries=2, show_spinner=False)

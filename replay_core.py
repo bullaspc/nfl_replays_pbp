@@ -1236,6 +1236,103 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
     return pbp if venue is None else pbp[pbp[side] == pbp[venue]]
 
 
+# ---------- FTN charting ----------
+# FTN Data's charting of every NFL snap since 2022 (nflverse's ftn_charting
+# release, published weekly during the season, CC-BY-SA 4.0: credit FTN Data
+# via nflverse): what the play-by-play doesn't say, such as motion, play
+# action, the blitz and whether a throw was catchable. `with_charting()` puts
+# it on the play-by-play; the season team tables then add `CHART_ROWS`, each
+# over the charted plays only (FTN can be a game or two behind nflverse's pbp).
+CHART_FLAGS = ["is_motion", "is_no_huddle", "is_rpo", "is_play_action", "is_screen_pass",
+               "is_throw_away", "is_catchable_ball", "is_drop", "is_interception_worthy"]
+CHART_COUNTS = ["n_pass_rushers", "n_blitzers", "n_defense_box"]
+CHART_ROWS = ["Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
+              "Rushers", "8+ Box %", "PA EPA/play", "Blitz EPA/play", "Catchable %", "Drop %",
+              "INT-worthy %"]
+# Choices, not results (an offense's, or for a defense its own blitzes, rushers
+# and box): never colored or ranked, like the volumes.
+CHART_STYLE = {"Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
+               "Rushers", "8+ Box %"}
+CHART_LOWER_IS_BETTER = {"Drop %", "INT-worthy %"}
+CHART_RATES = {c for c in CHART_ROWS if c.endswith("%")}  # fractions, 0–1
+HEAVY_BOX = 8        # defenders in the box on a designed run, as NGS's 8+D%
+_QB_SPOTS = {"S", "U", "P"}  # FTN's qb_location: shotgun, under center, pistol
+
+
+def with_charting(pbp: pd.DataFrame, charting: pd.DataFrame | None) -> pd.DataFrame:
+    """`pbp` with FTN's charting (`CHART_FLAGS` as 1/0, `CHART_COUNTS`,
+    `qb_location`) matched by game and play id, and `_ftn` True on the plays
+    FTN has charted; `pbp` unchanged without charting."""
+    if charting is None or charting.empty or pbp.empty:
+        return pbp
+    cols = [c for c in ["qb_location", *CHART_FLAGS, *CHART_COUNTS] if c in charting.columns]
+    ftn = charting.drop_duplicates(["nflverse_game_id", "nflverse_play_id"])
+    ftn = ftn[cols].set_axis(pd.MultiIndex.from_arrays(
+        [ftn["nflverse_game_id"].astype(str), ftn["nflverse_play_id"].astype(float)]))
+    key = pd.MultiIndex.from_arrays([pbp["game_id"].astype(str), pbp["play_id"].astype(float)])
+    hit = ftn.reindex(key).set_axis(pbp.index)
+    out = pbp.copy()
+    out["_ftn"] = key.isin(ftn.index)
+    for c in cols:
+        out[c] = (hit[c].astype(str).str.strip().where(out["_ftn"]) if c == "qb_location"
+                  else pd.to_numeric(hit[c].astype(float), errors="coerce"))
+    return out
+
+
+def _chart_col(td: pd.DataFrame, col: str) -> pd.Series:
+    return td[col] if col in td.columns else pd.Series(np.nan, index=td.index)
+
+
+def _chart_stats(td: pd.DataFrame) -> dict[str, float]:
+    """FTN's numbers for offensive plays `td` (one offense's, or what one
+    defense faced), downs only and over the charted plays: Motion, Under C
+    (under center, of the snaps with a QB spot), No-huddle and RPO per snap;
+    PA and Screen per dropback (pass attempts plus sacks, no spikes); Blitz
+    (a blitzer) per dropback and Rushers per dropback; 8+ Box per designed
+    run; EPA per play-action dropback and per dropback against a blitz;
+    Catchable per aimed throw (no throwaways), Drop per catchable ball and
+    INT-worthy per throw. FTN's impossible counts (0 or 50-odd rushers) are
+    left out."""
+    flag = lambda c: _chart_col(td, c) == 1
+    charted = _chart_col(td, "_ftn").fillna(False).astype(bool) & td["down"].notna()
+    snap = charted & ((td["pass_attempt"].fillna(0) == 1) | (td["rush_attempt"].fillna(0) == 1))
+    drop = snap & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
+    thrown = drop & (td["sack"].fillna(0) == 0)
+    aimed = thrown & ~flag("is_throw_away")
+    run = charted & _designed_runs(td)
+    rushers = _chart_col(td, "n_pass_rushers").where(lambda s: s.between(1, 11))
+    blitzers = _chart_col(td, "n_blitzers").where(lambda s: s.between(0, 10) & rushers.notna())
+    box = _chart_col(td, "n_defense_box").where(lambda s: s.between(1, 11))
+    spot = _chart_col(td, "qb_location").where(lambda s: s.isin(_QB_SPOTS))
+    pa, blitzed = drop & flag("is_play_action"), drop & (blitzers > 0)
+    catchable = aimed & flag("is_catchable_ball")
+    n_snap, n_drop = snap.sum(), drop.sum()
+    return {
+        "Motion %":       _rate((snap & flag("is_motion")).sum(), n_snap),
+        "Under C %":      _rate((snap & (spot == "U")).sum(), (snap & spot.notna()).sum()),
+        "No-huddle %":    _rate((snap & flag("is_no_huddle")).sum(), n_snap),
+        "RPO %":          _rate((snap & flag("is_rpo")).sum(), n_snap),
+        "PA %":           _rate(pa.sum(), n_drop),
+        "Screen %":       _rate((drop & flag("is_screen_pass")).sum(), n_drop),
+        "Blitz %":        _rate(blitzed.sum(), (drop & blitzers.notna()).sum()),
+        "Rushers":        float(rushers[drop].mean()) if (drop & rushers.notna()).any() else np.nan,
+        "8+ Box %":       _rate((run & (box >= HEAVY_BOX)).sum(), (run & box.notna()).sum()),
+        "PA EPA/play":    float(td.loc[pa, "epa"].mean()) if pa.any() else np.nan,
+        "Blitz EPA/play": float(td.loc[blitzed, "epa"].mean()) if blitzed.any() else np.nan,
+        "Catchable %":    _rate(catchable.sum(), aimed.sum()),
+        "Drop %":         _rate((catchable & flag("is_drop")).sum(), catchable.sum()),
+        "INT-worthy %":   _rate((thrown & flag("is_interception_worthy")).sum(), thrown.sum()),
+    }
+
+
+def charted_games(pbp: pd.DataFrame) -> tuple[int, int]:
+    """(games with FTN charting, games) in `pbp`; (0, games) without it."""
+    games = int(pbp["game_id"].nunique())
+    if "_ftn" not in pbp.columns:
+        return 0, games
+    return int(pbp.loc[pbp["_ftn"], "game_id"].nunique()), games
+
+
 # ---------- Season ----------
 # The Season stats page: the same stats over many games. Counts are per game
 # (teams play different numbers of games), and every cell is ranked against
@@ -1243,21 +1340,22 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
 SEASON_PER_GAME = {"Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                    "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
                    *LINE_COUNT_ROWS}
-# Volumes: neither good nor bad, so never colored.
-SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps"}
+# Volumes (and the charting's choices): neither good nor bad, so never colored.
+SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps",
+                 *CHART_STYLE}
 SEASON_COLS = ["Games", *TEAM_STAT_ROWS, *LINE_ROWS]
 # A defense's own penalties aren't "allowed"; they're in the offense table.
 SEASON_DEFENSE_SKIP = {"Penalties", "Penalty Yds"}
 
 
 def season_lower_is_better(side: str = "posteam") -> set:
-    """The season table's columns where lower is better: the Team stats and
-    Line play ones for an offense, every other one for a defense (what it
-    allowed, where forcing turnovers and sacks is good)."""
-    offense = LOWER_IS_BETTER | LINE_LOWER_IS_BETTER
+    """The season table's columns where lower is better: the Team stats,
+    Line play and charting ones for an offense, every other one for a
+    defense (what it allowed, where forcing turnovers and sacks is good)."""
+    offense = LOWER_IS_BETTER | LINE_LOWER_IS_BETTER | CHART_LOWER_IS_BETTER
     if side == "posteam":
         return offense
-    return set(SEASON_COLS) - offense - SEASON_VOLUME
+    return (set(SEASON_COLS) | set(CHART_ROWS)) - offense - SEASON_VOLUME
 
 
 def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
@@ -1266,8 +1364,10 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
     then Team stats and Line play (`SEASON_COLS`) for its offense, or with
     side="defteam" what its defense allowed. Counts (`SEASON_PER_GAME`) are
     per game. `venue` ("home_team" / "away_team", `VENUES`) keeps each team's
-    own home or away games."""
+    own home or away games. Play-by-play with FTN's charting
+    (`with_charting`) adds `CHART_ROWS`."""
     teams = sorted(pbp[side].dropna().unique())
+    charted = "_ftn" in pbp.columns
     rows = {}
     for team in teams:
         plays = pbp if venue is None else pbp[pbp[venue] == team]
@@ -1276,10 +1376,13 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
             continue
         stats = dict(zip(TEAM_STAT_ROWS, _team_col(plays, team, side)))
         stats.update(_line_stats(mine))
+        if charted:
+            stats.update(_chart_stats(mine))
         n = int(mine["game_id"].nunique())
         rows[team] = {"Games": n, **{k: (v / n if k in SEASON_PER_GAME and n else v)
                                      for k, v in stats.items()}}
-    df = pd.DataFrame.from_dict(rows, orient="index", columns=SEASON_COLS)
+    df = pd.DataFrame.from_dict(rows, orient="index",
+                                columns=SEASON_COLS + (CHART_ROWS if charted else []))
     df.index.name = "Team"
     if side != "posteam":
         df = df.drop(columns=[c for c in SEASON_DEFENSE_SKIP if c in df.columns])
@@ -1565,7 +1668,7 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 # QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
 # possible value.
 SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%",
-                *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
+                *(set(LINE_ROWS) - LINE_COUNT_ROWS), *CHART_RATES}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
 # Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
 # Plays, which stay as played; turnovers and lost possessions have no ceiling (a special-teams fumble
@@ -1636,8 +1739,230 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
             continue
         q = df[df[PLAYER_VOLUME_COL[kind]] >= min_plays[kind]]
         out[kind] = {c: np.sort(q[c].dropna().to_numpy(dtype=float))
-                     for c in PLAYER_RATE_COLS[kind] if c in q.columns}
+                     for c in [*PLAYER_RATE_COLS[kind], *NGS_RATE_COLS.get(kind, [])]
+                     if c in q.columns}
     return out
+
+
+# ---------- Next Gen Stats (NFL) ----------
+# The NFL's player-tracking stats, as nflverse publishes them: one row per
+# player and week, and week 0 for the regular season. A week lists only the
+# players who met NGS's minimum that game (about 15 attempts, 10 carries or 5
+# targets), so
+# summing weeks misses a backup's games; week 0 counts every snap.
+# Columns added to the Season stats leaderboards, in order: passing keeps to
+# time to throw and air yards (aDOT is the table's own, so NGS's intended air
+# yards would repeat it); receiving and rushing take every NGS rate (their
+# counts are the table's Tgt/Rec/Yds/TD and Att/Yds/TD already). NGS's
+# rushing lists running backs only, from 10 carries a game.
+NGS_COLS = {
+    "passing": ["TTT", "CAY", "AYD", "AYTS", "Long CAD"],
+    "rushing": ["Eff", "8+D%", "TLOS", "YPC", "xYPC", "RYOE", "RYOE/att", "ROE%"],
+    "receiving": ["Cush", "Sep", "IAY", "TAY%", "Catch%", "YAC/R", "xYAC/R", "+YAC/R"],
+}
+# The leaderboards' own columns, for the players chart's captions.
+PLAYER_GLOSSARY = {
+    "passing": {
+        "G": "games", "Att": "dropbacks (sacks included)", "Yds": "passing yards",
+        "TD": "touchdown passes", "INT": "interceptions",
+        "aDOT": "average depth of target (air yards per attempt)", "Sacks": "sacks taken",
+        "Hits": "QB hits taken", "SR%": "success rate (share of plays with EPA > 0)",
+        "EPA/play": "expected points added per play", "Total EPA": "EPA added over all his plays",
+    },
+    "rushing": {
+        "G": "games", "Att": "carries (no kneels)", "Yds": "rushing yards",
+        "TD": "rushing touchdowns", "Stuffed": "carries for no gain or a loss",
+        "SR%": "success rate (share of carries with EPA > 0)",
+        "EPA/play": "expected points added per carry", "Total EPA": "EPA added over all his carries",
+    },
+    "receiving": {
+        "G": "games", "Tgt": "targets", "Rec": "receptions", "Yds": "receiving yards",
+        "YAC": "yards after catch", "aDOT": "average depth of target (air yards per target)",
+        "TD": "touchdown catches", "Exp": "catches of 20+ yards",
+        "EPA/play": "expected points added per target", "Total EPA": "EPA added over all his targets",
+    },
+}
+# Which way is good for the players chart's colors; the rest are style or
+# volume, not good or bad.
+SCATTER_HIGHER_IS_BETTER = {"EPA/play", "Total EPA", "SR%", "Yds", "TD", "Cmp%", "CPOE",
+                            "Rec", "YAC", "Exp", "Sep", "Catch%", "YAC/R", "+YAC/R",
+                            "YPC", "RYOE", "RYOE/att", "ROE%"}
+SCATTER_LOWER_IS_BETTER = {"INT", "Sacks", "Hits", "Stuffed"}
+# NGS numbers the Season stats players chart can plot but the leaderboard
+# doesn't show (passing keeps to time to throw and air yards there).
+NGS_CHART_COLS = {"passing": ["Cmp%", "xCmp%", "CPOE", "Aggr%"]}
+# What each column is, for captions.
+NGS_GLOSSARY = {
+    "Cmp%": "completion % (NGS)",
+    "xCmp%": "expected completion % (NGS's model)",
+    "CPOE": "completion % over expected (NGS)",
+    "Aggr%": "aggressiveness (share of throws into tight windows)",
+    "TTT": "time to throw (s, snap to release)",
+    "CAY": "completed air yards per completion",
+    "AYD": "air yards differential (CAY less intended air yards per attempt)",
+    "AYTS": "air yards to the sticks (intended air yards past the first-down line)",
+    "Long CAD": "longest completed air distance (yds the ball flew)",
+    "Cush": "cushion (yds to the nearest defender at the snap)",
+    "Sep": "separation (yds to the nearest defender at the catch or incompletion)",
+    "IAY": "intended air yards per target",
+    "TAY%": "share of the team's intended air yards",
+    "Catch%": "catches per target",
+    "YAC/R": "yards after catch per reception",
+    "xYAC/R": "expected YAC per reception",
+    "+YAC/R": "YAC over expected per reception",
+    "Eff": "efficiency (yds run per yard gained; lower is more north-south)",
+    "8+D%": "share of carries against 8+ defenders in the box",
+    "TLOS": "time to the line of scrimmage (s)",
+    "YPC": "yards per carry (NGS)",
+    "xYPC": "expected yards per carry (NGS's model)",
+    "RYOE": "rushing yards over expected (NGS's model, not the team tables' RYOE)",
+    "RYOE/att": "rushing yards over expected per carry (NGS)",
+    "ROE%": "share of carries that beat their expected yards",
+}
+# The ones that are better higher, colored like the leaders' rates.
+NGS_RATE_COLS = {"receiving": ["Sep", "Catch%", "+YAC/R"], "rushing": ["RYOE/att", "ROE%"]}
+NGS_FORMATS = {"Cmp%": "{:.1f}%", "xCmp%": "{:.1f}%", "CPOE": "{:+.1f}", "Aggr%": "{:.1f}%",
+               "TTT": "{:.2f}", "CAY": "{:.1f}", "AYD": "{:+.1f}", "AYTS": "{:+.1f}",
+               "Long CAD": "{:.1f}", "Cush": "{:.1f}", "Sep": "{:.1f}", "IAY": "{:.1f}",
+               "TAY%": "{:.1f}%", "Catch%": "{:.1f}%", "YAC/R": "{:.1f}", "xYAC/R": "{:.1f}",
+               "+YAC/R": "{:+.1f}", "Eff": "{:.2f}", "8+D%": "{:.1f}%", "TLOS": "{:.2f}",
+               "YPC": "{:.1f}", "xYPC": "{:.1f}", "RYOE": "{:+.0f}", "RYOE/att": "{:+.2f}",
+               "ROE%": "{:.1f}%"}
+# NGS's team abbreviations where nflverse play-by-play's differ.
+NGS_TEAM_FIX = {"LAR": "LA", "JAC": "JAX", "WSH": "WAS"}
+
+
+def _wmean(x: pd.Series, w: pd.Series) -> pd.Series:
+    """`x` averaged with weights `w` per (gsis_id, team) of their index's
+    rows; NaN where the weights add to 0."""
+    keys = [x.index.get_level_values(0), x.index.get_level_values(1)]
+    num = (x.fillna(0.0) * w).where(w > 0, 0.0).groupby(keys).sum()
+    den = w.where(w > 0, 0.0).groupby(keys).sum()
+    return num / den.where(den > 0)
+
+
+def _ngs_columns(rows: pd.DataFrame, kind: str, team_iay: pd.Series | None = None) -> pd.DataFrame:
+    """NGS rows (weeks, or a week-0 season row) → one row per (gsis_id,
+    team) with `NGS_COLS[kind]`: averages weighted by the plays behind them,
+    so a single row comes back as it was. TAY% is the player's intended air
+    yards over `team_iay[team]` (the team's in the same games); without it,
+    the rows' own share (a season row's)."""
+    r = rows.set_index(["player_gsis_id", "team"])
+    keys = [r.index.get_level_values(0), r.index.get_level_values(1)]
+    if kind == "passing":
+        att, comp = r["attempts"].astype(float), r["completions"].astype(float)
+        out = pd.DataFrame({
+            "TTT": _wmean(r["avg_time_to_throw"], att),
+            "CAY": _wmean(r["avg_completed_air_yards"], comp),
+            "AYTS": _wmean(r["avg_air_yards_to_sticks"], att),
+            "Long CAD": r["max_completed_air_distance"].groupby(keys).max(),
+        })
+        out.insert(2, "AYD", out["CAY"] - _wmean(r["avg_intended_air_yards"], att))
+        out["Cmp%"] = comp.groupby(keys).sum() / att.groupby(keys).sum().where(lambda v: v > 0) * 100
+        out["xCmp%"] = _wmean(r["expected_completion_percentage"], att)
+        out["CPOE"] = out["Cmp%"] - out["xCmp%"]
+        out["Aggr%"] = _wmean(r["aggressiveness"], att)
+    elif kind == "rushing":
+        att = r["rush_attempts"].astype(float)
+        car = att.groupby(keys).sum().where(lambda v: v > 0)
+        out = pd.DataFrame({
+            "Eff": _wmean(r["efficiency"], att),
+            "8+D%": _wmean(r["percent_attempts_gte_eight_defenders"], att),
+            "TLOS": _wmean(r["avg_time_to_los"], att),
+            "YPC": _wmean(r["avg_rush_yards"], att),
+            "xYPC": r["expected_rush_yards"].groupby(keys).sum() / car,
+            "RYOE": r["rush_yards_over_expected"].groupby(keys).sum(),
+            "RYOE/att": _wmean(r["rush_yards_over_expected_per_att"], att),
+            "ROE%": _wmean(r["rush_pct_over_expected"], att) * 100,
+        })
+    else:
+        tgt, rec = r["targets"].astype(float), r["receptions"].astype(float)
+        yac, xyac = _wmean(r["avg_yac"], rec), _wmean(r["avg_expected_yac"], rec)
+        if team_iay is None:
+            tay = _wmean(r["percent_share_of_intended_air_yards"], tgt)
+        else:
+            own = (r["avg_intended_air_yards"].fillna(0.0) * tgt).groupby(keys).sum()
+            tay = own / own.index.get_level_values(1).map(team_iay).to_numpy() * 100
+        out = pd.DataFrame({
+            "Cush": _wmean(r["avg_cushion"], tgt),
+            "Sep": _wmean(r["avg_separation"], tgt),
+            "IAY": _wmean(r["avg_intended_air_yards"], tgt),
+            "TAY%": tay,
+            "Catch%": rec.groupby(keys).sum() / tgt.groupby(keys).sum().where(lambda s: s > 0) * 100,
+            "YAC/R": yac, "xYAC/R": xyac, "+YAC/R": yac - xyac,
+        })
+    return out.rename_axis(["gsis_id", "team"])
+
+
+def team_games(pbp: pd.DataFrame, venue: str | None = None) -> pd.DataFrame:
+    """One row per team and game in `pbp`: team, week, postseason; each
+    team's home (venue "home_team") or away ("away_team") games only, or all."""
+    g = pbp.groupby("game_id").agg(week=("week", "first"), postseason=("postseason", "first"),
+                                   home_team=("home_team", "first"), away_team=("away_team", "first"))
+    sides = [s for s in ("home_team", "away_team") if venue in (None, s)]
+    return pd.concat([g.rename(columns={s: "team"})[["team", "week", "postseason"]] for s in sides],
+                     ignore_index=True)
+
+
+def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
+               whole_season: bool) -> pd.DataFrame:
+    """NGS's `kind` stats per (gsis_id, team) over the team-games `games`
+    (`team_games()`) as `NGS_COLS[kind]` plus the chart's `NGS_CHART_COLS`. With `whole_season` (the selection
+    is every regular-season week, all venues) a player's week-0 row stands,
+    since the weeks leave out his games under NGS's minimum; otherwise, and
+    for a player traded during it (week 0 is both teams'), his weeks in the
+    selection. `post_weeks`: the play-by-play's postseason weeks, which NGS
+    numbers without the Pro Bowl's; they're matched in order."""
+    if ngs.empty or kind not in NGS_COLS:
+        return pd.DataFrame(columns=NGS_COLS.get(kind, []) + NGS_CHART_COLS.get(kind, []))
+    n = ngs.assign(team=ngs["team_abbr"].replace(NGS_TEAM_FIX),
+                   postseason=ngs["season_type"] == "POST")
+    weekly = n[n["week"] > 0]
+    ngs_post = sorted(weekly.loc[weekly["postseason"], "week"].unique())
+    to_pbp = dict(zip(ngs_post, sorted(post_weeks)))
+    weekly = weekly.assign(week=np.where(weekly["postseason"], weekly["week"].map(to_pbp),
+                                         weekly["week"]))
+    games = games[["team", "week", "postseason"]].drop_duplicates()
+    picked = weekly.merge(games, on=["team", "week", "postseason"])
+    team_iay = None
+    if kind == "receiving":
+        # TAY% is of the team's intended air yards in all its games, the ones a
+        # player isn't listed in too, as NGS's season share is. A team's in a
+        # week is any listed receiver's over his share of it.
+        share = weekly["percent_share_of_intended_air_yards"] / 100
+        own = weekly["avg_intended_air_yards"].fillna(0.0) * weekly["targets"]
+        week_iay = ((own / share.where(share != 0))
+                    .groupby([weekly["team"], weekly["week"], weekly["postseason"]]).median()
+                    .rename("iay").reset_index())
+        team_iay = week_iay.merge(games, on=["team", "week", "postseason"]).groupby("team")["iay"].sum()
+    out = (_ngs_columns(picked, kind, team_iay) if not picked.empty
+           else pd.DataFrame(columns=NGS_COLS[kind] + NGS_CHART_COLS.get(kind, [])))
+    if whole_season:
+        reg = weekly[~weekly["postseason"]]
+        traded = set(reg.loc[reg.groupby("player_gsis_id")["team"].transform("nunique") > 1,
+                             "player_gsis_id"])
+        season = n[(n["week"] == 0) & ~n["postseason"] & ~n["player_gsis_id"].isin(traded)]
+        if not season.empty:
+            whole = _ngs_columns(season, kind)
+            out = pd.concat([whole, out[~out.index.get_level_values(0).isin(
+                whole.index.get_level_values(0))]])
+    return out[NGS_COLS[kind] + NGS_CHART_COLS.get(kind, [])]
+
+
+def with_nextgen(df: pd.DataFrame, ngs: pd.DataFrame, ids: pd.DataFrame) -> pd.DataFrame:
+    """A `season_players()` table with `ngs`'s columns (`ngs_season()`)
+    appended, matched by gsis id through `ids` (`player_ids()`); NaN for a
+    player NGS doesn't list."""
+    if df.empty or ngs.empty or ids.empty:
+        return df
+    gsis = df.merge(ids.rename(columns={"team": "Team", "name": "Player"}),
+                    on=["Team", "Player"], how="left")["gsis_id"]
+    key = pd.MultiIndex.from_arrays([gsis, df["Team"]])
+    vals = ngs.reindex(key)
+    if vals.notna().sum().sum() == 0:
+        return df
+    return pd.concat([df.reset_index(drop=True), vals.reset_index(drop=True)], axis=1).set_axis(
+        df.index)
 
 
 # ---------- Matchup ----------
