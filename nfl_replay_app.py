@@ -39,7 +39,7 @@ from replay_core import (
 )
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
-    logo_img, mobile_css, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
+    logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
@@ -1361,72 +1361,16 @@ _el_min = pd.Series(timeline.iloc[: len(revealed)].to_numpy() / 60.0, index=reve
 if not hide_wp:
     st.subheader("Momentum", anchor="momentum")
     if not revealed.empty:
-        _mom_scrimmage = revealed[
-            (revealed["pass_attempt"].fillna(0) == 1) |
-            (revealed["rush_attempt"].fillna(0) == 1)
-        ].copy()
-        if not _mom_scrimmage.empty:
-            _mom_scrimmage["_elapsed_min"] = _el_min.loc[_mom_scrimmage.index]
-            _mom_color_map = {
-                home: team_colors.get(home, "#1f77b4"),
-                away: team_colors.get(away, "#ff7f0e"),
-            }
-            _mom_rows = []
-            for _mom_team in [away, home]:
-                _td = _mom_scrimmage[_mom_scrimmage["posteam"] == _mom_team].copy()
-                if _td.empty:
-                    continue
-                _td["_rolling_epa"] = (
-                    _td["epa"].fillna(0).rolling(5, center=True, min_periods=1).mean()
-                )
-                for _, _row in _td.iterrows():
-                    _mom_rows.append({
-                        "elapsed_min": _row["_elapsed_min"],
-                        "team": _mom_team,
-                        "rolling_epa": _row["_rolling_epa"],
-                    })
-            if _mom_rows:
-                _mom_df = pd.DataFrame(_mom_rows)
-                fig_mom = px.line(
-                    _mom_df, x="elapsed_min", y="rolling_epa", color="team",
-                    color_discrete_map=_mom_color_map,
-                    labels={
-                        "elapsed_min": "Game minutes elapsed",
-                        "rolling_epa": "EPA/play (5-play rolling avg)",
-                    },
-                )
-                fig_mom.update_yaxes(range=[-2, 2])
-                _mom_x_cap = max(elapsed_s / 60.0, 1.0)
-                fig_mom.update_xaxes(range=[0, _mom_x_cap])
-                fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                _mom_score_mask = (
-                    (revealed["touchdown"].fillna(0) == 1) |
-                    (revealed["field_goal_result"] == "made") |
-                    (revealed["safety"].fillna(0) == 1)
-                )
-                _mom_scores = revealed[_mom_score_mask].copy()
-                _mom_scores["_elapsed"] = _el_min.loc[_mom_scores.index]
-                _mom_scores["_team"] = _mom_scores.apply(
-                    lambda r: r["defteam"] if r["safety"] == 1 else r["posteam"], axis=1
-                )
-                _mom_scores["_type"] = _mom_scores.apply(
-                    lambda r: "Safety" if r["safety"] == 1
-                    else ("FG" if r["field_goal_result"] == "made" else "TD"),
-                    axis=1,
-                )
-                for _, _se in _mom_scores.iterrows():
-                    _se_color = team_colors.get(str(_se["_team"]), "#333333")
-                    fig_mom.add_vline(
-                        x=float(_se["_elapsed"]),
-                        line_dash="dot",
-                        line_color=_se_color,
-                        opacity=0.7,
-                        annotation_text=f"{_se['_team']} {_se['_type']}",
-                        annotation_position="top",
-                        annotation_font_size=10,
-                    )
-                fig_mom.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
-                st.plotly_chart(_touch_safe(fig_mom), width='stretch', config=_STATIC_CHART)
+        _mom_plays = revealed.assign(_el_min=_el_min)
+        _mom_scrimmage = (_mom_plays["pass_attempt"].fillna(0) == 1) | (_mom_plays["rush_attempt"].fillna(0) == 1)
+        if _mom_scrimmage.any():
+            st.caption("EPA/play over each offense's last 5 snaps (each capped at ±3 EPA, so one big play "
+                       "can't dominate), one panel per offense; bars are single snaps, uncapped. "
+                       "Solid lines end a quarter, dotted lines start a drive (D = the game's drive number), "
+                       "★ a touchdown, ◆ a field goal.")
+            fig_mom = momentum_figure(_mom_plays, home, away, team_colors, team_nicks,
+                                      max(elapsed_s / 60.0, 1.0))
+            st.plotly_chart(_touch_safe(fig_mom), width='stretch', config=_STATIC_CHART)
         else:
             st.caption("Not enough plays for momentum chart.")
 
