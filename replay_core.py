@@ -1236,6 +1236,103 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
     return pbp if venue is None else pbp[pbp[side] == pbp[venue]]
 
 
+# ---------- FTN charting ----------
+# FTN Data's charting of every NFL snap since 2022 (nflverse's ftn_charting
+# release, published weekly during the season, CC-BY-SA 4.0: credit FTN Data
+# via nflverse): what the play-by-play doesn't say, such as motion, play
+# action, the blitz and whether a throw was catchable. `with_charting()` puts
+# it on the play-by-play; the season team tables then add `CHART_ROWS`, each
+# over the charted plays only (FTN can be a game or two behind nflverse's pbp).
+CHART_FLAGS = ["is_motion", "is_no_huddle", "is_rpo", "is_play_action", "is_screen_pass",
+               "is_throw_away", "is_catchable_ball", "is_drop", "is_interception_worthy"]
+CHART_COUNTS = ["n_pass_rushers", "n_blitzers", "n_defense_box"]
+CHART_ROWS = ["Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
+              "Rushers", "8+ Box %", "PA EPA/play", "Blitz EPA/play", "Catchable %", "Drop %",
+              "INT-worthy %"]
+# Choices, not results (an offense's, or for a defense its own blitzes, rushers
+# and box): never colored or ranked, like the volumes.
+CHART_STYLE = {"Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
+               "Rushers", "8+ Box %"}
+CHART_LOWER_IS_BETTER = {"Drop %", "INT-worthy %"}
+CHART_RATES = {c for c in CHART_ROWS if c.endswith("%")}  # fractions, 0–1
+HEAVY_BOX = 8        # defenders in the box on a designed run, as NGS's 8+D%
+_QB_SPOTS = {"S", "U", "P"}  # FTN's qb_location: shotgun, under center, pistol
+
+
+def with_charting(pbp: pd.DataFrame, charting: pd.DataFrame | None) -> pd.DataFrame:
+    """`pbp` with FTN's charting (`CHART_FLAGS` as 1/0, `CHART_COUNTS`,
+    `qb_location`) matched by game and play id, and `_ftn` True on the plays
+    FTN has charted; `pbp` unchanged without charting."""
+    if charting is None or charting.empty or pbp.empty:
+        return pbp
+    cols = [c for c in ["qb_location", *CHART_FLAGS, *CHART_COUNTS] if c in charting.columns]
+    ftn = charting.drop_duplicates(["nflverse_game_id", "nflverse_play_id"])
+    ftn = ftn[cols].set_axis(pd.MultiIndex.from_arrays(
+        [ftn["nflverse_game_id"].astype(str), ftn["nflverse_play_id"].astype(float)]))
+    key = pd.MultiIndex.from_arrays([pbp["game_id"].astype(str), pbp["play_id"].astype(float)])
+    hit = ftn.reindex(key).set_axis(pbp.index)
+    out = pbp.copy()
+    out["_ftn"] = key.isin(ftn.index)
+    for c in cols:
+        out[c] = (hit[c].astype(str).str.strip().where(out["_ftn"]) if c == "qb_location"
+                  else pd.to_numeric(hit[c].astype(float), errors="coerce"))
+    return out
+
+
+def _chart_col(td: pd.DataFrame, col: str) -> pd.Series:
+    return td[col] if col in td.columns else pd.Series(np.nan, index=td.index)
+
+
+def _chart_stats(td: pd.DataFrame) -> dict[str, float]:
+    """FTN's numbers for offensive plays `td` (one offense's, or what one
+    defense faced), downs only and over the charted plays: Motion, Under C
+    (under center, of the snaps with a QB spot), No-huddle and RPO per snap;
+    PA and Screen per dropback (pass attempts plus sacks, no spikes); Blitz
+    (a blitzer) per dropback and Rushers per dropback; 8+ Box per designed
+    run; EPA per play-action dropback and per dropback against a blitz;
+    Catchable per aimed throw (no throwaways), Drop per catchable ball and
+    INT-worthy per throw. FTN's impossible counts (0 or 50-odd rushers) are
+    left out."""
+    flag = lambda c: _chart_col(td, c) == 1
+    charted = _chart_col(td, "_ftn").fillna(False).astype(bool) & td["down"].notna()
+    snap = charted & ((td["pass_attempt"].fillna(0) == 1) | (td["rush_attempt"].fillna(0) == 1))
+    drop = snap & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
+    thrown = drop & (td["sack"].fillna(0) == 0)
+    aimed = thrown & ~flag("is_throw_away")
+    run = charted & _designed_runs(td)
+    rushers = _chart_col(td, "n_pass_rushers").where(lambda s: s.between(1, 11))
+    blitzers = _chart_col(td, "n_blitzers").where(lambda s: s.between(0, 10) & rushers.notna())
+    box = _chart_col(td, "n_defense_box").where(lambda s: s.between(1, 11))
+    spot = _chart_col(td, "qb_location").where(lambda s: s.isin(_QB_SPOTS))
+    pa, blitzed = drop & flag("is_play_action"), drop & (blitzers > 0)
+    catchable = aimed & flag("is_catchable_ball")
+    n_snap, n_drop = snap.sum(), drop.sum()
+    return {
+        "Motion %":       _rate((snap & flag("is_motion")).sum(), n_snap),
+        "Under C %":      _rate((snap & (spot == "U")).sum(), (snap & spot.notna()).sum()),
+        "No-huddle %":    _rate((snap & flag("is_no_huddle")).sum(), n_snap),
+        "RPO %":          _rate((snap & flag("is_rpo")).sum(), n_snap),
+        "PA %":           _rate(pa.sum(), n_drop),
+        "Screen %":       _rate((drop & flag("is_screen_pass")).sum(), n_drop),
+        "Blitz %":        _rate(blitzed.sum(), (drop & blitzers.notna()).sum()),
+        "Rushers":        float(rushers[drop].mean()) if (drop & rushers.notna()).any() else np.nan,
+        "8+ Box %":       _rate((run & (box >= HEAVY_BOX)).sum(), (run & box.notna()).sum()),
+        "PA EPA/play":    float(td.loc[pa, "epa"].mean()) if pa.any() else np.nan,
+        "Blitz EPA/play": float(td.loc[blitzed, "epa"].mean()) if blitzed.any() else np.nan,
+        "Catchable %":    _rate(catchable.sum(), aimed.sum()),
+        "Drop %":         _rate((catchable & flag("is_drop")).sum(), catchable.sum()),
+        "INT-worthy %":   _rate((thrown & flag("is_interception_worthy")).sum(), thrown.sum()),
+    }
+
+
+def charted_games(pbp: pd.DataFrame) -> tuple[int, int]:
+    """(games with FTN charting, games) in `pbp`; (0, games) without it."""
+    games = int(pbp["game_id"].nunique())
+    if "_ftn" not in pbp.columns:
+        return 0, games
+    return int(pbp.loc[pbp["_ftn"], "game_id"].nunique()), games
+
+
 # ---------- Season ----------
 # The Season stats page: the same stats over many games. Counts are per game
 # (teams play different numbers of games), and every cell is ranked against
@@ -1243,21 +1340,22 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
 SEASON_PER_GAME = {"Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                    "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
                    *LINE_COUNT_ROWS}
-# Volumes: neither good nor bad, so never colored.
-SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps"}
+# Volumes (and the charting's choices): neither good nor bad, so never colored.
+SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps",
+                 *CHART_STYLE}
 SEASON_COLS = ["Games", *TEAM_STAT_ROWS, *LINE_ROWS]
 # A defense's own penalties aren't "allowed"; they're in the offense table.
 SEASON_DEFENSE_SKIP = {"Penalties", "Penalty Yds"}
 
 
 def season_lower_is_better(side: str = "posteam") -> set:
-    """The season table's columns where lower is better: the Team stats and
-    Line play ones for an offense, every other one for a defense (what it
-    allowed, where forcing turnovers and sacks is good)."""
-    offense = LOWER_IS_BETTER | LINE_LOWER_IS_BETTER
+    """The season table's columns where lower is better: the Team stats,
+    Line play and charting ones for an offense, every other one for a
+    defense (what it allowed, where forcing turnovers and sacks is good)."""
+    offense = LOWER_IS_BETTER | LINE_LOWER_IS_BETTER | CHART_LOWER_IS_BETTER
     if side == "posteam":
         return offense
-    return set(SEASON_COLS) - offense - SEASON_VOLUME
+    return (set(SEASON_COLS) | set(CHART_ROWS)) - offense - SEASON_VOLUME
 
 
 def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
@@ -1266,8 +1364,10 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
     then Team stats and Line play (`SEASON_COLS`) for its offense, or with
     side="defteam" what its defense allowed. Counts (`SEASON_PER_GAME`) are
     per game. `venue` ("home_team" / "away_team", `VENUES`) keeps each team's
-    own home or away games."""
+    own home or away games. Play-by-play with FTN's charting
+    (`with_charting`) adds `CHART_ROWS`."""
     teams = sorted(pbp[side].dropna().unique())
+    charted = "_ftn" in pbp.columns
     rows = {}
     for team in teams:
         plays = pbp if venue is None else pbp[pbp[venue] == team]
@@ -1276,10 +1376,13 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
             continue
         stats = dict(zip(TEAM_STAT_ROWS, _team_col(plays, team, side)))
         stats.update(_line_stats(mine))
+        if charted:
+            stats.update(_chart_stats(mine))
         n = int(mine["game_id"].nunique())
         rows[team] = {"Games": n, **{k: (v / n if k in SEASON_PER_GAME and n else v)
                                      for k, v in stats.items()}}
-    df = pd.DataFrame.from_dict(rows, orient="index", columns=SEASON_COLS)
+    df = pd.DataFrame.from_dict(rows, orient="index",
+                                columns=SEASON_COLS + (CHART_ROWS if charted else []))
     df.index.name = "Team"
     if side != "posteam":
         df = df.drop(columns=[c for c in SEASON_DEFENSE_SKIP if c in df.columns])
@@ -1565,7 +1668,7 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 # QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
 # possible value.
 SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%",
-                *(set(LINE_ROWS) - LINE_COUNT_ROWS)}  # fractions, 0–1
+                *(set(LINE_ROWS) - LINE_COUNT_ROWS), *CHART_RATES}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
 # Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
 # Plays, which stay as played; turnovers and lost possessions have no ceiling (a special-teams fumble

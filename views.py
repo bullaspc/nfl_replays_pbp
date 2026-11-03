@@ -348,11 +348,11 @@ def _season_format(col: str):
         return fmt_top
     if col in _RATE_ROWS or (col.endswith("%") and col not in LINE_COUNT_ROWS):
         f = "{:.1%}"
-    elif col in _EPA_ROWS:
+    elif col in _EPA_ROWS or col.endswith("EPA/play"):  # the charting's PA / Blitz EPA/play too
         f = "{:+.2f}"
     elif col in _OE_FORMATS:
         f = _OE_FORMATS[col]
-    elif col == "aDoT" or col in SEASON_PER_GAME:
+    elif col in ("aDoT", "Rushers") or col in SEASON_PER_GAME:
         f = "{:.1f}"
     else:
         f = "{:.0f}"

@@ -16,7 +16,7 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
+    ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
@@ -45,6 +45,7 @@ TEAM_VIEWS = {
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
                "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
+    "Charting": ["Games", *CHART_ROWS],  # FTN's, NFL 2022 on
     "All": None,
 }
 SIDES = {"Offense": "posteam", "Defense (allowed)": "defteam"}
@@ -174,27 +175,53 @@ with tab_teams:
                                 key="_ss_view") or "Efficiency"
     side = SIDES[side_label]
     full = team_tables["offense" if side == "posteam" else "defense"]
-    lower = season_lower_is_better(side)
-    ranks = season_ranks(full, lower)
-    cols = [c for c in (TEAM_VIEWS[view] or full.columns) if c in full.columns]
-    sortable = [c for c in cols if c != "Games"]
-    default_sort = "EPA/play" if "EPA/play" in sortable else sortable[0]
-    sort_by = c3.selectbox("Sort by", sortable, index=sortable.index(default_sort),
-                           key=f"_ss_sort_{view}")
-    # Best first: by rank, so "lower is better" stats sort the right way.
-    order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
-    table = full.loc[[t for t in order if t in shown_teams], cols]
-    stat_table(style_season_table(table, ranks))
-    st.caption(
-        f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
-        f"among the {len(full)} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
-        f"with {min_team_plays}+ plays "
-        "(green = best, red = worst"
-        + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
-           if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
-        "colored: volume isn't good or bad. Sorted best first."
-        + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
-           + " faced; play counts and penalties are as played." if adjusted else ""))
+    charting = CHART_ROWS[0] in full.columns  # FTN's charting: NFL 2022 on
+    if view == "Charting" and not charting:
+        st.info(f"FTN's charting covers the NFL from {leagues.CHART_FIRST_SEASON} on."
+                if league.season_group_label == "Conference" or season < leagues.CHART_FIRST_SEASON
+                else f"FTN's charting of {season} couldn't be read. Try again later.")
+    else:
+        lower = season_lower_is_better(side)
+        ranks = season_ranks(full, lower)
+        cols = [c for c in (TEAM_VIEWS[view] or full.columns) if c in full.columns]
+        sortable = [c for c in cols if c != "Games"]
+        default_sort = "EPA/play" if "EPA/play" in sortable else sortable[0]
+        sort_by = c3.selectbox("Sort by", sortable, index=sortable.index(default_sort),
+                               key=f"_ss_sort_{view}")
+        # Best first: by rank, so "lower is better" stats sort the right way.
+        order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
+        table = full.loc[[t for t in order if t in shown_teams], cols]
+        stat_table(style_season_table(table, ranks))
+        n_charted, n_games = tables["charted"]
+        st.caption(
+            f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
+            f"among the {len(full)} {'FBS ' if league.season_group_label == 'Conference' else ''}teams "
+            f"with {min_team_plays}+ plays "
+            "(green = best, red = worst"
+            + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
+               if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
+            "colored: volume isn't good or bad"
+            + ("; nor are the charting's choices (motion, under center, no-huddle, RPO, play "
+               "action, screens, blitzes, rushers, 8+ box)" if charting and view in ("Charting", "All")
+               else "") + ". Sorted best first."
+            + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
+               + " faced; play counts, penalties and the charting's choices are as played."
+               if adjusted else ""))
+        if charting and view in ("Charting", "All"):
+            st.caption(
+                "**Charting** by FTN Data via nflverse (CC-BY-SA 4.0), downs only, over the plays "
+                "FTN has charted"
+                + (f": {n_charted} of the selection's {n_games} games so far" if n_charted < n_games
+                   else "") + ". Motion %, Under C % (under center), No-huddle % and RPO % are "
+                "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with "
+                f"a blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
+                f"{HEAVY_BOX}+ in the box"
+                + (": the defense's own calls, the rest what it faced" if side == "defteam" else
+                   ": the defenses' calls") + ". PA EPA/play is per play-action dropback, Blitz "
+                "EPA/play per dropback against a blitz"
+                + (" (when this defense blitzed)" if side == "defteam" else "") + ". Catchable % "
+                "is throws FTN charted catchable, of those aimed (no throwaways); Drop % is drops "
+                "per catchable ball; INT-worthy % throws that should have been picked, per throw.")
 
 # ---------- Team ----------
 with tab_team:
@@ -551,7 +578,20 @@ flags) per snap.
 probability model per pass{" (the college data has none, so it's blank)" if _college else ""}. RYOE/att
 is rushing yards over expected per designed run: each run's yards less the league's average
 designed run from the same down, distance and field position (`models/xrush_yards.csv`).
-
+{"" if _college else f'''
+**Charting** (Teams' Charting view, {leagues.CHART_FIRST_SEASON} on). FTN Data's charting of every
+snap, via nflverse (CC-BY-SA 4.0), published weekly during the season; it can be a game or two
+behind the play-by-play, so each number counts the charted plays only, on downs. Motion %, Under C %
+(QB under center, not in the shotgun or pistol), No-huddle % and RPO % are per snap; PA % (play
+action) and Screen % per dropback (pass attempts plus sacks, no spikes); Blitz % is the dropbacks
+where FTN counted a blitzer, Rushers the average pass rushers per dropback, and 8+ Box % the
+designed runs against {HEAVY_BOX} or more defenders in the box. They're choices rather than results,
+so they aren't colored or adjusted; for a defense Blitz %, Rushers and 8+ Box % are its own calls
+and the others what it faced. PA EPA/play is EPA per play-action dropback and Blitz EPA/play per
+dropback against a blitz (for a defense, when it blitzed). Catchable % is the throws FTN rated
+catchable among those aimed at a receiver (throwaways left out), Drop % the drops per catchable
+ball and INT-worthy % the throws that should have been intercepted, per throw.
+'''}
 **Per game and colors.** Counts and yards are divided by the games each team played. Every
 colored cell is the team's percentile within its column among the ranked teams: green is best,
 red worst. Where lower is better (turnovers, penalties, sacks, stuffs …) the scale is flipped,
