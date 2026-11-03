@@ -1636,8 +1636,164 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
             continue
         q = df[df[PLAYER_VOLUME_COL[kind]] >= min_plays[kind]]
         out[kind] = {c: np.sort(q[c].dropna().to_numpy(dtype=float))
-                     for c in PLAYER_RATE_COLS[kind] if c in q.columns}
+                     for c in [*PLAYER_RATE_COLS[kind], *NGS_RATE_COLS.get(kind, [])]
+                     if c in q.columns}
     return out
+
+
+# ---------- Next Gen Stats (NFL) ----------
+# The NFL's player-tracking stats, as nflverse publishes them: one row per
+# player and week, and week 0 for the regular season. A week lists only the
+# players who met NGS's minimum that game (about 15 attempts or 5 targets), so
+# summing weeks misses a backup's games; week 0 counts every snap.
+# Columns added to the Season stats leaderboards, in order: passing keeps to
+# time to throw and air yards (aDOT is the table's own, so NGS's intended air
+# yards would repeat it), receiving takes every NGS rate (its counts are the
+# table's Tgt/Rec/Yds/TD already).
+NGS_COLS = {
+    "passing": ["TTT", "CAY", "AYD", "AYTS", "Long CAD"],
+    "receiving": ["Cush", "Sep", "IAY", "TAY%", "Catch%", "YAC/R", "xYAC/R", "+YAC/R"],
+}
+# What each column is, for captions.
+NGS_GLOSSARY = {
+    "TTT": "time to throw (s, snap to release)",
+    "CAY": "completed air yards per completion",
+    "AYD": "air yards differential (CAY less intended air yards per attempt)",
+    "AYTS": "air yards to the sticks (intended air yards past the first-down line)",
+    "Long CAD": "longest completed air distance (yds the ball flew)",
+    "Cush": "cushion (yds to the nearest defender at the snap)",
+    "Sep": "separation (yds to the nearest defender at the catch or incompletion)",
+    "IAY": "intended air yards per target",
+    "TAY%": "share of the team's intended air yards",
+    "Catch%": "catches per target",
+    "YAC/R": "yards after catch per reception",
+    "xYAC/R": "expected YAC per reception",
+    "+YAC/R": "YAC over expected per reception",
+}
+# The ones that are better higher, colored like the leaders' rates.
+NGS_RATE_COLS = {"receiving": ["Sep", "Catch%", "+YAC/R"]}
+NGS_FORMATS = {"TTT": "{:.2f}", "CAY": "{:.1f}", "AYD": "{:+.1f}", "AYTS": "{:+.1f}",
+               "Long CAD": "{:.1f}", "Cush": "{:.1f}", "Sep": "{:.1f}", "IAY": "{:.1f}",
+               "TAY%": "{:.1f}%", "Catch%": "{:.1f}%", "YAC/R": "{:.1f}", "xYAC/R": "{:.1f}",
+               "+YAC/R": "{:+.1f}"}
+# NGS's team abbreviations where nflverse play-by-play's differ.
+NGS_TEAM_FIX = {"LAR": "LA", "JAC": "JAX", "WSH": "WAS"}
+
+
+def _wmean(x: pd.Series, w: pd.Series) -> pd.Series:
+    """`x` averaged with weights `w` per (gsis_id, team) of their index's
+    rows; NaN where the weights add to 0."""
+    keys = [x.index.get_level_values(0), x.index.get_level_values(1)]
+    num = (x.fillna(0.0) * w).where(w > 0, 0.0).groupby(keys).sum()
+    den = w.where(w > 0, 0.0).groupby(keys).sum()
+    return num / den.where(den > 0)
+
+
+def _ngs_columns(rows: pd.DataFrame, kind: str, team_iay: pd.Series | None = None) -> pd.DataFrame:
+    """NGS rows (weeks, or a week-0 season row) → one row per (gsis_id,
+    team) with `NGS_COLS[kind]`: averages weighted by the plays behind them,
+    so a single row comes back as it was. TAY% is the player's intended air
+    yards over `team_iay[team]` (the team's in the same games); without it,
+    the rows' own share (a season row's)."""
+    r = rows.set_index(["player_gsis_id", "team"])
+    keys = [r.index.get_level_values(0), r.index.get_level_values(1)]
+    if kind == "passing":
+        att, comp = r["attempts"].astype(float), r["completions"].astype(float)
+        out = pd.DataFrame({
+            "TTT": _wmean(r["avg_time_to_throw"], att),
+            "CAY": _wmean(r["avg_completed_air_yards"], comp),
+            "AYTS": _wmean(r["avg_air_yards_to_sticks"], att),
+            "Long CAD": r["max_completed_air_distance"].groupby(keys).max(),
+        })
+        out.insert(2, "AYD", out["CAY"] - _wmean(r["avg_intended_air_yards"], att))
+    else:
+        tgt, rec = r["targets"].astype(float), r["receptions"].astype(float)
+        yac, xyac = _wmean(r["avg_yac"], rec), _wmean(r["avg_expected_yac"], rec)
+        if team_iay is None:
+            tay = _wmean(r["percent_share_of_intended_air_yards"], tgt)
+        else:
+            own = (r["avg_intended_air_yards"].fillna(0.0) * tgt).groupby(keys).sum()
+            tay = own / own.index.get_level_values(1).map(team_iay).to_numpy() * 100
+        out = pd.DataFrame({
+            "Cush": _wmean(r["avg_cushion"], tgt),
+            "Sep": _wmean(r["avg_separation"], tgt),
+            "IAY": _wmean(r["avg_intended_air_yards"], tgt),
+            "TAY%": tay,
+            "Catch%": rec.groupby(keys).sum() / tgt.groupby(keys).sum().where(lambda s: s > 0) * 100,
+            "YAC/R": yac, "xYAC/R": xyac, "+YAC/R": yac - xyac,
+        })
+    return out.rename_axis(["gsis_id", "team"])
+
+
+def team_games(pbp: pd.DataFrame, venue: str | None = None) -> pd.DataFrame:
+    """One row per team and game in `pbp`: team, week, postseason; each
+    team's home (venue "home_team") or away ("away_team") games only, or all."""
+    g = pbp.groupby("game_id").agg(week=("week", "first"), postseason=("postseason", "first"),
+                                   home_team=("home_team", "first"), away_team=("away_team", "first"))
+    sides = [s for s in ("home_team", "away_team") if venue in (None, s)]
+    return pd.concat([g.rename(columns={s: "team"})[["team", "week", "postseason"]] for s in sides],
+                     ignore_index=True)
+
+
+def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
+               whole_season: bool) -> pd.DataFrame:
+    """NGS's `kind` stats per (gsis_id, team) over the team-games `games`
+    (`team_games()`) as `NGS_COLS[kind]`. With `whole_season` (the selection
+    is every regular-season week, all venues) a player's week-0 row stands,
+    since the weeks leave out his games under NGS's minimum; otherwise, and
+    for a player traded during it (week 0 is both teams'), his weeks in the
+    selection. `post_weeks`: the play-by-play's postseason weeks, which NGS
+    numbers without the Pro Bowl's; they're matched in order."""
+    if ngs.empty or kind not in NGS_COLS:
+        return pd.DataFrame(columns=NGS_COLS.get(kind, []))
+    n = ngs.assign(team=ngs["team_abbr"].replace(NGS_TEAM_FIX),
+                   postseason=ngs["season_type"] == "POST")
+    weekly = n[n["week"] > 0]
+    ngs_post = sorted(weekly.loc[weekly["postseason"], "week"].unique())
+    to_pbp = dict(zip(ngs_post, sorted(post_weeks)))
+    weekly = weekly.assign(week=np.where(weekly["postseason"], weekly["week"].map(to_pbp),
+                                         weekly["week"]))
+    games = games[["team", "week", "postseason"]].drop_duplicates()
+    picked = weekly.merge(games, on=["team", "week", "postseason"])
+    team_iay = None
+    if kind == "receiving":
+        # TAY% is of the team's intended air yards in all its games, the ones a
+        # player isn't listed in too, as NGS's season share is. A team's in a
+        # week is any listed receiver's over his share of it.
+        share = weekly["percent_share_of_intended_air_yards"] / 100
+        own = weekly["avg_intended_air_yards"].fillna(0.0) * weekly["targets"]
+        week_iay = ((own / share.where(share != 0))
+                    .groupby([weekly["team"], weekly["week"], weekly["postseason"]]).median()
+                    .rename("iay").reset_index())
+        team_iay = week_iay.merge(games, on=["team", "week", "postseason"]).groupby("team")["iay"].sum()
+    out = (_ngs_columns(picked, kind, team_iay) if not picked.empty
+           else pd.DataFrame(columns=NGS_COLS[kind]))
+    if whole_season:
+        reg = weekly[~weekly["postseason"]]
+        traded = set(reg.loc[reg.groupby("player_gsis_id")["team"].transform("nunique") > 1,
+                             "player_gsis_id"])
+        season = n[(n["week"] == 0) & ~n["postseason"] & ~n["player_gsis_id"].isin(traded)]
+        if not season.empty:
+            whole = _ngs_columns(season, kind)
+            out = pd.concat([whole, out[~out.index.get_level_values(0).isin(
+                whole.index.get_level_values(0))]])
+    return out[NGS_COLS[kind]]
+
+
+def with_nextgen(df: pd.DataFrame, ngs: pd.DataFrame, ids: pd.DataFrame) -> pd.DataFrame:
+    """A `season_players()` table with `ngs`'s columns (`ngs_season()`)
+    appended, matched by gsis id through `ids` (`player_ids()`); NaN for a
+    player NGS doesn't list."""
+    if df.empty or ngs.empty or ids.empty:
+        return df
+    gsis = df.merge(ids.rename(columns={"team": "Team", "name": "Player"}),
+                    on=["Team", "Player"], how="left")["gsis_id"]
+    key = pd.MultiIndex.from_arrays([gsis, df["Team"]])
+    vals = ngs.reindex(key)
+    if vals.notna().sum().sum() == 0:
+        return df
+    return pd.concat([df.reset_index(drop=True), vals.reset_index(drop=True)], axis=1).set_axis(
+        df.index)
 
 
 # ---------- Matchup ----------

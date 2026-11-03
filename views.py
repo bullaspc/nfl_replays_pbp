@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAY_SPLIT_GROUPS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
@@ -249,7 +249,7 @@ def style_line_table(df: pd.DataFrame, baselines: dict | None = None):
 
 
 _PLAYER_FORMATS = {"SR%": "{:.1f}%", "aDOT": "{:.1f}", "EPA/play": "{:.2f}",
-                   "Total EPA": "{:+.1f}"}
+                   "Total EPA": "{:+.1f}", **NGS_FORMATS}
 def style_defense_table(df: pd.DataFrame):
     """A defensive leaders table: counts, shown as 1 or 0.5 (half sacks and
     half TFLs) rather than 1.0."""
@@ -258,8 +258,9 @@ def style_defense_table(df: pd.DataFrame):
 
 def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None,
                        min_plays: int | None = None):
-    """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`)
-    colored by percentile vs `baselines[kind]`; players with fewer than
+    """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`,
+    and the Next Gen Stats ones in `NGS_RATE_COLS` where the Season stats
+    page adds them) colored by percentile vs `baselines[kind]`; players with fewer than
     `min_plays` (default `PLAYER_MIN_PLAYS`, the baseline's) stay plain."""
     arrs = (baselines or {}).get(kind, {})
     min_plays = PLAYER_MIN_PLAYS[kind] if min_plays is None else min_plays
@@ -272,7 +273,8 @@ def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = Non
 
     styled = df.style.format({c: f for c, f in _PLAYER_FORMATS.items() if c in df.columns},
                              na_rep="—")
-    rate_cols = [c for c in PLAYER_RATE_COLS[kind] if c in df.columns]
+    rate_cols = [c for c in [*PLAYER_RATE_COLS[kind], *NGS_RATE_COLS.get(kind, [])]
+                 if c in df.columns]
     return styled.apply(_colors, subset=rate_cols) if rate_cols else styled
 
 

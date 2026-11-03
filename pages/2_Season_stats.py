@@ -16,12 +16,13 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
+    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_COLS, NGS_GLOSSARY, NGS_RATE_COLS,
+    PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_schedule, with_class_year,
+    situational_table, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, run_tendency_figure, stat_table, style_availability_summary,
@@ -369,6 +370,10 @@ def _leaderboard(kind: str, c2, c3) -> None:
         st.info("No players in this selection.")
         return
     df = df[df["Team"].isin(shown_teams)]
+    ngs = nextgen.get(kind)
+    if ngs is not None:
+        df = with_nextgen(df, ngs, leagues.season_player_ids(league, season, stamp))
+    has_ngs = any(c in df.columns for c in NGS_COLS.get(kind, []))
     if kind == "defenders":
         min_plays = None
     else:
@@ -392,7 +397,10 @@ def _leaderboard(kind: str, c2, c3) -> None:
             st.caption("College tackles, TFLs and hurries come from the play text's stat-crew "
                        "notes, which only some games have, so season totals undercount.")
     else:
-        dists = season_player_distributions({kind: tables[kind]}, {kind: min_plays})
+        base = tables[kind]
+        if has_ngs:
+            base = with_nextgen(base, ngs, leagues.season_player_ids(league, season, stamp))
+        dists = season_player_distributions({kind: base}, {kind: min_plays})
         stat_table(style_player_table(df, kind, dists, min_plays))
         st.caption(f"Season totals ({sel_note}); dropbacks include sacks. SR%, aDOT and "
                    f"EPA/play colors rank each player among those with {min_plays}+ "
@@ -401,7 +409,33 @@ def _leaderboard(kind: str, c2, c3) -> None:
                    + (" Yr is the class year on the season's roster." if class_years else "")
                    + (" SR% and EPA/play are adjusted for the defenses each player's plays "
                       "came against; counts and aDOT are as played." if adjusted else ""))
+        if has_ngs:
+            st.caption(_ngs_note(kind))
 
+
+def _ngs_note(kind: str) -> str:
+    """The Players tab's caption on its Next Gen Stats columns."""
+    cols = ", ".join(f"**{c}** {NGS_GLOSSARY[c]}" for c in NGS_COLS[kind])
+    colored = NGS_RATE_COLS.get(kind)
+    partial = not nextgen[kind].attrs.get("whole_season")
+    return (f"Next Gen Stats (the NFL's player tracking, via nflverse): {cols}. "
+            + (f"{', '.join(colored)} are colored like the rates; the rest are style, not "
+               "good or bad. " if colored else "Uncolored: they're style, not good or bad. ")
+            + "Whole games, as played: the situation filters and opponent adjustment don't "
+              "apply to them. "
+            + ("Here they add up NGS's weekly lines (the selection isn't the whole regular "
+               "season, or NGS hasn't published its last week yet), which list a player only "
+               "in games he met NGS's minimum; a part-time player's are from his bigger games. "
+               if partial else
+               "NGS's own season line; a player traded in-season, or under its season "
+               "minimum, adds up his weekly lines, which list only games he met NGS's minimum. ")
+            + ("NGS lists wide receivers and tight ends only. " if kind == "receiving" else "")
+            + "A dash: NGS doesn't list him.")
+
+
+# Next Gen Stats for the leaderboards (NFL, 2016 on): whole games in the
+# selection's weeks, games and venue.
+nextgen = leagues.season_nextgen(league, season, stamp, weeks, part, venue)
 
 with tab_players:
     c1, c2, c3 = st.columns([3, 2, 2])
@@ -460,6 +494,19 @@ minimum ({PLAYER_MIN_PLAYS["passing"]} dropbacks, {PLAYER_MIN_PLAYS["rushing"]} 
 {PLAYER_MIN_PLAYS["receiving"]} targets) times the most games a team played.{" College tackles, "
 "TFLs and hurries need the stat-crew play text, which only some games have, so they undercount."
 if _college else ""}
+{"" if _college else '''
+**Next Gen Stats** (Players tab, passing and receiving, 2016 on). The NFL's player-tracking
+numbers as nflverse publishes them, matched to the leaderboards by gsis id. Passers get time to
+throw and air yards: TTT, completed air yards (CAY), the air yards differential (CAY less intended
+air yards; the table's aDOT already gives the intended depth), air yards to the sticks and the
+longest completed air distance. Receivers get all of NGS's rates: cushion, separation, intended
+air yards, share of the team's intended air yards, catch %, YAC, expected YAC and YAC over
+expected per reception (separation, catch % and YAC over expected are colored). They're whole
+games and as played, so the situation filters and the opponent adjustment don't apply. Over the
+whole regular season they're NGS's own season line; over some of the weeks, the postseason or one
+venue they're NGS's weekly lines added up, weighted by attempts, completions, targets or
+receptions. NGS lists a player in a week only when he met its minimum that game, so those totals
+leave out a part-time player's smaller games.'''}
 
 **Opponent adjustment** (Stats: Opponent-adjusted). Each offense's season value is reduced by
 the average *strength* of the defenses it faced, and each defense's by that of the offenses it
