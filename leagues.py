@@ -1191,6 +1191,15 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
                     home: core.lineup_adjustment(lineups[home], lineups[away])} if has_lineup else {})
     matchups = {away: core.matchup_table(off_table, def_table, away, home, rows, adjustments.get(away)),
                 home: core.matchup_table(off_table, def_table, home, away, rows, adjustments.get(home))}
+    # FTN's charting (NFL 2022 on), as the Matchup page's Charting table.
+    chart_rows = core.matchup_chart_stats(off_table)
+    charting = ({away: core.matchup_table(off_table, def_table, away, home, chart_rows),
+                 home: core.matchup_table(off_table, def_table, home, away, chart_rows)}
+                if chart_rows else {})
+    n_charted, n_games = tables["charted"]
+    charting_note = ("FTN Data's charting via nflverse, over the plays charted"
+                     + (f" ({n_charted} of {n_games} games)" if n_charted < n_games else "")
+                     if charting else "")
 
     years = league.class_years(season, stamp)
 
@@ -1228,5 +1237,6 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
         injuries={t: reports[t][shown] for t in (away, home)}, injury_units=report_units,
         injury_note=f"the week {week} reports" if not avail.injuries.empty else "",
         lineup_groups=lineup_net if not avail.snaps.empty else {},
-        lineup_players={t: _off_report(t).drop(columns="Unit").round(2) for t in (away, home)})
+        lineup_players={t: _off_report(t).drop(columns="Unit").round(2) for t in (away, home)},
+        charting=charting, charting_note=charting_note)
     return Pregame(context, matchups)

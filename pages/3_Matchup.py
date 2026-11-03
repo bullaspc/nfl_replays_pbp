@@ -19,7 +19,7 @@ import streamlit as st
 import game_summary
 import leagues
 from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MATCHUP_LEADERS,
-                         PLAYER_MIN_PLAYS, matchup_stats,
+                         HEAVY_BOX, PLAYER_MIN_PLAYS, matchup_chart_stats, matchup_stats,
                          PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
                          availability_summary, head_to_head, injury_report, lineup_adjustment,
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
@@ -198,6 +198,14 @@ adjustments = ({away: lineup_adjustment(lineups[away], lineups[home]),
                 home: lineup_adjustment(lineups[home], lineups[away])} if has_lineup else {})
 matchups = {away: matchup_table(off_table, def_table, away, home, rows, adjustments.get(away)),
             home: matchup_table(off_table, def_table, home, away, rows, adjustments.get(home))}
+# FTN's charting (NFL 2022 on): the same table over the charting's columns.
+chart_rows = matchup_chart_stats(off_table)
+charting = ({away: matchup_table(off_table, def_table, away, home, chart_rows),
+             home: matchup_table(off_table, def_table, home, away, chart_rows)} if chart_rows else {})
+n_charted, n_games = tables["charted"]
+chart_games = (f" ({n_charted} of the selection's {n_games} games so far)" if n_charted < n_games
+               else "")
+chart_note = f"FTN Data's charting via nflverse, over the plays charted{chart_games}"
 # Before the final report there are no game statuses, so only roster moves count.
 no_status = [t for t in (away, home) if has_lineup and not (reports[t]["Status"] != "").any()]
 # What the injury report doesn't show: gone off the roster, or back.
@@ -245,8 +253,9 @@ st.caption(f"Season numbers: {sel_note} · places among the {n_teams} teams with
 # timer of its own, but any widget change reruns it while the model writes.
 # One row of links to the sections, sticky under Streamlit's header: the
 # page runs about a dozen phone screens.
-section_nav([("Preview", "preview"), ("Availability", "availability"), ("Matchups", "matchups"),
-             ("Head to head", "head-to-head"), ("Downs", "downs"), ("Players", "key-players")])
+section_nav([("Preview", "preview"), ("Availability", "availability"), ("Matchups", "matchups")]
+            + ([("Charting", "charting")] if charting else [])
+            + [("Head to head", "head-to-head"), ("Downs", "downs"), ("Players", "key-players")])
 st.subheader("🧠 Matchup preview", anchor="preview")
 preview_key = (league.name, season, game["game_id"])
 _providers = game_summary.configured_providers(_setting)
@@ -280,6 +289,7 @@ else:
             names={t: nm(t) for t in (away, home)},
             selection=sel_note.replace(" · ", ", "), n_teams=n_teams,
             matchups=matchups, situational=situational, leaders=_leaders,
+            charting=charting, charting_note=chart_note if charting else "",
             injuries={t: reports[t][_shown] for t in (away, home)}, injury_units=report_units,
             injury_note=injury_note,
             lineup_groups=lineup_net if not avail.snaps.empty else {},
@@ -401,6 +411,27 @@ st.caption(
        "on the report yet (they come on the final one, the day before the game), so w/ lineup "
        "counts only roster moves." if no_status else ""))
 
+# ---------- Charting ----------
+if charting:
+    st.subheader("Charting", anchor="charting")
+    for col, (off, def_) in zip(st.columns(2), ((away, home), (home, away))):
+        with col:
+            st.markdown(f"**{nm(off)} offense** vs {nm(def_)} defense")
+            stat_table(style_matchup_table(charting[off], off, def_, tints))
+    st.caption(
+        f"FTN Data's charting via nflverse (CC-BY-SA 4.0), downs only, over the plays charted"
+        f"{chart_games}; places, Edge and Proj. as in Matchups. "
+        "**Calls** get no place or edge, only Proj., how often to expect them in this game. The "
+        "defense makes the call on Blitz % (dropbacks with a blitzer), Rushers (pass rushers per "
+        f"dropback) and 8+ Box % (designed runs against {HEAVY_BOX}+ in the box), so there the "
+        "offense column is what it has faced; the offense makes the rest (PA % and Screen % per "
+        "dropback; Motion %, Under C % (under center), No-huddle % and RPO % per snap), and the "
+        "defense column is what it has faced. **PA EPA/play** is per play-action dropback and "
+        "**Blitz EPA/play** per dropback against a blitz (for the defense, when it blitzed): set "
+        "the offense's against the defense's to see who wins the call. **Catchable %** is throws "
+        "charted catchable, of those aimed (no throwaways); **Drop %** drops per catchable ball; "
+        "**INT-worthy %** throws that should have been picked, per throw.")
+
 # ---------- Head to head ----------
 st.subheader("Head to head", anchor="head-to-head")
 side_label = st.segmented_control("Side", list(SIDES), default="Offense", key="_mu_side",
@@ -470,6 +501,15 @@ rest. Turnovers and lost possessions, 3rd-down rate, sack rate and the run game 
 next: an edge there says more about the season than about the game. The projected EPA/play margin
 picked 58–68% of winners opponent-adjusted (60–67% as played); the betting favorite 63–74%. It
 knows nothing of weather, and of injuries only through **w/ lineup**.
+
+**Charting** (NFL, 2022 on) is FTN Data's charting of every snap, via nflverse, published
+weekly during the season: what the play-by-play doesn't say, such as play action, the blitz and
+whether a throw was catchable. It counts the plays FTN has charted, which can be a game or two
+behind the play-by-play. The calls (how often a team uses play action or blitzes) are style, so
+they get no edge; what a team does with them (EPA on play action, against the blitz) does. A
+heavy-blitzing defense against an offense that does well against the blitz is the kind of
+matchup the table is for. Blitz EPA/play and PA EPA/play rest on fewer plays than EPA/play, so
+they're noisier.
 
 **Head to head** compares like with like. Δ is {nm(away)} − {nm(home)}; whether more is better depends on
 the stat, so the tint, not the sign, says who's better.

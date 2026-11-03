@@ -1984,6 +1984,19 @@ def matchup_stats(table: pd.DataFrame, missing=frozenset()) -> list[str]:
             and not (r in table.columns and table[r].isna().all())]
 
 
+# The Matchup page's Charting table (FTN's, NFL 2022 on): each call next to how
+# the offense does on it, then the throws, then the rest of the offense's style.
+MATCHUP_CHART_ROWS = ["PA %", "PA EPA/play", "Blitz %", "Blitz EPA/play", "Rushers", "8+ Box %",
+                      "Catchable %", "Drop %", "INT-worthy %", "Motion %", "Under C %",
+                      "No-huddle %", "RPO %", "Screen %"]
+
+
+def matchup_chart_stats(table: pd.DataFrame) -> list[str]:
+    """`MATCHUP_CHART_ROWS` that `table` has values for: none without FTN's
+    charting (college, NFL before 2022, or not published yet)."""
+    return [r for r in MATCHUP_CHART_ROWS if r in table.columns and table[r].notna().any()]
+
+
 # Shown but never given an edge: how much a team plays and how deep it
 # throws are its style, not good or bad.
 MATCHUP_STYLE = SEASON_VOLUME | {"aDoT"}
