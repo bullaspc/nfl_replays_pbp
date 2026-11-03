@@ -1364,7 +1364,8 @@ if not hide_wp:
         _mom_plays = revealed.assign(_el_min=_el_min)
         _mom_scrimmage = (_mom_plays["pass_attempt"].fillna(0) == 1) | (_mom_plays["rush_attempt"].fillna(0) == 1)
         if _mom_scrimmage.any():
-            st.caption("EPA/play over a 5-play rolling window, one panel per offense; bars are single snaps. "
+            st.caption("EPA/play over each offense's last 5 snaps (each capped at ±3 EPA, so one big play "
+                       "can't dominate), one panel per offense; bars are single snaps, uncapped. "
                        "Solid lines end a quarter, dotted lines start a drive (D = the game's drive number), "
                        "★ a touchdown, ◆ a field goal.")
             fig_mom = momentum_figure(_mom_plays, home, away, team_colors, team_nicks,

@@ -644,6 +644,12 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
     return fig
 
 
+# Momentum line: a trailing average over this many snaps, each capped at
+# ±MOMENTUM_EPA_CAP EPA (the bars keep the real value).
+MOMENTUM_WINDOW = 5
+MOMENTUM_EPA_CAP = 3.0
+
+
 def momentum_figure(plays: pd.DataFrame, home: str, away: str, colors: dict[str, str],
                     names: dict[str, str], x_cap: float) -> go.Figure:
     """Momentum: one panel per offense (away on top), sharing the time axis.
@@ -651,7 +657,7 @@ def momentum_figure(plays: pd.DataFrame, home: str, away: str, colors: dict[str,
     `plays` are the revealed rows with `_el_min` (their play timeline
     position in minutes); the lines use the passes and runs. Each panel has a
     faint bar per snap's EPA,
-    the 5-play rolling EPA/play as a line, a dotted line with the game's drive
+    the trailing 5-snap EPA/play (each snap capped at ±3) as a line, a dotted line with the game's drive
     number where each of the team's drives starts, and a star at its
     touchdowns, a diamond at its field goals.
     Solid lines across both panels mark the ends of quarters up to `x_cap`."""
@@ -669,14 +675,19 @@ def momentum_figure(plays: pd.DataFrame, home: str, away: str, colors: dict[str,
         if td.empty:
             continue
         epa = td["epa"].astype(float).fillna(0)
-        rolling = epa.rolling(5, center=True, min_periods=1).mean()
+        # The line is the snap and the 4 before it (trailing, so a point
+        # never borrows from later plays or moves as more are revealed), each
+        # snap capped at ±MOMENTUM_EPA_CAP so one long touchdown can't spike
+        # it; snaps missing at kickoff count as 0, the league average.
+        rolling = (epa.clip(-MOMENTUM_EPA_CAP, MOMENTUM_EPA_CAP)
+                   .rolling(MOMENTUM_WINDOW, min_periods=1).sum() / MOMENTUM_WINDOW)
         drive = pd.to_numeric(td["drive"], errors="coerce") if "drive" in td.columns \
             else pd.Series(np.nan, index=td.index)
         qtr = td["qtr"] if "qtr" in td.columns else pd.Series(np.nan, index=td.index)
         hover = [
             f"{period_label(q) if pd.notna(q) else ''}"
             f"{f' · Drive {int(d)}' if pd.notna(d) else ''}"
-            f"<br>Play EPA {e:+.2f}<br>5-play avg {r:+.2f}"
+            f"<br>Play EPA {e:+.2f}<br>Last-5 avg {r:+.2f}"
             for q, d, e, r in zip(qtr, drive, epa, rolling)
         ]
         fig.add_trace(go.Bar(
