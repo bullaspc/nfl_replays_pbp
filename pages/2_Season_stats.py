@@ -17,7 +17,7 @@ import streamlit as st
 import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
-    NGS_RATE_COLS, PASSER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
+    NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
@@ -27,7 +27,7 @@ from replay_core import (
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
-    style_availability_summary,
+    style_availability_summary, SCATTER_MAX_LABELS,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
     style_team_schedule, style_weekly_snaps,
@@ -416,60 +416,77 @@ def _leaderboard(kind: str, c2, c3) -> None:
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:
             st.caption(_ngs_note(kind))
-        if kind == "passing":
-            _passer_scatter(qualified, min_plays)
+        _player_scatter(kind, qualified, min_plays)
 
 
-# The passers chart's starting picks: Next Gen Stats where the season has
-# them, else the leaderboard's own columns. Color and size can be "None".
-SCATTER_DEFAULTS = {"x": ["TTT", "aDOT"], "y": ["CAY", "SR%"], "color": ["EPA/play"],
-                    "size": ["Cmp%", "Att"]}
+# The players chart's starting picks per leaderboard: with Next Gen Stats
+# where the season has them, else from the leaderboard's own columns.
+# Color and size can be "None".
+SCATTER_DEFAULTS = {
+    "passing": {"ngs": {"x": "TTT", "y": "CAY", "color": "EPA/play", "size": "Cmp%"},
+                "pbp": {"x": "aDOT", "y": "SR%", "color": "EPA/play", "size": "Att"}},
+    "receiving": {"ngs": {"x": "aDOT", "y": "Sep", "color": "EPA/play", "size": "Tgt"},
+                  "pbp": {"x": "aDOT", "y": "Yds", "color": "EPA/play", "size": "Tgt"}},
+    "rushing": {"ngs": {"x": "8+D%", "y": "RYOE/att", "color": "EPA/play", "size": "Att"},
+                "pbp": {"x": "SR%", "y": "Yds", "color": "EPA/play", "size": "Att"}},
+}
+SCATTER_NOUNS = {"passing": "Passers", "rushing": "Rushers", "receiving": "Receivers"}
 _NONE = "None"
 
 
-def _passer_scatter(qualified: pd.DataFrame, min_plays: int) -> None:
-    """The passers over the minimum as a scatter (`player_scatter_figure`):
-    the viewer picks the metric on each axis, the color and the size from the
-    leaderboard's columns and the chart-only Next Gen Stats ones."""
+def _player_scatter(kind: str, qualified: pd.DataFrame, min_plays: int) -> None:
+    """A leaderboard's players over the minimum as a scatter
+    (`player_scatter_figure`): the viewer picks the metric on each axis, the
+    color and the size from the leaderboard's columns and its chart-only
+    Next Gen Stats ones."""
     metrics = [c for c in qualified.columns if c not in ("Player", "Team", CLASS_COL)
                and pd.api.types.is_numeric_dtype(qualified[c]) and qualified[c].notna().any()]
     if len(qualified) < 3 or len(metrics) < 2:
         return
-    st.markdown("**Passers chart**")
+    noun = SCATTER_NOUNS[kind]
+    st.markdown(f"**{noun} chart**")
     # Keyed by the options too: a season with Next Gen Stats offers more.
-    tag = "ngs" if "TTT" in metrics else "pbp"
+    tag = "ngs" if any(c in metrics for c in NGS_COLS.get(kind, [])) else "pbp"
+    defaults = SCATTER_DEFAULTS[kind][tag]
     picks = {}
     for col, (part, label) in zip(st.columns(4), [("x", "X axis"), ("y", "Y axis"),
                                                   ("color", "Color"), ("size", "Size")]):
         options = metrics if part in ("x", "y") else [_NONE, *metrics]
-        default = next((m for m in SCATTER_DEFAULTS[part] if m in metrics), options[0])
+        default = defaults[part] if defaults[part] in metrics else options[0]
         if part == "y" and default == picks.get("x"):
             default = next(m for m in metrics if m != picks["x"])
         picks[part] = col.selectbox(label, options, index=options.index(default),
-                                    key=f"_ss_scatter_{part}_{tag}")
+                                    key=f"_ss_scatter_{kind}_{part}_{tag}")
     color = None if picks["color"] == _NONE else picks["color"]
     size = None if picks["size"] == _NONE else picks["size"]
     chosen = list(dict.fromkeys(c for c in [picks["x"], picks["y"], color, size] if c))
     shown = qualified.dropna(subset=chosen)
     if len(shown) < 3:
-        st.caption("Too few passers over the minimum have all of these metrics in this selection.")
+        st.caption(f"Too few {noun.lower()} over the minimum have all of these metrics in this "
+                   "selection.")
         return
     adj = {c: f"{c} (adj.)" for c in ("SR%", "EPA/play", "Total EPA")} if adjusted else {}
-    glossary = {**PASSER_GLOSSARY, **NGS_GLOSSARY}
-    st.plotly_chart(player_scatter_figure(shown, picks["x"], picks["y"], color, size, adj, glossary),
+    glossary = {**PLAYER_GLOSSARY[kind], **NGS_GLOSSARY}
+    vol_col = PLAYER_VOLUME_COL[kind]
+    st.plotly_chart(player_scatter_figure(shown, picks["x"], picks["y"], color, size, adj, glossary,
+                                          label_by=vol_col),
                     width="stretch",
                     config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
     what = "; ".join(f"**{c}** {glossary[c]}" for c in chosen if c in glossary)
     if color in SCATTER_HIGHER_IS_BETTER or color in SCATTER_LOWER_IS_BETTER:
-        tint = (f"Color: {color}, green good, red bad, white at the median of these passers. ")
+        tint = f"Color: {color}, green good, red bad, white at the median of these {noun.lower()}. "
     elif color:
         tint = f"Color: {color}, which isn't good or bad, from dark (low) to yellow (high). "
     else:
         tint = ""
-    st.caption(f"{len(shown)} passers with {min_plays}+ dropbacks and every metric picked. "
+    vol = {"passing": "dropbacks", "rushing": "carries", "receiving": "targets"}[kind]
+    st.caption(f"{len(shown)} {noun.lower()} with {min_plays}+ {vol} and every metric picked. "
                + (f"{what}. " if what else "") + tint
                + (f"Size: {size}, smallest to largest. " if size else "")
-               + "The dotted lines are the medians. Tap or hover a point for his numbers."
+               + "The dotted lines are the medians. "
+               + (f"Names on the {SCATTER_MAX_LABELS} with the most {vol}; tap or hover any point "
+                  "for his name and numbers." if len(shown) > SCATTER_MAX_LABELS
+                  else "Tap or hover a point for his numbers.")
                + (" SR% and EPA are opponent-adjusted; the rest are as played." if adjusted else ""))
 
 
@@ -489,7 +506,8 @@ def _ngs_note(kind: str) -> str:
                if partial else
                "NGS's own season line; a player traded in-season, or under its season "
                "minimum, adds up his weekly lines, which list only games he met NGS's minimum. ")
-            + ("NGS lists wide receivers and tight ends only. " if kind == "receiving" else "")
+            + {"receiving": "NGS lists wide receivers and tight ends only. ",
+               "rushing": "NGS lists running backs only. "}.get(kind, "")
             + "A dash: NGS doesn't list him.")
 
 
@@ -555,18 +573,30 @@ minimum ({PLAYER_MIN_PLAYS["passing"]} dropbacks, {PLAYER_MIN_PLAYS["rushing"]} 
 "TFLs and hurries need the stat-crew play text, which only some games have, so they undercount."
 if _college else ""}
 {"" if _college else '''
-**Next Gen Stats** (Players tab, passing and receiving, 2016 on). The NFL's player-tracking
-numbers as nflverse publishes them, matched to the leaderboards by gsis id. Passers get time to
-throw and air yards: TTT, completed air yards (CAY), the air yards differential (CAY less intended
-air yards; the table's aDOT already gives the intended depth), air yards to the sticks and the
-longest completed air distance. Receivers get all of NGS's rates: cushion, separation, intended
-air yards, share of the team's intended air yards, catch %, YAC, expected YAC and YAC over
-expected per reception (separation, catch % and YAC over expected are colored). They're whole
-games and as played, so the situation filters and the opponent adjustment don't apply. Over the
-whole regular season they're NGS's own season line; over some of the weeks, the postseason or one
-venue they're NGS's weekly lines added up, weighted by attempts, completions, targets or
-receptions. NGS lists a player in a week only when he met its minimum that game, so those totals
-leave out a part-time player's smaller games.'''}
+**Next Gen Stats** (Players tab, 2016 on). The NFL's player-tracking numbers as nflverse publishes
+them, matched to the leaderboards by gsis id. Passers get time to throw and air yards: TTT,
+completed air yards (CAY), the air yards differential (CAY less intended air yards; the table's
+aDOT already gives the intended depth), air yards to the sticks and the longest completed air
+distance. Receivers get all of NGS's rates: cushion, separation, intended air yards, share of the
+team's intended air yards, catch %, YAC, expected YAC and YAC over expected per reception
+(separation, catch % and YAC over expected are colored). Rushers get all of NGS's rates too:
+efficiency (yards run per yard gained), the share of carries against 8+ defenders in the box,
+time to the line of scrimmage, yards per carry, expected yards per carry, rushing yards over
+expected (total and per carry; NGS's model, not the team tables' RYOE) and the share of carries
+that beat their expected yards (the last two colored). NGS lists receiving for wide receivers and
+tight ends only and rushing for running backs only. They're whole games and as played, so the
+situation filters and the opponent adjustment don't apply. Over the whole regular season they're
+NGS's own season line; over some of the weeks, the postseason or one venue they're NGS's weekly
+lines added up, weighted by attempts, completions, carries, targets or receptions. NGS lists a
+player in a week only when he met its minimum that game, so those totals leave out a part-time
+player's smaller games.
+
+**Players charts** (under each leaderboard). The players over the minimum, plotted on any two of
+the leaderboard's numbers, with a third as the color and a fourth as the size (the passers' chart
+can also use NGS's completion %, expected completion %, completion % over expected and
+aggressiveness). Colors run red to green where higher is better, reversed for interceptions,
+sacks, hits and stuffs, with white at the plotted players' median; numbers that are style or
+volume rather than good or bad get a neutral scale. The dotted lines are the medians.'''}
 
 **Opponent adjustment** (Stats: Opponent-adjusted). Each offense's season value is reduced by
 the average *strength* of the defenses it faced, and each defense's by that of the offenses it

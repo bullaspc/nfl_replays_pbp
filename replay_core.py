@@ -1644,28 +1644,47 @@ def season_player_distributions(players: dict[str, pd.DataFrame],
 # ---------- Next Gen Stats (NFL) ----------
 # The NFL's player-tracking stats, as nflverse publishes them: one row per
 # player and week, and week 0 for the regular season. A week lists only the
-# players who met NGS's minimum that game (about 15 attempts or 5 targets), so
+# players who met NGS's minimum that game (about 15 attempts, 10 carries or 5
+# targets), so
 # summing weeks misses a backup's games; week 0 counts every snap.
 # Columns added to the Season stats leaderboards, in order: passing keeps to
 # time to throw and air yards (aDOT is the table's own, so NGS's intended air
-# yards would repeat it), receiving takes every NGS rate (its counts are the
-# table's Tgt/Rec/Yds/TD already).
+# yards would repeat it); receiving and rushing take every NGS rate (their
+# counts are the table's Tgt/Rec/Yds/TD and Att/Yds/TD already). NGS's
+# rushing lists running backs only, from 10 carries a game.
 NGS_COLS = {
     "passing": ["TTT", "CAY", "AYD", "AYTS", "Long CAD"],
+    "rushing": ["Eff", "8+D%", "TLOS", "YPC", "xYPC", "RYOE", "RYOE/att", "ROE%"],
     "receiving": ["Cush", "Sep", "IAY", "TAY%", "Catch%", "YAC/R", "xYAC/R", "+YAC/R"],
 }
-# The passing leaderboard's own columns, for the players chart's captions.
-PASSER_GLOSSARY = {
-    "G": "games", "Att": "dropbacks (sacks included)", "Yds": "passing yards",
-    "TD": "touchdown passes", "INT": "interceptions",
-    "aDOT": "average depth of target (air yards per attempt)", "Sacks": "sacks taken",
-    "Hits": "QB hits taken", "SR%": "success rate (share of plays with EPA > 0)",
-    "EPA/play": "expected points added per play", "Total EPA": "EPA added over all his plays",
+# The leaderboards' own columns, for the players chart's captions.
+PLAYER_GLOSSARY = {
+    "passing": {
+        "G": "games", "Att": "dropbacks (sacks included)", "Yds": "passing yards",
+        "TD": "touchdown passes", "INT": "interceptions",
+        "aDOT": "average depth of target (air yards per attempt)", "Sacks": "sacks taken",
+        "Hits": "QB hits taken", "SR%": "success rate (share of plays with EPA > 0)",
+        "EPA/play": "expected points added per play", "Total EPA": "EPA added over all his plays",
+    },
+    "rushing": {
+        "G": "games", "Att": "carries (no kneels)", "Yds": "rushing yards",
+        "TD": "rushing touchdowns", "Stuffed": "carries for no gain or a loss",
+        "SR%": "success rate (share of carries with EPA > 0)",
+        "EPA/play": "expected points added per carry", "Total EPA": "EPA added over all his carries",
+    },
+    "receiving": {
+        "G": "games", "Tgt": "targets", "Rec": "receptions", "Yds": "receiving yards",
+        "YAC": "yards after catch", "aDOT": "average depth of target (air yards per target)",
+        "TD": "touchdown catches", "Exp": "catches of 20+ yards",
+        "EPA/play": "expected points added per target", "Total EPA": "EPA added over all his targets",
+    },
 }
 # Which way is good for the players chart's colors; the rest are style or
 # volume, not good or bad.
-SCATTER_HIGHER_IS_BETTER = {"EPA/play", "Total EPA", "SR%", "Yds", "TD", "Cmp%", "CPOE"}
-SCATTER_LOWER_IS_BETTER = {"INT", "Sacks", "Hits"}
+SCATTER_HIGHER_IS_BETTER = {"EPA/play", "Total EPA", "SR%", "Yds", "TD", "Cmp%", "CPOE",
+                            "Rec", "YAC", "Exp", "Sep", "Catch%", "YAC/R", "+YAC/R",
+                            "YPC", "RYOE", "RYOE/att", "ROE%"}
+SCATTER_LOWER_IS_BETTER = {"INT", "Sacks", "Hits", "Stuffed"}
 # NGS numbers the Season stats players chart can plot but the leaderboard
 # doesn't show (passing keeps to time to throw and air yards there).
 NGS_CHART_COLS = {"passing": ["Cmp%", "xCmp%", "CPOE", "Aggr%"]}
@@ -1688,14 +1707,24 @@ NGS_GLOSSARY = {
     "YAC/R": "yards after catch per reception",
     "xYAC/R": "expected YAC per reception",
     "+YAC/R": "YAC over expected per reception",
+    "Eff": "efficiency (yds run per yard gained; lower is more north-south)",
+    "8+D%": "share of carries against 8+ defenders in the box",
+    "TLOS": "time to the line of scrimmage (s)",
+    "YPC": "yards per carry (NGS)",
+    "xYPC": "expected yards per carry (NGS's model)",
+    "RYOE": "rushing yards over expected (NGS's model, not the team tables' RYOE)",
+    "RYOE/att": "rushing yards over expected per carry (NGS)",
+    "ROE%": "share of carries that beat their expected yards",
 }
 # The ones that are better higher, colored like the leaders' rates.
-NGS_RATE_COLS = {"receiving": ["Sep", "Catch%", "+YAC/R"]}
+NGS_RATE_COLS = {"receiving": ["Sep", "Catch%", "+YAC/R"], "rushing": ["RYOE/att", "ROE%"]}
 NGS_FORMATS = {"Cmp%": "{:.1f}%", "xCmp%": "{:.1f}%", "CPOE": "{:+.1f}", "Aggr%": "{:.1f}%",
                "TTT": "{:.2f}", "CAY": "{:.1f}", "AYD": "{:+.1f}", "AYTS": "{:+.1f}",
                "Long CAD": "{:.1f}", "Cush": "{:.1f}", "Sep": "{:.1f}", "IAY": "{:.1f}",
                "TAY%": "{:.1f}%", "Catch%": "{:.1f}%", "YAC/R": "{:.1f}", "xYAC/R": "{:.1f}",
-               "+YAC/R": "{:+.1f}"}
+               "+YAC/R": "{:+.1f}", "Eff": "{:.2f}", "8+D%": "{:.1f}%", "TLOS": "{:.2f}",
+               "YPC": "{:.1f}", "xYPC": "{:.1f}", "RYOE": "{:+.0f}", "RYOE/att": "{:+.2f}",
+               "ROE%": "{:.1f}%"}
 # NGS's team abbreviations where nflverse play-by-play's differ.
 NGS_TEAM_FIX = {"LAR": "LA", "JAC": "JAX", "WSH": "WAS"}
 
@@ -1730,6 +1759,19 @@ def _ngs_columns(rows: pd.DataFrame, kind: str, team_iay: pd.Series | None = Non
         out["xCmp%"] = _wmean(r["expected_completion_percentage"], att)
         out["CPOE"] = out["Cmp%"] - out["xCmp%"]
         out["Aggr%"] = _wmean(r["aggressiveness"], att)
+    elif kind == "rushing":
+        att = r["rush_attempts"].astype(float)
+        car = att.groupby(keys).sum().where(lambda v: v > 0)
+        out = pd.DataFrame({
+            "Eff": _wmean(r["efficiency"], att),
+            "8+D%": _wmean(r["percent_attempts_gte_eight_defenders"], att),
+            "TLOS": _wmean(r["avg_time_to_los"], att),
+            "YPC": _wmean(r["avg_rush_yards"], att),
+            "xYPC": r["expected_rush_yards"].groupby(keys).sum() / car,
+            "RYOE": r["rush_yards_over_expected"].groupby(keys).sum(),
+            "RYOE/att": _wmean(r["rush_yards_over_expected_per_att"], att),
+            "ROE%": _wmean(r["rush_pct_over_expected"], att) * 100,
+        })
     else:
         tgt, rec = r["targets"].astype(float), r["receptions"].astype(float)
         yac, xyac = _wmean(r["avg_yac"], rec), _wmean(r["avg_expected_yac"], rec)

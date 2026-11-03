@@ -613,6 +613,8 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
 
 # The players chart's neutral color scale, for metrics that aren't good or bad.
 _STYLE_SCALE = "Viridis"
+# Names drawn on the players chart at most (the rest show on hover).
+SCATTER_MAX_LABELS = 30
 
 
 def _metric_text(col: str, v) -> str:
@@ -627,7 +629,8 @@ def _metric_text(col: str, v) -> str:
 
 def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = None,
                           size: str | None = None, labels: dict | None = None,
-                          glossary: dict | None = None) -> go.Figure:
+                          glossary: dict | None = None, label_by: str | None = None,
+                          max_labels: int = SCATTER_MAX_LABELS) -> go.Figure:
     """A leaderboard's players as a scatter of any two of its columns, with a
     third as the color and a fourth as the size (None for neither). Dotted
     lines mark the plotted players' medians. Colors run red → green where
@@ -635,8 +638,10 @@ def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = 
     (`SCATTER_LOWER_IS_BETTER`), and on a neutral scale for style and volume;
     sizes run from the smallest value to the largest. `labels` renames
     columns on the axes and hover ("EPA/play (adj.)"); `glossary` (column →
-    description) spells out the axis titles. Fixed axes, no drag, so a swipe
-    over it scrolls the page."""
+    description) spells out the axis titles. With more than `max_labels`
+    players only the ones highest in `label_by` (their volume) are named, so
+    the names stay readable; the rest show on hover. Fixed axes, no drag, so
+    a swipe over it scrolls the page."""
     labels, glossary = labels or {}, glossary or {}
     name = lambda c: labels.get(c, c)
     title = lambda c: f"{name(c)} · {glossary[c].split(' (')[0]}" if c in glossary else name(c)
@@ -665,11 +670,15 @@ def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = 
         marker["color"] = "rgba(0,150,136,0.8)"
     hover = []
     for _, r in d.iterrows():
-        lines = [f"<b>{r['Player']}</b> · {r['Team']}"]
+        lines = [f"<b>{r['Player']}</b> · {r['Team']}"]  # hover names everyone
         lines += [f"{name(c)} {_metric_text(c, r[c])}" for c in cols]
         hover.append("<br>".join(lines))
+    names = d["Player"]
+    if label_by in d.columns and len(d) > max_labels:
+        top = d[label_by].astype(float).rank(method="first", ascending=False) <= max_labels
+        names = names.where(top, "")
     fig = go.Figure(go.Scatter(
-        x=d[x], y=d[y], mode="markers+text", text=d["Player"], textposition="top center",
+        x=d[x], y=d[y], mode="markers+text", text=names, textposition="top center",
         textfont=dict(size=10), cliponaxis=False, marker=marker, hovertext=hover,
         hovertemplate="%{hovertext}<extra></extra>", showlegend=False))
     for med, axis in [(d[x].median(), "x"), (d[y].median(), "y")]:
@@ -678,8 +687,10 @@ def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = 
             (fig.add_vline if axis == "x" else fig.add_hline)(med, line=line)
     fig.update_layout(
         height=540, margin=dict(l=50, r=20, t=20, b=110 if color else 50), dragmode=False,
-        xaxis=dict(title=title(x), fixedrange=True, zeroline=False),
-        yaxis=dict(title=title(y), fixedrange=True, zeroline=False),
+        xaxis=dict(title=title(x), fixedrange=True, zeroline=False,
+                   ticksuffix="%" if x.endswith("%") else ""),
+        yaxis=dict(title=title(y), fixedrange=True, zeroline=False,
+                   ticksuffix="%" if y.endswith("%") else ""),
     )
     return fig
 
