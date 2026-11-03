@@ -16,8 +16,8 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_COLS, NGS_GLOSSARY, NGS_RATE_COLS,
-    QB_PROFILE_COLS,
+    ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
+    NGS_RATE_COLS, PASSER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
@@ -26,7 +26,7 @@ from replay_core import (
     situational_table, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
-    mobile_css, section_nav, pass_tendency_figure, qb_ternary_figure, run_tendency_figure, stat_table,
+    mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
     style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
@@ -385,7 +385,9 @@ def _leaderboard(kind: str, c2, c3) -> None:
             min_value=0, value=_default_min(kind), step=5,
             key=f"_ss_min_{kind}_{_default_min(kind)}"))
         df = df[df[vol] >= min_plays]
-    qualified = df  # every player over the minimum, for the 3D chart
+    qualified = df  # every player over the minimum, for the passers chart
+    # Next Gen Stats only the chart plots stay out of the table.
+    df = df.drop(columns=[c for c in NGS_CHART_COLS.get(kind, []) if c in df.columns])
     numeric = [c for c in df.columns if c not in ("Player", "Team", CLASS_COL)]
     sort_by = c3.selectbox("Sort by", numeric,
                            index=numeric.index("Yds" if "Yds" in numeric else numeric[0]),
@@ -414,32 +416,61 @@ def _leaderboard(kind: str, c2, c3) -> None:
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:
             st.caption(_ngs_note(kind))
-        if kind == "passing" and has_ngs:
-            _qb_ternary(qualified, min_plays)
+        if kind == "passing":
+            _passer_scatter(qualified, min_plays)
 
 
-def _qb_ternary(qualified: pd.DataFrame, min_plays: int) -> None:
-    """The passers over the minimum on a ternary chart (`qb_ternary_figure`):
-    which of time to throw, completed air yards and EPA/play each ranks
-    highest in, colored by EPA/play. Fixed (no drag or zoom), so a swipe
-    over it scrolls the page."""
-    shown = qualified.dropna(subset=QB_PROFILE_COLS)
-    st.markdown(f"**Passer profiles: time to throw · air yards · EPA/play** ({len(shown)} passers)")
-    if len(shown) < 3:
-        st.caption("Too few passers over the minimum have Next Gen Stats in this selection.")
+# The passers chart's starting picks: Next Gen Stats where the season has
+# them, else the leaderboard's own columns. Color and size can be "None".
+SCATTER_DEFAULTS = {"x": ["TTT", "aDOT"], "y": ["CAY", "SR%"], "color": ["EPA/play"],
+                    "size": ["Cmp%", "Att"]}
+_NONE = "None"
+
+
+def _passer_scatter(qualified: pd.DataFrame, min_plays: int) -> None:
+    """The passers over the minimum as a scatter (`player_scatter_figure`):
+    the viewer picks the metric on each axis, the color and the size from the
+    leaderboard's columns and the chart-only Next Gen Stats ones."""
+    metrics = [c for c in qualified.columns if c not in ("Player", "Team", CLASS_COL)
+               and pd.api.types.is_numeric_dtype(qualified[c]) and qualified[c].notna().any()]
+    if len(qualified) < 3 or len(metrics) < 2:
         return
-    label = "EPA/play (adj.)" if adjusted else "EPA/play"
-    st.plotly_chart(qb_ternary_figure(shown, label), width="stretch",
+    st.markdown("**Passers chart**")
+    # Keyed by the options too: a season with Next Gen Stats offers more.
+    tag = "ngs" if "TTT" in metrics else "pbp"
+    picks = {}
+    for col, (part, label) in zip(st.columns(4), [("x", "X axis"), ("y", "Y axis"),
+                                                  ("color", "Color"), ("size", "Size")]):
+        options = metrics if part in ("x", "y") else [_NONE, *metrics]
+        default = next((m for m in SCATTER_DEFAULTS[part] if m in metrics), options[0])
+        if part == "y" and default == picks.get("x"):
+            default = next(m for m in metrics if m != picks["x"])
+        picks[part] = col.selectbox(label, options, index=options.index(default),
+                                    key=f"_ss_scatter_{part}_{tag}")
+    color = None if picks["color"] == _NONE else picks["color"]
+    size = None if picks["size"] == _NONE else picks["size"]
+    chosen = list(dict.fromkeys(c for c in [picks["x"], picks["y"], color, size] if c))
+    shown = qualified.dropna(subset=chosen)
+    if len(shown) < 3:
+        st.caption("Too few passers over the minimum have all of these metrics in this selection.")
+        return
+    adj = {c: f"{c} (adj.)" for c in ("SR%", "EPA/play", "Total EPA")} if adjusted else {}
+    glossary = {**PASSER_GLOSSARY, **NGS_GLOSSARY}
+    st.plotly_chart(player_scatter_figure(shown, picks["x"], picks["y"], color, size, adj, glossary),
+                    width="stretch",
                     config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
-    st.caption(f"Each passer with {min_plays}+ dropbacks and Next Gen Stats is ranked among these "
-               f"{len(shown)} on **time to throw**, **completed air yards** per completion and "
-               f"**{label}** (0–100), and placed by how his three ranks compare: toward a corner "
-               "when he ranks higher in that one than in the other two, in the middle when they're "
-               "even. The spot is the mix, not the level: a passer near the top in all three and one "
-               "near the bottom in all three both sit in the middle, so the color is his "
-               f"{label} (green good, red bad) and the size his dropbacks. Tap or hover a point "
-               "for his numbers and ranks."
-               + (" EPA/play is opponent-adjusted; TTT and CAY are as played." if adjusted else ""))
+    what = "; ".join(f"**{c}** {glossary[c]}" for c in chosen if c in glossary)
+    if color in SCATTER_HIGHER_IS_BETTER or color in SCATTER_LOWER_IS_BETTER:
+        tint = (f"Color: {color}, green good, red bad, white at the median of these passers. ")
+    elif color:
+        tint = f"Color: {color}, which isn't good or bad, from dark (low) to yellow (high). "
+    else:
+        tint = ""
+    st.caption(f"{len(shown)} passers with {min_plays}+ dropbacks and every metric picked. "
+               + (f"{what}. " if what else "") + tint
+               + (f"Size: {size}, smallest to largest. " if size else "")
+               + "The dotted lines are the medians. Tap or hover a point for his numbers."
+               + (" SR% and EPA are opponent-adjusted; the rest are as played." if adjusted else ""))
 
 
 def _ngs_note(kind: str) -> str:

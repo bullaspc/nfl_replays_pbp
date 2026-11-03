@@ -1654,8 +1654,27 @@ NGS_COLS = {
     "passing": ["TTT", "CAY", "AYD", "AYTS", "Long CAD"],
     "receiving": ["Cush", "Sep", "IAY", "TAY%", "Catch%", "YAC/R", "xYAC/R", "+YAC/R"],
 }
+# The passing leaderboard's own columns, for the players chart's captions.
+PASSER_GLOSSARY = {
+    "G": "games", "Att": "dropbacks (sacks included)", "Yds": "passing yards",
+    "TD": "touchdown passes", "INT": "interceptions",
+    "aDOT": "average depth of target (air yards per attempt)", "Sacks": "sacks taken",
+    "Hits": "QB hits taken", "SR%": "success rate (share of plays with EPA > 0)",
+    "EPA/play": "expected points added per play", "Total EPA": "EPA added over all his plays",
+}
+# Which way is good for the players chart's colors; the rest are style or
+# volume, not good or bad.
+SCATTER_HIGHER_IS_BETTER = {"EPA/play", "Total EPA", "SR%", "Yds", "TD", "Cmp%", "CPOE"}
+SCATTER_LOWER_IS_BETTER = {"INT", "Sacks", "Hits"}
+# NGS numbers the Season stats players chart can plot but the leaderboard
+# doesn't show (passing keeps to time to throw and air yards there).
+NGS_CHART_COLS = {"passing": ["Cmp%", "xCmp%", "CPOE", "Aggr%"]}
 # What each column is, for captions.
 NGS_GLOSSARY = {
+    "Cmp%": "completion % (NGS)",
+    "xCmp%": "expected completion % (NGS's model)",
+    "CPOE": "completion % over expected (NGS)",
+    "Aggr%": "aggressiveness (share of throws into tight windows)",
     "TTT": "time to throw (s, snap to release)",
     "CAY": "completed air yards per completion",
     "AYD": "air yards differential (CAY less intended air yards per attempt)",
@@ -1672,7 +1691,8 @@ NGS_GLOSSARY = {
 }
 # The ones that are better higher, colored like the leaders' rates.
 NGS_RATE_COLS = {"receiving": ["Sep", "Catch%", "+YAC/R"]}
-NGS_FORMATS = {"TTT": "{:.2f}", "CAY": "{:.1f}", "AYD": "{:+.1f}", "AYTS": "{:+.1f}",
+NGS_FORMATS = {"Cmp%": "{:.1f}%", "xCmp%": "{:.1f}%", "CPOE": "{:+.1f}", "Aggr%": "{:.1f}%",
+               "TTT": "{:.2f}", "CAY": "{:.1f}", "AYD": "{:+.1f}", "AYTS": "{:+.1f}",
                "Long CAD": "{:.1f}", "Cush": "{:.1f}", "Sep": "{:.1f}", "IAY": "{:.1f}",
                "TAY%": "{:.1f}%", "Catch%": "{:.1f}%", "YAC/R": "{:.1f}", "xYAC/R": "{:.1f}",
                "+YAC/R": "{:+.1f}"}
@@ -1706,6 +1726,10 @@ def _ngs_columns(rows: pd.DataFrame, kind: str, team_iay: pd.Series | None = Non
             "Long CAD": r["max_completed_air_distance"].groupby(keys).max(),
         })
         out.insert(2, "AYD", out["CAY"] - _wmean(r["avg_intended_air_yards"], att))
+        out["Cmp%"] = comp.groupby(keys).sum() / att.groupby(keys).sum().where(lambda v: v > 0) * 100
+        out["xCmp%"] = _wmean(r["expected_completion_percentage"], att)
+        out["CPOE"] = out["Cmp%"] - out["xCmp%"]
+        out["Aggr%"] = _wmean(r["aggressiveness"], att)
     else:
         tgt, rec = r["targets"].astype(float), r["receptions"].astype(float)
         yac, xyac = _wmean(r["avg_yac"], rec), _wmean(r["avg_expected_yac"], rec)
@@ -1738,14 +1762,14 @@ def team_games(pbp: pd.DataFrame, venue: str | None = None) -> pd.DataFrame:
 def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
                whole_season: bool) -> pd.DataFrame:
     """NGS's `kind` stats per (gsis_id, team) over the team-games `games`
-    (`team_games()`) as `NGS_COLS[kind]`. With `whole_season` (the selection
+    (`team_games()`) as `NGS_COLS[kind]` plus the chart's `NGS_CHART_COLS`. With `whole_season` (the selection
     is every regular-season week, all venues) a player's week-0 row stands,
     since the weeks leave out his games under NGS's minimum; otherwise, and
     for a player traded during it (week 0 is both teams'), his weeks in the
     selection. `post_weeks`: the play-by-play's postseason weeks, which NGS
     numbers without the Pro Bowl's; they're matched in order."""
     if ngs.empty or kind not in NGS_COLS:
-        return pd.DataFrame(columns=NGS_COLS.get(kind, []))
+        return pd.DataFrame(columns=NGS_COLS.get(kind, []) + NGS_CHART_COLS.get(kind, []))
     n = ngs.assign(team=ngs["team_abbr"].replace(NGS_TEAM_FIX),
                    postseason=ngs["season_type"] == "POST")
     weekly = n[n["week"] > 0]
@@ -1767,7 +1791,7 @@ def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
                     .rename("iay").reset_index())
         team_iay = week_iay.merge(games, on=["team", "week", "postseason"]).groupby("team")["iay"].sum()
     out = (_ngs_columns(picked, kind, team_iay) if not picked.empty
-           else pd.DataFrame(columns=NGS_COLS[kind]))
+           else pd.DataFrame(columns=NGS_COLS[kind] + NGS_CHART_COLS.get(kind, [])))
     if whole_season:
         reg = weekly[~weekly["postseason"]]
         traded = set(reg.loc[reg.groupby("player_gsis_id")["team"].transform("nunique") > 1,
@@ -1777,27 +1801,7 @@ def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
             whole = _ngs_columns(season, kind)
             out = pd.concat([whole, out[~out.index.get_level_values(0).isin(
                 whole.index.get_level_values(0))]])
-    return out[NGS_COLS[kind]]
-
-
-# The Season stats passers' ternary chart: time to throw, completed air
-# yards and EPA/play, each a rank among the passers plotted, split three ways.
-QB_PROFILE_COLS = ["TTT", "CAY", "EPA/play"]
-
-
-def rank_shares(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    """Each row's percentile rank in each of `cols` among `df`'s rows (as
-    `<col> pct`, 0–100, (rank − ½) ÷ n so none is 0) and its share of the
-    row's ranks (as `<col> share`, adding to 1 per row): where a ternary
-    chart puts it. The shares say which of the three a row ranks highest in,
-    not how high: one high in all three and one low in all three both sit at
-    the middle. Rows missing any of `cols` are dropped."""
-    d = df.dropna(subset=cols)
-    if d.empty:
-        return d
-    pct = pd.DataFrame({c: (d[c].rank(method="average") - 0.5) / len(d) * 100 for c in cols})
-    share = pct.div(pct.sum(axis=1), axis=0)
-    return d.assign(**{f"{c} pct": pct[c] for c in cols}, **{f"{c} share": share[c] for c in cols})
+    return out[NGS_COLS[kind] + NGS_CHART_COLS.get(kind, [])]
 
 
 def with_nextgen(df: pd.DataFrame, ngs: pd.DataFrame, ids: pd.DataFrame) -> pd.DataFrame:

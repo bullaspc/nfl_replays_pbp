@@ -13,10 +13,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAY_SPLIT_GROUPS, QB_PROFILE_COLS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
-                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label, rank_shares, _ordinal,
-                         success_emoji, yl_label)
+                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
+                         SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
 
@@ -611,53 +611,75 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
     return fig
 
 
-def qb_ternary_figure(df: pd.DataFrame, epa_label: str = "EPA/play") -> go.Figure:
-    """The Season stats passers on a ternary chart: each one's percentile
-    ranks in time to throw, completed air yards and EPA/play split three
-    ways (`replay_core.rank_shares`, `QB_PROFILE_COLS`), so a passer leans
-    toward the corner he ranks highest in and the balanced sit in the
-    middle. Position is the mix, not the level, so the color is his actual
-    EPA/play (`_EPA_SCALE`) and the size his dropbacks. `df`: a leaderboard
-    with Player, Team, Att, TTT, CAY and EPA/play."""
-    d = rank_shares(df, QB_PROFILE_COLS)
-    epa = d["EPA/play"].astype(float) if len(d) else pd.Series(dtype=float)
-    span = max(float(epa.abs().max()), 0.1) if len(d) else 0.1
-    att = d["Att"].astype(float) if len(d) else pd.Series(dtype=float)
-    size = (9 + 15 * (att - att.min()) / (att.max() - att.min())
-            if len(d) and att.max() > att.min() else 14)
-    custom = None
-    if len(d):
-        pct = {c: [f"{_ordinal(int(round(p)))} pct" for p in d[f"{c} pct"]] for c in QB_PROFILE_COLS}
-        custom = list(zip(d["Team"], d["Att"], d["TTT"], pct["TTT"], d["CAY"], pct["CAY"],
-                          pct["EPA/play"]))
-    fig = go.Figure(go.Scatterternary(
-        a=d["TTT share"] if len(d) else [], b=d["CAY share"] if len(d) else [],
-        c=d["EPA/play share"] if len(d) else [],
-        mode="markers+text", text=d["Player"] if len(d) else [], textposition="top center",
-        textfont=dict(size=10), cliponaxis=False,  # names by an edge would be cut off
-        marker=dict(size=size, color=epa, colorscale=_EPA_SCALE, cmin=-span, cmax=span,
-                    line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.95,
-                    # Under the triangle, so on a phone it doesn't take a third of the width.
-                    colorbar=dict(title=dict(text=epa_label, side="top"), orientation="h",
-                                  x=0.5, xanchor="center", y=-0.06, yanchor="top",
-                                  thickness=8, len=0.5, tickformat="+.1f")),
-        customdata=custom,
-        hovertemplate=("<b>%{text}</b> · %{customdata[0]}<br>"
-                       "Time to throw %{customdata[2]:.2f}s (%{customdata[3]})<br>"
-                       "CAY %{customdata[4]:.1f} yds (%{customdata[5]})<br>"
-                       + epa_label + " %{marker.color:+.2f} (%{customdata[6]})<br>"
-                       "%{customdata[1]} dropbacks<extra></extra>"),
-        showlegend=False,
-    ))
-    axis = dict(showticklabels=False, ticks="", linewidth=1, gridcolor="rgba(128,128,128,0.25)",
-                min=0)
+# The players chart's neutral color scale, for metrics that aren't good or bad.
+_STYLE_SCALE = "Viridis"
+
+
+def _metric_text(col: str, v) -> str:
+    """A players chart value as the leaderboard writes it."""
+    if pd.isna(v):
+        return "—"
+    fmt = _PLAYER_FORMATS.get(col)
+    if fmt:
+        return fmt.format(v)
+    return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+
+
+def player_scatter_figure(df: pd.DataFrame, x: str, y: str, color: str | None = None,
+                          size: str | None = None, labels: dict | None = None,
+                          glossary: dict | None = None) -> go.Figure:
+    """A leaderboard's players as a scatter of any two of its columns, with a
+    third as the color and a fourth as the size (None for neither). Dotted
+    lines mark the plotted players' medians. Colors run red → green where
+    higher is better (`SCATTER_HIGHER_IS_BETTER`), reversed where lower is
+    (`SCATTER_LOWER_IS_BETTER`), and on a neutral scale for style and volume;
+    sizes run from the smallest value to the largest. `labels` renames
+    columns on the axes and hover ("EPA/play (adj.)"); `glossary` (column →
+    description) spells out the axis titles. Fixed axes, no drag, so a swipe
+    over it scrolls the page."""
+    labels, glossary = labels or {}, glossary or {}
+    name = lambda c: labels.get(c, c)
+    title = lambda c: f"{name(c)} · {glossary[c].split(' (')[0]}" if c in glossary else name(c)
+    cols = [c for c in dict.fromkeys([x, y, color, size]) if c]
+    d = df.dropna(subset=cols)
+    marker = dict(line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.9)
+    if size:
+        v = d[size].astype(float)
+        marker["size"] = (8 + 20 * (v - v.min()) / (v.max() - v.min())) if v.max() > v.min() else 14
+    else:
+        marker["size"] = 12
+    if color:
+        v = d[color].astype(float)
+        if color in SCATTER_HIGHER_IS_BETTER or color in SCATTER_LOWER_IS_BETTER:
+            scale = _EPA_SCALE if color in SCATTER_HIGHER_IS_BETTER else _EPA_SCALE[::-1]
+            if color in SCATTER_LOWER_IS_BETTER:
+                scale = [[1 - p, c] for p, c in scale]
+            half = max(float((v - v.median()).abs().max()), 1e-9)
+            marker.update(cmin=float(v.median()) - half, cmax=float(v.median()) + half)
+        else:
+            scale = _STYLE_SCALE
+        marker.update(color=v, colorscale=scale, colorbar=dict(
+            title=dict(text=name(color), side="top"), orientation="h", x=0.5, xanchor="center",
+            y=-0.18, yanchor="top", thickness=8, len=0.5))
+    else:
+        marker["color"] = "rgba(0,150,136,0.8)"
+    hover = []
+    for _, r in d.iterrows():
+        lines = [f"<b>{r['Player']}</b> · {r['Team']}"]
+        lines += [f"{name(c)} {_metric_text(c, r[c])}" for c in cols]
+        hover.append("<br>".join(lines))
+    fig = go.Figure(go.Scatter(
+        x=d[x], y=d[y], mode="markers+text", text=d["Player"], textposition="top center",
+        textfont=dict(size=10), cliponaxis=False, marker=marker, hovertext=hover,
+        hovertemplate="%{hovertext}<extra></extra>", showlegend=False))
+    for med, axis in [(d[x].median(), "x"), (d[y].median(), "y")]:
+        if pd.notna(med):
+            line = dict(dash="dot", color="rgba(128,128,128,0.6)", width=1)
+            (fig.add_vline if axis == "x" else fig.add_hline)(med, line=line)
     fig.update_layout(
-        height=540, margin=dict(l=60, r=60, t=50, b=90), dragmode=False,
-        ternary=dict(
-            sum=1, bgcolor="rgba(0,0,0,0)",
-            aaxis=dict(title=dict(text="<b>Holds the ball</b><br>time to throw"), **axis),
-            baxis=dict(title=dict(text="<b>Completes deep</b><br>CAY"), **axis),
-            caxis=dict(title=dict(text=f"<b>Efficient</b><br>{epa_label}"), **axis)),
+        height=540, margin=dict(l=50, r=20, t=20, b=110 if color else 50), dragmode=False,
+        xaxis=dict(title=title(x), fixedrange=True, zeroline=False),
+        yaxis=dict(title=title(y), fixedrange=True, zeroline=False),
     )
     return fig
 
