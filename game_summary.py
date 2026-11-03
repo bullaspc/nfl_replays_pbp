@@ -867,6 +867,11 @@ class MatchupContext:
     # team → its name ("Bears", "Texas Tech"), for the preview's prose; the
     # tables keep the abbreviations
     names: dict[str, str] = field(default_factory=dict)
+    # offense team → replay_core.matchup_table over FTN's charting
+    # (MATCHUP_CHART_ROWS) against the other team's defense, and which plays
+    # it covers; empty where there's no charting (college, NFL before 2022)
+    charting: dict[str, pd.DataFrame] = field(default_factory=dict)
+    charting_note: str = ""
 
     def name(self, team: str) -> str:
         return self.names.get(team, team)
@@ -875,7 +880,7 @@ class MatchupContext:
 def _fmt_season(stat: str, v) -> str:
     if pd.isna(v):
         return "-"
-    if stat in _EPA_STATS:
+    if stat in _EPA_STATS or stat.endswith("EPA/play"):  # the charting's PA / Blitz EPA/play too
         return f"{v:+.2f}"
     if stat == "CPOE":
         return f"{v:+.1f}"
@@ -929,6 +934,14 @@ def matchup_snapshot(ctx: MatchupContext) -> str:
     for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
         parts.append(f"When {off} has the ball: {off}'s offense against what {def_}'s defense "
                      f"allowed.\n{_csv(matchup_rows(ctx.matchups[off], off, def_))}")
+    if ctx.charting:
+        parts.append(f"Charting: {ctx.charting_note}, downs only. The calls (PA %, Screen %, Motion %, "
+                     "Under C %, No-huddle %, RPO % made by the offense; Blitz %, Rushers, 8+ Box % "
+                     "made by the defense) have no place or edge; for each, the side that doesn't make "
+                     "the call shows what it has faced, and proj is how often to expect it in this game.")
+        for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
+            parts.append(f"Charting when {off} has the ball: {off}'s offense against {def_}'s defense."
+                         f"\n{_csv(matchup_rows(ctx.charting[off], off, def_))}")
     for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
         parts.append(f"Down and distance when {off} has the ball: success rate (the "
                      f"season's plays in brackets, not per game). Early = 1st-2nd down, late = 3rd-4th; short 1-3 yds to go, "
@@ -987,6 +1000,7 @@ Ground rules:
 - If injury reports are given, weigh them: a starter who is Out or Doubtful takes his unit's season numbers with him, so say which matchup it changes and how much he plays (his snap share), e.g. two starting offensive linemen out against a strong pass rush. A Questionable player may play. The lineup lines count the same way, and add starters on injured reserve (not on the report) and starters back. Where "proj w/ lineup" is given, it already counts the players gone from both lineups: use it instead of proj for those stats, and say when it moves a matchup. Players back aren't in it: in backtests they made no measurable difference, so don't promise a lift from one. Mention only players the reports and lineup lines list, and if there are none, don't bring up anyone's health.
 
 Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA; both count a pass or run a penalty wiped out (its EPA is the penalty's). Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it; proj w/ lineup (EPA/play, pass EPA/play and pass SR only) moves it by what players gone have done to games before, about -0.09 EPA/play for a starting QB out, -0.02 for each other full-time player the offense is missing and +0.02 for each one the defense is missing, and came a little closer to the games in backtests. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers and lost possessions, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. ED SR is the success rate on 1st and 2nd down, passes and runs together. CPOE is completion percentage over expected, in points (nflfastR's completion model); RYOE/att is rushing yards over expected per designed run, against the league's average run from the same down, distance and field position. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game; Lost Poss. (per game) adds turnovers on downs and missed or blocked field goals. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
+Charting (FTN's, when given): PA % is play action per dropback and PA EPA/play the EPA per play-action dropback; Blitz % is dropbacks with a blitzer, Rushers the pass rushers per dropback, and Blitz EPA/play the EPA per dropback against a blitz (for a defense, when it blitzed); 8+ Box % is designed runs against 8 or more in the box; Catchable % is throws charted catchable of those aimed, Drop % drops per catchable ball, INT-worthy % throws that should have been intercepted; Motion %, Under C % (under center), No-huddle % and RPO % are per snap, Screen % per dropback. A call that meets a unit good against it (a heavy-blitzing defense against an offense with a high Blitz EPA/play) is worth a bullet; PA and Blitz EPA/play rest on fewer plays than EPA/play, so treat a small edge there as noise.
 
 Write Markdown, about 150 to 220 words:
 **Headline**: one sentence: who the numbers favor and why.
