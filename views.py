@@ -15,7 +15,7 @@ import streamlit as st
 from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
-                         field_pos_label, fmt_top, percentile_of, play_type_label, success_emoji, yl_label)
+                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
 
@@ -641,6 +641,101 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
         xaxis=dict(fixedrange=True, side="bottom", showgrid=False),
         yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False),
     )
+    return fig
+
+
+def momentum_figure(plays: pd.DataFrame, home: str, away: str, colors: dict[str, str],
+                    names: dict[str, str], x_cap: float) -> go.Figure:
+    """Momentum: one panel per offense (away on top), sharing the time axis.
+
+    `plays` are the revealed rows with `_el_min` (their play timeline
+    position in minutes); the lines use the passes and runs. Each panel has a
+    faint bar per snap's EPA,
+    the 5-play rolling EPA/play as a line, a dotted line with the game's drive
+    number where each of the team's drives starts, and a mark at its scores.
+    Solid lines across both panels mark the ends of quarters up to `x_cap`."""
+    from plotly.subplots import make_subplots
+
+    teams = [away, home]
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.14,
+                        subplot_titles=[f"{names.get(t, t)} offense" for t in teams])
+    fig.update_annotations(font_size=12, x=0, xanchor="left")  # the panel titles
+    y_lim = 2.0
+    for row, team in enumerate(teams, start=1):
+        color = colors.get(team) or ("#ff7f0e" if team == away else "#1f77b4")
+        own = plays[plays["posteam"] == team]
+        td = own[(own["pass_attempt"].fillna(0) == 1) | (own["rush_attempt"].fillna(0) == 1)]
+        if td.empty:
+            continue
+        epa = td["epa"].astype(float).fillna(0)
+        rolling = epa.rolling(5, center=True, min_periods=1).mean()
+        drive = pd.to_numeric(td["drive"], errors="coerce") if "drive" in td.columns \
+            else pd.Series(np.nan, index=td.index)
+        qtr = td["qtr"] if "qtr" in td.columns else pd.Series(np.nan, index=td.index)
+        hover = [
+            f"{period_label(q) if pd.notna(q) else ''}"
+            f"{f' · Drive {int(d)}' if pd.notna(d) else ''}"
+            f"<br>Play EPA {e:+.2f}<br>5-play avg {r:+.2f}"
+            for q, d, e, r in zip(qtr, drive, epa, rolling)
+        ]
+        fig.add_trace(go.Bar(
+            x=td["_el_min"], y=epa.clip(-y_lim, y_lim), marker_color=color, opacity=0.3,
+            width=0.25, hoverinfo="skip", showlegend=False,
+        ), row=row, col=1)
+        # The line breaks between drives, so it doesn't run through the
+        # other team's possessions; the rolling window still spans drives.
+        xs, ys, texts = [], [], []
+        prev = None
+        for x, y, t, d in zip(td["_el_min"], rolling, hover, drive):
+            if prev is not None and d != prev:
+                xs.append(None); ys.append(None); texts.append(None)
+            xs.append(x); ys.append(y); texts.append(t)
+            prev = d
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines+markers", line=dict(color=color, width=2.5),
+            marker=dict(size=4, color=color), connectgaps=False,
+            name=team, text=texts, hovertemplate="%{text}<extra>" + team + "</extra>",
+            showlegend=False,
+        ), row=row, col=1)
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=row, col=1)
+
+        # Drive starts: the first snap of each of this team's drives.
+        starts = td.assign(_drive=drive).dropna(subset=["_drive"]).groupby("_drive")["_el_min"].min()
+        for d, x in starts.items():
+            fig.add_vline(x=float(x), line_dash="dot", line_color="gray", line_width=1,
+                          opacity=0.6, row=row, col=1)
+            fig.add_annotation(x=float(x), y=y_lim, text=f"D{int(d)}", showarrow=False,
+                               xanchor="left", yanchor="top", font=dict(size=9, color="gray"),
+                               row=row, col=1)
+
+        # This offense's touchdowns and field goals (defensive scores and
+        # safeties aren't the offense's momentum, so they get no mark).
+        td_mask = own["touchdown"].fillna(0) == 1
+        if "td_team" in own.columns:
+            td_mask &= own["td_team"] == team
+        fg_mask = own["field_goal_result"] == "made"
+        scored = own[td_mask | fg_mask]
+        if not scored.empty:
+            fig.add_trace(go.Scatter(
+                x=scored["_el_min"], y=[-y_lim * 0.8] * len(scored), mode="markers+text",
+                marker=dict(symbol="star", size=11, color=color, line=dict(color="white", width=1)),
+                text=["TD" if t else "FG" for t in td_mask[scored.index]],
+                textposition="middle right", textfont=dict(size=9),
+                hoverinfo="skip", showlegend=False,
+            ), row=row, col=1)
+        fig.update_yaxes(range=[-y_lim, y_lim], tickvals=[-2, -1, 0, 1, 2], row=row, col=1)
+
+    # Quarter ends (and OT period ends) already reached: a solid line across
+    # both panels, labelled on the time axis.
+    ends = [15.0 * k for k in range(1, int(x_cap // 15) + 1) if 15.0 * k < x_cap]
+    for x in ends:
+        fig.add_vline(x=x, line_color="gray", line_width=1.5, opacity=0.8, row="all", col=1)
+    labels = ["Half" if x == 30 else f"End {period_label(int(x // 15))}" for x in ends]
+    fig.update_xaxes(range=[0, x_cap], tickvals=[0.0] + ends, ticktext=["Kickoff"] + labels,
+                     tickfont_size=10)
+    fig.update_xaxes(showticklabels=True, row=1, col=1)
+    fig.update_layout(height=480, margin=dict(l=30, r=20, t=30, b=30), bargap=0,
+                      hovermode="closest")
     return fig
 
 
