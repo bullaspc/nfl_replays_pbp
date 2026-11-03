@@ -17,6 +17,7 @@ import streamlit as st
 import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, CLASS_COL, EXPLOSIVE_RUN_YDS, LINE_ROWS, NGS_COLS, NGS_GLOSSARY, NGS_RATE_COLS,
+    QB_PROFILE_COLS,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
@@ -25,7 +26,7 @@ from replay_core import (
     situational_table, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
-    mobile_css, section_nav, pass_tendency_figure, qb_3d_figure, run_tendency_figure, stat_table,
+    mobile_css, section_nav, pass_tendency_figure, qb_ternary_figure, run_tendency_figure, stat_table,
     style_availability_summary,
     style_defense_table, style_injury_report,
     style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
@@ -414,29 +415,31 @@ def _leaderboard(kind: str, c2, c3) -> None:
         if has_ngs:
             st.caption(_ngs_note(kind))
         if kind == "passing" and has_ngs:
-            _qb_3d(qualified, min_plays)
+            _qb_ternary(qualified, min_plays)
 
 
-def _qb_3d(qualified: pd.DataFrame, min_plays: int) -> None:
-    """Time to throw × completed air yards × EPA/play for the passers over the
-    minimum, in a collapsed expander: dragging it turns the chart, so on a
-    phone it would catch the swipes that scroll the page."""
-    shown = qualified.dropna(subset=["TTT", "CAY", "EPA/play"])
-    with st.expander(f"3D chart: time to throw × air yards × EPA/play ({len(shown)} passers)",
-                     expanded=False, key="_ss_exp_qb3d"):
-        if shown.empty:
-            st.caption("No passer over the minimum has Next Gen Stats in this selection.")
-            return
-        label = "EPA/play (adj.)" if adjusted else "EPA/play"
-        st.plotly_chart(qb_3d_figure(shown, label), width="stretch",
-                        config={"displayModeBar": False, "scrollZoom": False})
-        st.caption(f"Each passer with {min_plays}+ dropbacks and Next Gen Stats: **time to throw** "
-                   "(snap to release, NGS) across, **completed air yards** per completion (NGS) "
-                   f"in depth, **{label}** up, also the color (green good, red bad). Size is "
-                   "dropbacks; each stem drops to the floor to show where he sits on time × "
-                   "depth. Drag to turn it, tap or hover a point for its numbers."
-                   + (" EPA/play is opponent-adjusted; TTT and CAY are as played." if adjusted
-                      else ""))
+def _qb_ternary(qualified: pd.DataFrame, min_plays: int) -> None:
+    """The passers over the minimum on a ternary chart (`qb_ternary_figure`):
+    which of time to throw, completed air yards and EPA/play each ranks
+    highest in, colored by EPA/play. Fixed (no drag or zoom), so a swipe
+    over it scrolls the page."""
+    shown = qualified.dropna(subset=QB_PROFILE_COLS)
+    st.markdown(f"**Passer profiles: time to throw · air yards · EPA/play** ({len(shown)} passers)")
+    if len(shown) < 3:
+        st.caption("Too few passers over the minimum have Next Gen Stats in this selection.")
+        return
+    label = "EPA/play (adj.)" if adjusted else "EPA/play"
+    st.plotly_chart(qb_ternary_figure(shown, label), width="stretch",
+                    config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    st.caption(f"Each passer with {min_plays}+ dropbacks and Next Gen Stats is ranked among these "
+               f"{len(shown)} on **time to throw**, **completed air yards** per completion and "
+               f"**{label}** (0–100), and placed by how his three ranks compare: toward a corner "
+               "when he ranks higher in that one than in the other two, in the middle when they're "
+               "even. The spot is the mix, not the level: a passer near the top in all three and one "
+               "near the bottom in all three both sit in the middle, so the color is his "
+               f"{label} (green good, red bad) and the size his dropbacks. Tap or hover a point "
+               "for his numbers and ranks."
+               + (" EPA/play is opponent-adjusted; TTT and CAY are as played." if adjusted else ""))
 
 
 def _ngs_note(kind: str) -> str:

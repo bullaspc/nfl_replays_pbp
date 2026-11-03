@@ -1780,6 +1780,26 @@ def ngs_season(ngs: pd.DataFrame, kind: str, games: pd.DataFrame, post_weeks,
     return out[NGS_COLS[kind]]
 
 
+# The Season stats passers' ternary chart: time to throw, completed air
+# yards and EPA/play, each a rank among the passers plotted, split three ways.
+QB_PROFILE_COLS = ["TTT", "CAY", "EPA/play"]
+
+
+def rank_shares(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Each row's percentile rank in each of `cols` among `df`'s rows (as
+    `<col> pct`, 0–100, (rank − ½) ÷ n so none is 0) and its share of the
+    row's ranks (as `<col> share`, adding to 1 per row): where a ternary
+    chart puts it. The shares say which of the three a row ranks highest in,
+    not how high: one high in all three and one low in all three both sit at
+    the middle. Rows missing any of `cols` are dropped."""
+    d = df.dropna(subset=cols)
+    if d.empty:
+        return d
+    pct = pd.DataFrame({c: (d[c].rank(method="average") - 0.5) / len(d) * 100 for c in cols})
+    share = pct.div(pct.sum(axis=1), axis=0)
+    return d.assign(**{f"{c} pct": pct[c] for c in cols}, **{f"{c} share": share[c] for c in cols})
+
+
 def with_nextgen(df: pd.DataFrame, ngs: pd.DataFrame, ids: pd.DataFrame) -> pd.DataFrame:
     """A `season_players()` table with `ngs`'s columns (`ngs_season()`)
     appended, matched by gsis id through `ids` (`player_ids()`); NaN for a

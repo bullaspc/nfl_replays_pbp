@@ -13,9 +13,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         PLAY_SPLIT_GROUPS, QB_PROFILE_COLS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
-                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label, success_emoji, yl_label)
+                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label, rank_shares, _ordinal,
+                         success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
 
@@ -610,51 +611,53 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
     return fig
 
 
-def qb_3d_figure(df: pd.DataFrame, epa_label: str = "EPA/play") -> go.Figure:
-    """The Season stats passers in three dimensions: time to throw (x),
-    completed air yards per completion (y) and EPA/play (z), one point per
-    passer (`df`: a leaderboard with Player, Team, Att, TTT, CAY, EPA/play),
-    sized by dropbacks and colored by EPA/play like the tendency charts. A
-    stem drops each point to the floor so its spot on the TTT × CAY plane
-    reads from any angle."""
-    d = df.dropna(subset=["TTT", "CAY", "EPA/play"])
-    epa = d["EPA/play"].astype(float)
+def qb_ternary_figure(df: pd.DataFrame, epa_label: str = "EPA/play") -> go.Figure:
+    """The Season stats passers on a ternary chart: each one's percentile
+    ranks in time to throw, completed air yards and EPA/play split three
+    ways (`replay_core.rank_shares`, `QB_PROFILE_COLS`), so a passer leans
+    toward the corner he ranks highest in and the balanced sit in the
+    middle. Position is the mix, not the level, so the color is his actual
+    EPA/play (`_EPA_SCALE`) and the size his dropbacks. `df`: a leaderboard
+    with Player, Team, Att, TTT, CAY and EPA/play."""
+    d = rank_shares(df, QB_PROFILE_COLS)
+    epa = d["EPA/play"].astype(float) if len(d) else pd.Series(dtype=float)
     span = max(float(epa.abs().max()), 0.1) if len(d) else 0.1
-    floor = float(epa.min()) - 0.05 if len(d) else -0.1
-    stems_x, stems_y, stems_z = [], [], []
-    for x, y, z in zip(d["TTT"], d["CAY"], epa):
-        stems_x += [x, x, None]
-        stems_y += [y, y, None]
-        stems_z += [floor, z, None]
-    att = d["Att"].astype(float)
-    size = 6 + 12 * (att - att.min()) / (att.max() - att.min()) if att.max() > att.min() else 10
-    fig = go.Figure([
-        go.Scatter3d(x=stems_x, y=stems_y, z=stems_z, mode="lines", hoverinfo="skip",
-                     line=dict(color="rgba(120,120,120,0.75)", width=3), showlegend=False),
-        # Each passer's shadow on the floor: where he sits on time × depth.
-        go.Scatter3d(x=d["TTT"], y=d["CAY"], z=[floor] * len(d), mode="markers",
-                     hoverinfo="skip", showlegend=False,
-                     marker=dict(size=3, color="rgba(120,120,120,0.8)")),
-        go.Scatter3d(
-            x=d["TTT"], y=d["CAY"], z=epa, mode="markers+text",
-            text=d["Player"], textposition="top center", textfont=dict(size=10),
-            marker=dict(size=size, color=epa, colorscale=_EPA_SCALE, cmin=-span, cmax=span,
-                        line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.95),
-            customdata=d[["Team", "Att"]].to_numpy(),
-            hovertemplate=("<b>%{text}</b> · %{customdata[0]}<br>Time to throw %{x:.2f}s<br>"
-                           "CAY %{y:.1f} yds<br>" + epa_label + " %{z:+.2f}<br>"
-                           "%{customdata[1]} dropbacks<extra></extra>"),
-            showlegend=False),
-    ])
+    att = d["Att"].astype(float) if len(d) else pd.Series(dtype=float)
+    size = (9 + 15 * (att - att.min()) / (att.max() - att.min())
+            if len(d) and att.max() > att.min() else 14)
+    custom = None
+    if len(d):
+        pct = {c: [f"{_ordinal(int(round(p)))} pct" for p in d[f"{c} pct"]] for c in QB_PROFILE_COLS}
+        custom = list(zip(d["Team"], d["Att"], d["TTT"], pct["TTT"], d["CAY"], pct["CAY"],
+                          pct["EPA/play"]))
+    fig = go.Figure(go.Scatterternary(
+        a=d["TTT share"] if len(d) else [], b=d["CAY share"] if len(d) else [],
+        c=d["EPA/play share"] if len(d) else [],
+        mode="markers+text", text=d["Player"] if len(d) else [], textposition="top center",
+        textfont=dict(size=10), cliponaxis=False,  # names by an edge would be cut off
+        marker=dict(size=size, color=epa, colorscale=_EPA_SCALE, cmin=-span, cmax=span,
+                    line=dict(color="rgba(80,80,80,0.8)", width=1), opacity=0.95,
+                    # Under the triangle, so on a phone it doesn't take a third of the width.
+                    colorbar=dict(title=dict(text=epa_label, side="top"), orientation="h",
+                                  x=0.5, xanchor="center", y=-0.06, yanchor="top",
+                                  thickness=8, len=0.5, tickformat="+.1f")),
+        customdata=custom,
+        hovertemplate=("<b>%{text}</b> · %{customdata[0]}<br>"
+                       "Time to throw %{customdata[2]:.2f}s (%{customdata[3]})<br>"
+                       "CAY %{customdata[4]:.1f} yds (%{customdata[5]})<br>"
+                       + epa_label + " %{marker.color:+.2f} (%{customdata[6]})<br>"
+                       "%{customdata[1]} dropbacks<extra></extra>"),
+        showlegend=False,
+    ))
+    axis = dict(showticklabels=False, ticks="", linewidth=1, gridcolor="rgba(128,128,128,0.25)",
+                min=0)
     fig.update_layout(
-        height=560, margin=dict(l=0, r=0, t=0, b=0),
-        scene=dict(
-            xaxis=dict(title="Time to throw (s)", spikecolor="rgba(128,128,128,0.6)"),
-            yaxis=dict(title="Completed air yards", spikecolor="rgba(128,128,128,0.6)"),
-            zaxis=dict(title=epa_label, spikecolor="rgba(128,128,128,0.6)",
-                       range=[floor, float(epa.max()) + 0.05] if len(d) else None),
-            camera=dict(eye=dict(x=1.4, y=-1.4, z=0.6), center=dict(x=0, y=0, z=-0.2)),
-            aspectmode="cube"),
+        height=540, margin=dict(l=60, r=60, t=50, b=90), dragmode=False,
+        ternary=dict(
+            sum=1, bgcolor="rgba(0,0,0,0)",
+            aaxis=dict(title=dict(text="<b>Holds the ball</b><br>time to throw"), **axis),
+            baxis=dict(title=dict(text="<b>Completes deep</b><br>CAY"), **axis),
+            caxis=dict(title=dict(text=f"<b>Efficient</b><br>{epa_label}"), **axis)),
     )
     return fig
 
