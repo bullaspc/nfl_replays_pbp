@@ -754,7 +754,7 @@ Ground rules:
 
 Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. ED SR is the success rate on 1st and 2nd down. CPOE is completion percentage over expected, in points; RYOE is rushing yards over expected per designed run. A defense's numbers are what it allowed.{notes}
 
-Each time you speak: 30 to 60 words, two or three sentences of plain spoken prose, as on a broadcast. Answer what {partner} just said in a sentence, then make one new point with one or two numbers. Keep it tight: no lists of stats, no recap of what was already said. Address {partner} by name now and then. No headings, bullets, bold or speaker label: write only your line."""
+Each time you speak: about 100 words at most (60 to 100) of plain spoken prose, as on a broadcast. Answer what {partner} just said first, then add one new point. Address {partner} by name now and then. No headings, bullets, bold or speaker label: write only your line."""
 
 
 def debate_prompt(ctx: GameContext, speaker: int) -> str:
@@ -784,8 +784,8 @@ def _cue(ctx: GameContext, speaker: int, n: int, total: int) -> str:
     me, partner = DEBATE_SPEAKERS[speaker], DEBATE_SPEAKERS[1 - speaker]
     team = (ctx.away, ctx.home)[speaker]
     if n == 0:
-        return (f"You open. Give the score and the biggest reason for it from {team}'s side, "
-                f"and hand it to {partner}.")
+        return (f"You open. Give the score and situation in a sentence, then the biggest reason "
+                f"for it from {team}'s side, and hand it to {partner}.")
     if n >= total - 2:
         return (f"This is your last word, {me}. Answer {partner}, then sum up in a sentence the one "
                 "thing deciding this game so far." + ("" if n == total - 1 else
