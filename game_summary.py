@@ -742,7 +742,7 @@ def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = 
 # configured, each analyst is a different model, so two AIs really are
 # talking to each other; with one, both voices use it.
 DEBATE_SPEAKERS = ("Sam", "Jordan")   # away team's analyst, home team's
-DEBATE_EXCHANGES = 3                  # rounds: each analyst speaks this many times
+DEBATE_EXCHANGES = 2                  # rounds: each analyst speaks this many times
 DEBATE_TURNS = 4                      # model calls per line (up to 3 rounds of lookups)
 
 DEBATE_PROMPT = """You are {speaker}, {analyst} in a two-person booth inside a spoiler-free replay app, talking this game over with your partner {partner}. The fan is watching on tape delay and listens in. You cover {team} ({side}); {partner} covers {other}. Speak for what {team} is doing well and what is hurting it, and engage honestly with {partner}: agree when the numbers back them, push back with numbers when they don't, and concede a point when the data is against you. A real conversation, not two speeches.
@@ -754,7 +754,7 @@ Ground rules:
 
 Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. ED SR is the success rate on 1st and 2nd down. CPOE is completion percentage over expected, in points; RYOE is rushing yards over expected per designed run. A defense's numbers are what it allowed.{notes}
 
-Each time you speak: 50 to 110 words of plain spoken prose, as on a broadcast. Answer what {partner} just said first, then add one new point. Address {partner} by name now and then. No headings, bullets, bold or speaker label: write only your line."""
+Each time you speak: about 100 words at most (60 to 100) of plain spoken prose, as on a broadcast. Answer what {partner} just said first, then add one new point. Address {partner} by name now and then. No headings, bullets, bold or speaker label: write only your line."""
 
 
 def debate_prompt(ctx: GameContext, speaker: int) -> str:
