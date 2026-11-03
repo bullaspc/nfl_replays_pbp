@@ -1366,7 +1366,7 @@ if not hide_wp:
         if _mom_scrimmage.any():
             st.caption("EPA/play over a 5-play rolling window, one panel per offense; bars are single snaps. "
                        "Solid lines end a quarter, dotted lines start a drive (D = the game's drive number), "
-                       "★ a touchdown or field goal.")
+                       "★ a touchdown, ◆ a field goal.")
             fig_mom = momentum_figure(_mom_plays, home, away, team_colors, team_nicks,
                                       max(elapsed_s / 60.0, 1.0))
             st.plotly_chart(_touch_safe(fig_mom), width='stretch', config=_STATIC_CHART)
