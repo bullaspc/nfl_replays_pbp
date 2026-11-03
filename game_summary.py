@@ -631,6 +631,7 @@ class Progress:
     status: str = "Reading the dashboard"
     calls: int = 0                                   # model calls made so far
     steps: list[str] = field(default_factory=list)   # lookups done, in order
+    lines: list = field(default_factory=list)        # the booth's lines so far (discuss())
 
 
 _KIND_LABELS = {
@@ -678,33 +679,33 @@ def submit(ctx: GameContext, provider: Provider) -> tuple[Future, Progress]:
     return _POOL.submit(summarize, ctx, provider, progress), progress
 
 
-def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = None) -> Summary:
-    """Run the agent to its final answer, reporting each step to `progress`.
-    Makes no Streamlit calls, so it can run on a worker thread (submit())."""
-    progress = progress or Progress()
+def _agent(ctx: GameContext, provider: Provider, system: str, prompt: str, progress: Progress,
+           max_turns: int, statuses: tuple[str, str, str], what: str, who: str = ""
+           ) -> tuple[str, str, list[str]]:
+    """The tool loop: call the model with the game's tools until it answers in
+    text, at most `max_turns` calls. `statuses` are the progress lines for the
+    first, middle and last call; `who` prefixes each lookup step ("Sam: ...").
+    Returns (text, model, tools used)."""
     client = _client(provider)
     tools = _tools(ctx, strict=provider.is_claude)
-    messages: list[dict] = [{"role": "user", "content": (
-        snapshot(ctx) + f"\n\nExplain the score so far: what is driving it, on offense and "
-        f"defense, for {ctx.away} and {ctx.home}. Away team first.")}]
+    messages: list[dict] = [{"role": "user", "content": prompt}]
     used: list[str] = []
-    for turn in range(MAX_TURNS):
-        progress.calls = turn + 1
-        progress.status = ("Reading the dashboard" if turn == 0
-                           else "Writing the summary" if turn == MAX_TURNS - 1
-                           else "Thinking it over")
-        resp = _call(client, provider, max_tokens=16000, system=system_prompt(ctx.league),
+    for turn in range(max_turns):
+        progress.calls += 1
+        progress.status = (statuses[0] if turn == 0 else statuses[2] if turn == max_turns - 1
+                           else statuses[1])
+        resp = _call(client, provider, max_tokens=16000, system=system,
                      tools=tools, messages=messages)
         calls = [b for b in resp.content if b.type == "tool_use"]
         if resp.stop_reason != "tool_use" or not calls:
-            return Summary(_final_text(resp), resp.model, used)
+            return _final_text(resp), resp.model, used
         # Send the whole assistant turn back unchanged: thinking blocks included.
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for c in calls:
             used.append(c.name)
             step = describe_lookup(c.name, dict(c.input or {}))
-            progress.status = step
+            progress.status = f"{who}: {step}" if who else step
             try:
                 out, err = _run_tool(ctx, c.name, dict(c.input or {})), False
             except KeyError as e:  # bad arguments: tell the model, let it retry
@@ -713,13 +714,122 @@ def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = 
                 out, err = f"Error: {e}", True
             results.append({"type": "tool_result", "tool_use_id": c.id,
                             "content": out, "is_error": err})
-            progress.steps.append(step)
-        if turn == MAX_TURNS - 2:
+            progress.steps.append(progress.status)
+        if turn == max_turns - 2:
             results.append({"type": "text", "text": "That's all the lookups available. "
-                            "Write the summary now from what you have."})
+                            f"Write the {what} now from what you have."})
         messages.append({"role": "user", "content": results})
-    raise SummaryError("The model kept looking things up and never wrote the summary.")
+    raise SummaryError(f"The model kept looking things up and never wrote the {what}.")
 
+
+def summarize(ctx: GameContext, provider: Provider, progress: Progress | None = None) -> Summary:
+    """Run the agent to its final answer, reporting each step to `progress`.
+    Makes no Streamlit calls, so it can run on a worker thread (submit())."""
+    progress = progress or Progress()
+    prompt = (snapshot(ctx) + f"\n\nExplain the score so far: what is driving it, on offense and "
+              f"defense, for {ctx.away} and {ctx.home}. Away team first.")
+    text, model, used = _agent(ctx, provider, system_prompt(ctx.league), prompt, progress, MAX_TURNS,
+                               ("Reading the dashboard", "Thinking it over", "Writing the summary"),
+                               "summary")
+    return Summary(text, model, used)
+
+
+# ---------- The booth: two analysts talk the game over ----------
+# Two agents take turns, each covering one team: the away team's analyst
+# opens, the home team's answers, and so on for DEBATE_EXCHANGES rounds. Each
+# turn is its own tool loop over the same GameContext (so the same spoiler
+# rules hold) with the transcript so far in the prompt. With two providers
+# configured, each analyst is a different model, so two AIs really are
+# talking to each other; with one, both voices use it.
+DEBATE_SPEAKERS = ("Sam", "Jordan")   # away team's analyst, home team's
+DEBATE_EXCHANGES = 3                  # rounds: each analyst speaks this many times
+DEBATE_TURNS = 4                      # model calls per line (up to 3 rounds of lookups)
+
+DEBATE_PROMPT = """You are {speaker}, {analyst} in a two-person booth inside a spoiler-free replay app, talking this game over with your partner {partner}. The fan is watching on tape delay and listens in. You cover {team} ({side}); {partner} covers {other}. Speak for what {team} is doing well and what is hurting it, and engage honestly with {partner}: agree when the numbers back them, push back with numbers when they don't, and concede a point when the data is against you. A real conversation, not two speeches.
+
+Ground rules:
+- Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
+- Your data stops at the viewer's current play. If the game isn't over, talk about where it stands. Never predict, hint at or speculate about what happens next or how it ends.
+- Back each point with a number or two: EPA/play, success rate, 3rd downs, red zone, turnovers, pressure, line play, tendencies, explosive plays, field position, WPA, the players behind it. Use the percentiles to say whether a number is actually good or bad. Look plays up with the tools before you cite them; skip lookups that won't change what you say.
+
+Terms: EPA is expected points added by a play ({model}). A successful play has positive EPA; EPA/play and success rate also count a pass or run a penalty wiped out (its EPA is the penalty's). WPA is the change in the home team's win probability on a play. ED SR is the success rate on 1st and 2nd down. CPOE is completion percentage over expected, in points; RYOE is rushing yards over expected per designed run. A defense's numbers are what it allowed.{notes}
+
+Each time you speak: 50 to 110 words of plain spoken prose, as on a broadcast. Answer what {partner} just said first, then add one new point. Address {partner} by name now and then. No headings, bullets, bold or speaker label: write only your line."""
+
+
+def debate_prompt(ctx: GameContext, speaker: int) -> str:
+    t = _LEAGUE[ctx.league]
+    teams, sides = (ctx.away, ctx.home), ("the away team", "the home team")
+    return DEBATE_PROMPT.format(
+        speaker=DEBATE_SPEAKERS[speaker], partner=DEBATE_SPEAKERS[1 - speaker],
+        analyst=t["analyst"], model=t["model"], notes=t["notes"],
+        team=teams[speaker], side=sides[speaker], other=teams[1 - speaker])
+
+
+@dataclass
+class Line:
+    speaker: str
+    team: str
+    text: str
+    model: str
+
+
+@dataclass
+class Discussion:
+    lines: list[Line]
+
+
+def _cue(ctx: GameContext, speaker: int, n: int, total: int) -> str:
+    """What the analyst is asked to do with line n (0-based) of `total`."""
+    me, partner = DEBATE_SPEAKERS[speaker], DEBATE_SPEAKERS[1 - speaker]
+    team = (ctx.away, ctx.home)[speaker]
+    if n == 0:
+        return (f"You open. Give the score and situation in a sentence, then the biggest reason "
+                f"for it from {team}'s side, and hand it to {partner}.")
+    if n >= total - 2:
+        return (f"This is your last word, {me}. Answer {partner}, then sum up in a sentence the one "
+                "thing deciding this game so far." + ("" if n == total - 1 else
+                f" {partner} gets the final word after you."))
+    return f"Your turn, {me}. Answer {partner}'s last point, then add one new one."
+
+
+def discuss(ctx: GameContext, providers: list[Provider], progress: Progress | None = None,
+            exchanges: int = DEBATE_EXCHANGES) -> Discussion:
+    """The booth: the two analysts' lines, in order. `providers` gives each
+    analyst's model (one provider plays both). Each line is appended to
+    `progress.lines` as soon as it's written, so the page can show the talk
+    while it goes on. No Streamlit calls (submit_discussion())."""
+    progress = progress or Progress()
+    snap = snapshot(ctx)
+    lines: list[Line] = progress.lines
+    total = 2 * exchanges
+    for n in range(total):
+        sp = n % 2
+        who, prov = DEBATE_SPEAKERS[sp], providers[sp % len(providers)]
+        team = (ctx.away, ctx.home)[sp]
+        talk = "\n\n".join(f"{l.speaker} ({l.team}): {l.text}" for l in lines)
+        prompt = (snap + "\n\nThe booth so far:\n\n" + (talk or "(nothing yet)")
+                  + "\n\n" + _cue(ctx, sp, n, total))
+        text, model, _ = _agent(ctx, prov, debate_prompt(ctx, sp), prompt, progress, DEBATE_TURNS,
+                                (f"{who} is reading the dashboard", f"{who} is thinking",
+                                 f"{who} is talking"), "line", who)
+        lines.append(Line(who, team, _speaker_line(text, who), model))
+    progress.status = "Done"
+    return Discussion(list(lines))
+
+
+def _speaker_line(text: str, who: str) -> str:
+    """The line without a "Sam:" label the model may add anyway."""
+    for prefix in (f"{who}:", f"**{who}:**", f"**{who}**:"):
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def submit_discussion(ctx: GameContext, providers: list[Provider]) -> tuple[Future, Progress]:
+    """Start discuss() on the summaries' worker threads, as submit() does."""
+    progress = Progress(status=f"{DEBATE_SPEAKERS[0]} is reading the dashboard")
+    return _POOL.submit(discuss, ctx, providers, progress), progress
 
 
 # ---------- Matchup preview ----------

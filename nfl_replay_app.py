@@ -652,7 +652,7 @@ st.divider()
 # ---------- Section links ----------
 # One row of links to the sections, sticky under Streamlit's header
 # (mobile_css()), so a section is a tap away from anywhere on the page.
-section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
+section_nav([("Score", "boxscore"), ("Booth", "booth"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
              ("Line", "line-play"), ("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
@@ -774,6 +774,43 @@ _pregame_result()
 # between leaves work to redo, never a lost click or result.
 _SUMMARY_POLL_SECS = 3
 
+
+def _game_context() -> game_summary.GameContext:
+    """What the AI summary and the booth may look at: the sections' stats,
+    built from `revealed` only."""
+    _season_baselines = leagues.stat_baselines(league, season)
+    _stats = team_stats(revealed, home, away)
+    _sit, _sit_n = situational_success_rate(revealed, home, away)
+    _line = line_play_stats(revealed, home, away, drop=_line_drop)
+    return game_summary.GameContext(
+        home=home, away=away, revealed=revealed,
+        league=league.key,
+        line_play=_line,
+        line_pct=stat_percentiles(_line, leagues.line_baselines(league, season),
+                                  LINE_LOWER_IS_BETTER),
+        run_gaps=league.run_gaps,
+        tendency_baselines=leagues.tendency_baselines(league, season),
+        boxscore=boxscore(revealed, home, away),
+        scoring=scoring_timeline(revealed, home, away),
+        team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines,
+                                                        final=game_over(revealed)),
+        situational=_sit, situational_counts=_sit_n,
+        drives=drive_chart(revealed),
+        top_wpa=top_plays_wpa(revealed, home, away),
+        explosive=explosive_plays(revealed),
+        leaders={
+            **{(t, k): with_class_year(top_players(revealed, t, k, n, drop=missing_stats),
+                                       class_years, t)
+               for t in (away, home)
+               for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
+            **{(t, "defense"): with_class_year(top_defenders(revealed, t, 10, drop=missing_stats),
+                                               class_years, t)
+               for t in (away, home)},
+        },
+    )
+
+
+
 st.subheader("🧠 Why the score is what it is")
 _providers = game_summary.configured_providers(_setting)
 _job = st.session_state.get("_summary_job")
@@ -797,36 +834,7 @@ else:
                     on_click=lambda gid=game_id: st.session_state.update(_summary_requested=gid),
                     help="Only the plays you've unlocked are sent to the model.")
     if st.session_state.get("_summary_requested") == game_id:
-        _season_baselines = leagues.stat_baselines(league, season)
-        _stats = team_stats(revealed, home, away)
-        _sit, _sit_n = situational_success_rate(revealed, home, away)
-        _line = line_play_stats(revealed, home, away, drop=_line_drop)
-        _ctx = game_summary.GameContext(
-            home=home, away=away, revealed=revealed,
-            league=league.key,
-            line_play=_line,
-            line_pct=stat_percentiles(_line, leagues.line_baselines(league, season),
-                                      LINE_LOWER_IS_BETTER),
-            run_gaps=league.run_gaps,
-            tendency_baselines=leagues.tendency_baselines(league, season),
-            boxscore=boxscore(revealed, home, away),
-            scoring=scoring_timeline(revealed, home, away),
-            team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines,
-                                                            final=game_over(revealed)),
-            situational=_sit, situational_counts=_sit_n,
-            drives=drive_chart(revealed),
-            top_wpa=top_plays_wpa(revealed, home, away),
-            explosive=explosive_plays(revealed),
-            leaders={
-                **{(t, k): with_class_year(top_players(revealed, t, k, n, drop=missing_stats),
-                                           class_years, t)
-                   for t in (away, home)
-                   for k, n in (("passing", 3), ("rushing", 4), ("receiving", 8))},
-                **{(t, "defense"): with_class_year(top_defenders(revealed, t, 10, drop=missing_stats),
-                                                   class_years, t)
-                   for t in (away, home)},
-            },
-        )
+        _ctx = _game_context()
         _future, _progress = game_summary.submit(_ctx, _providers[_prov])
         st.session_state["_summary_job"] = {
             "future": _future, "progress": _progress,
@@ -880,6 +888,96 @@ def _summary_result() -> None:
 
 
 _summary_result()
+
+# ---------- The booth ----------
+# Two AI analysts talk the game over, one per team (game_summary.discuss()).
+# Same flow and spoiler gate as the summary, under `_talk_` keys: on_click
+# records the request, the first run to get here starts the worker, and a
+# polling fragment shows each line as it's written. With two providers
+# configured, each analyst is a different model.
+st.subheader("🎙️ The booth", anchor="booth")
+_talk_job = st.session_state.get("_talk_job")
+if st.session_state.get("_talk_requested") not in (None, game_id) or (
+        _talk_job is not None and "_talk_requested" in st.session_state):
+    del st.session_state["_talk_requested"]
+if not _providers:
+    st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
+               "`.streamlit/secrets.toml` or the environment to have two AI analysts "
+               "talk the game over.")
+elif revealed.empty:
+    st.caption("No plays revealed yet.")
+else:
+    _speakers = game_summary.DEBATE_SPEAKERS
+    _has_talk = (st.session_state.get("_talk") or {}).get("game_id") == game_id
+    st.button("They're talking…" if _talk_job is not None and _talk_job["game_id"] == game_id
+              else ("Talk it over again" if _has_talk else "Let them talk it over"),
+              disabled=_talk_job is not None,
+              on_click=lambda gid=game_id: st.session_state.update(_talk_requested=gid),
+              help=f"{_speakers[0]} covers {away}, {_speakers[1]} covers {home}. "
+                   "Only the plays you've unlocked are sent to the models.")
+    if st.session_state.get("_talk_requested") == game_id:
+        _future, _progress = game_summary.submit_discussion(_game_context(), list(_providers.values()))
+        st.session_state["_talk_job"] = {
+            "future": _future, "progress": _progress,
+            "game_id": game_id, "started": time.time(),
+            "anchor": cursor_anchor(timeline, cursor_idx),
+            "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
+        }
+        st.session_state.pop("_talk_error", None)
+        del st.session_state["_talk_requested"]
+        st.rerun()
+
+
+def _booth_lines(lines, teams: dict[str, str]) -> None:
+    """The lines as chat bubbles, each analyst with the logo of the team covered."""
+    for ln in lines:
+        logo = team_logos.get(ln.team) or None
+        with st.chat_message(ln.speaker, avatar=logo or ("🟠" if ln.team == away else "🔵")):
+            st.markdown(f"**{ln.speaker}** · {teams.get(ln.team, ln.team)}")
+            st.markdown(ln.text)
+
+
+@st.fragment(run_every=_SUMMARY_POLL_SECS if "_talk_job" in st.session_state else None)
+def _booth_result() -> None:
+    """The discussion so far, the one in progress, or why it failed."""
+    job = st.session_state.get("_talk_job")
+    if job and job["future"].done():
+        try:
+            res = job["future"].result()
+        except Exception as e:
+            st.session_state["_talk_error"] = {
+                "game_id": job["game_id"],
+                "text": str(e) if isinstance(e, game_summary.SummaryError) else f"The booth failed: {e}"}
+        else:
+            st.session_state["_talk"] = {
+                "game_id": job["game_id"], "lines": res.lines,
+                "models": sorted({ln.model for ln in res.lines}),
+                "anchor": job["anchor"], "as_of": job["as_of"]}
+        del st.session_state["_talk_job"]
+        st.rerun()
+    if job and job["game_id"] == game_id:
+        p = job["progress"]
+        # Lines written so far, behind the same gate as the finished talk.
+        if job["anchor"] <= cursor_anchor(timeline, cursor_max):
+            _booth_lines(list(p.lines), _names)
+        with st.status(f"🎙️ {p.status}… ({time.time() - job['started']:.0f}s)", state="running"):
+            for step in p.steps:
+                st.markdown(f"✓ {step}")
+        return
+    err = st.session_state.get("_talk_error")
+    if err and err["game_id"] == game_id:
+        st.error(err["text"])
+    talk = st.session_state.get("_talk")
+    # As for the summary: only this game, and only up to the unlocked edge.
+    if talk and talk["game_id"] == game_id and talk["anchor"] <= cursor_anchor(timeline, cursor_max):
+        _booth_lines(talk["lines"], _names)
+        note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
+        if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
+            note += " · you've moved since, press Talk it over again to catch them up"
+        st.caption(note)
+
+
+_booth_result()
 
 # ---------- Scoring timeline ----------
 st.markdown('<div id="plays"></div>', unsafe_allow_html=True)  # the nav's Plays link
