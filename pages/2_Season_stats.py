@@ -246,7 +246,10 @@ with tab_team:
                 continue
             stat_table(style_team_season(full.loc[team], season_ranks(full, lower).loc[team],
                                          season_rank_label(full, team, lower)))
-    st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays.")
+    st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays"
+               + ("; the charting's choices (motion, play action, blitzes …) are ranked by how high or "
+                  "low they run, not best to worst, and aren't colored"
+                  if CHART_ROWS[0] in team_tables["offense"].columns else "") + ".")
 
     # Whole games, for the final score (and the snap counts below); the EPA
     # follows the situation filters, over both offenses (not `pbp`, which
@@ -586,7 +589,8 @@ behind the play-by-play, so each number counts the charted plays only, on downs.
 action) and Screen % per dropback (pass attempts plus sacks, no spikes); Blitz % is the dropbacks
 where FTN counted a blitzer, Rushers the average pass rushers per dropback, and 8+ Box % the
 designed runs against {HEAVY_BOX} or more defenders in the box. They're choices rather than results,
-so they aren't colored or adjusted; for a defense Blitz %, Rushers and 8+ Box % are its own calls
+so they aren't colored or adjusted, and the Team tab ranks them by how high or low they run ("4th
+highest of 32"), not best to worst; for a defense Blitz %, Rushers and 8+ Box % are its own calls
 and the others what it faced. PA EPA/play is EPA per play-action dropback and Blitz EPA/play per
 dropback against a blitz (for a defense, when it blitzed). Catchable % is the throws FTN rated
 catchable among those aimed at a receiver (throwaways left out), Drop % the drops per catchable
