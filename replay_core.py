@@ -1250,7 +1250,8 @@ CHART_ROWS = ["Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %
               "Rushers", "8+ Box %", "PA EPA/play", "Blitz EPA/play", "Catchable %", "Drop %",
               "INT-worthy %"]
 # Choices, not results (an offense's, or for a defense its own blitzes, rushers
-# and box): never colored or ranked, like the volumes.
+# and box): never colored, like the volumes, and ranked only by how high or low
+# they run ("4th highest", `style_place`), never best to worst.
 CHART_STYLE = {"Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
                "Rushers", "8+ Box %"}
 CHART_LOWER_IS_BETTER = {"Drop %", "INT-worthy %"}
@@ -1416,11 +1417,32 @@ def season_places(df: pd.DataFrame, lower_is_better: set = frozenset()) -> pd.Da
                          for col in df.columns}, index=df.index)
 
 
+def style_place(values: pd.Series, team: str, of: bool = False) -> str:
+    """`team`'s place in a style column (`CHART_STYLE`), from whichever end
+    is nearer: "4th highest" or "2nd lowest", "highest" at the top (ties
+    share the better place),
+    with `of` " of 32"; "" where its value is missing. Says how often, not
+    how good."""
+    v = pd.to_numeric(values, errors="coerce")
+    if team not in v.index or pd.isna(v[team]):
+        return ""
+    hi = int(v.rank(ascending=False, method="min")[team])
+    lo = int(v.rank(ascending=True, method="min")[team])
+    place, end = (hi, "highest") if hi <= lo else (lo, "lowest")
+    label = end if place == 1 else f"{_ordinal(place)} {end}"  # "highest", not "1st highest"
+    return f"{label} of {int(v.notna().sum())}" if of else label
+
+
 def season_rank_label(df: pd.DataFrame, team: str, lower_is_better: set = frozenset()) -> pd.Series:
-    """`team`'s place in each column of `df`, 1 = best: "5th of 32"."""
+    """`team`'s place in each column of `df`, 1 = best: "5th of 32"; for the
+    charting's choices (`CHART_STYLE`) how high or low it runs, "4th
+    highest of 32"; none for the volumes."""
     places = season_places(df, lower_is_better)
     out = {}
     for col in df.columns:
+        if col in CHART_STYLE:
+            out[col] = style_place(df[col], team, of=True)
+            continue
         place = places.at[team, col]
         if col in SEASON_VOLUME or pd.isna(place):
             out[col] = ""
@@ -2029,6 +2051,14 @@ def _place(places: pd.DataFrame, team: str, col: str) -> str:
     return "" if pd.isna(p) else _ordinal(int(p))
 
 
+def _matchup_place(table: pd.DataFrame, places: pd.DataFrame, team: str, stat: str) -> str:
+    """A matchup table's place: "5th" (1 = best), "4th highest" for the
+    charting's choices (`style_place`), none for the other style stats."""
+    if stat in CHART_STYLE:
+        return style_place(table[stat], team)
+    return "" if stat in MATCHUP_STYLE else _place(places, team, stat)
+
+
 def head_to_head(table: pd.DataFrame, away: str, home: str, side: str = "posteam",
                  rows: list[str] = MATCHUP_ROWS) -> pd.DataFrame:
     """Two teams' rows of a season team table (`side` posteam: offenses,
@@ -2043,8 +2073,8 @@ def head_to_head(table: pd.DataFrame, away: str, home: str, side: str = "posteam
     for stat in [r for r in rows if r in table.columns]:
         a, h = table.at[away, stat], table.at[home, stat]
         style = stat in MATCHUP_STYLE
-        out.append({"Stat": stat, "Away": a, "Away rank": "" if style else _place(places, away, stat),
-                    "Home": h, "Home rank": "" if style else _place(places, home, stat),
+        out.append({"Stat": stat, "Away": a, "Away rank": _matchup_place(table, places, away, stat),
+                    "Home": h, "Home rank": _matchup_place(table, places, home, stat),
                     "Δ": a - h,
                     "_away_pct": np.nan if style else pct.at[away, stat],
                     "_home_pct": np.nan if style else pct.at[home, stat]})
@@ -2059,7 +2089,8 @@ def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: 
     Defense (values), their places among the tables' teams, League (the
     average of both tables' teams), Edge (the offense's percentile less the
     defense's, both 100 = best: above 0 the offense has the edge; NaN for
-    style stats, `MATCHUP_STYLE`) and Proj. (the league average plus the
+    style stats, `MATCHUP_STYLE`, whose places are none or, for the
+    charting's choices, "4th highest") and Proj. (the league average plus the
     offense's and the defense's distances from it, times `PROJ_SHRINK`: a
     guess at the stat in this game), plus `_off_pct` / `_def_pct`. With
     `lineup` (`lineup_adjustment()`), also "w/ lineup": Proj. plus it, for
@@ -2074,8 +2105,8 @@ def matchup_table(off: pd.DataFrame, def_: pd.DataFrame, offense: str, defense: 
         style = stat in MATCHUP_STYLE
         p_off = np.nan if style else off_pct.at[offense, stat]
         p_def = np.nan if style else def_pct.at[defense, stat]
-        out.append({"Stat": stat, "Offense": o, "Off rank": "" if style else _place(off_places, offense, stat),
-                    "Defense": d, "Def rank": "" if style else _place(def_places, defense, stat),
+        out.append({"Stat": stat, "Offense": o, "Off rank": _matchup_place(off, off_places, offense, stat),
+                    "Defense": d, "Def rank": _matchup_place(def_, def_places, defense, stat),
                     "League": league, "Edge": p_off - p_def,
                     "Proj.": league + PROJ_SHRINK * ((o - league) + (d - league)),
                     "_off_pct": p_off, "_def_pct": p_def})

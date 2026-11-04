@@ -421,7 +421,9 @@ if charting:
     st.caption(
         f"FTN Data's charting via nflverse (CC-BY-SA 4.0), downs only, over the plays charted"
         f"{chart_games}; places, Edge and Proj. as in Matchups. "
-        "**Calls** get no place or edge, only Proj., how often to expect them in this game. The "
+        "**Calls** are uncolored and get no edge: their place says how high or low the rate "
+        "runs among the teams (\"4th highest\"), not how good it is, and Proj. how often to "
+        "expect them in this game. The "
         "defense makes the call on Blitz % (dropbacks with a blitzer), Rushers (pass rushers per "
         f"dropback) and 8+ Box % (designed runs against {HEAVY_BOX}+ in the box), so there the "
         "offense column is what it has faced; the offense makes the rest (PA % and Screen % per "

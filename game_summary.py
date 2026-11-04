@@ -937,7 +937,8 @@ def matchup_snapshot(ctx: MatchupContext) -> str:
     if ctx.charting:
         parts.append(f"Charting: {ctx.charting_note}, downs only. The calls (PA %, Screen %, Motion %, "
                      "Under C %, No-huddle %, RPO % made by the offense; Blitz %, Rushers, 8+ Box % "
-                     "made by the defense) have no place or edge; for each, the side that doesn't make "
+                     "made by the defense) have no edge, and their place says how high or low the rate "
+                     "runs among the teams (\"4th highest\"), not how good it is; for each, the side that doesn't make "
                      "the call shows what it has faced, and proj is how often to expect it in this game.")
         for off, def_ in ((ctx.away, ctx.home), (ctx.home, ctx.away)):
             parts.append(f"Charting when {off} has the ball: {off}'s offense against {def_}'s defense."
