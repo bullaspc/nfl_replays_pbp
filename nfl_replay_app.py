@@ -890,16 +890,34 @@ def _summary_result() -> None:
 _summary_result()
 
 # ---------- The booth ----------
-# Two AI analysts talk the game over, one per team (game_summary.discuss()).
-# Same flow and spoiler gate as the summary, under `_talk_` keys: on_click
-# records the request, the first run to get here starts the worker, and a
-# polling fragment shows each line as it's written. With two providers
-# configured, each analyst is a different model.
+# Two AI analysts talk the game over, one per team (game_summary.discuss()),
+# and the viewer can jump in from the chat box (game_summary.reply(): each
+# analyst answers once). Same flow and spoiler gate as the summary, under
+# `_talk_` keys: a callback records the request, the first run to get here
+# starts the worker, and a polling fragment shows each line as it's written.
+# `_talks[game_id]` keeps every conversation of the session, oldest first, each
+# with the anchor it was written at; one is shown only while that anchor is
+# within the unlocked edge. Each can be downloaded as Markdown, which is how
+# a conversation outlives the session.
+_TALKS_KEPT = 10
 st.subheader("🎙️ The booth", anchor="booth")
 _talk_job = st.session_state.get("_talk_job")
-if st.session_state.get("_talk_requested") not in (None, game_id) or (
-        _talk_job is not None and "_talk_requested" in st.session_state):
-    del st.session_state["_talk_requested"]
+_talk_edge = cursor_anchor(timeline, cursor_max) if not revealed.empty else None
+_talks = st.session_state.setdefault("_talks", {}).get(game_id, [])
+
+
+def _visible_talk(i: int) -> bool:
+    return _talk_edge is not None and _talks[i]["anchor"] <= _talk_edge
+
+
+# The talk a jump-in adds to: the latest one, if it's shown.
+_talk_base = len(_talks) - 1 if _talks and _visible_talk(len(_talks) - 1) else None
+# A request made on another game or while a job is out is dropped.
+for _k in ("_talk_requested", "_talk_reply"):
+    _req = st.session_state.get(_k)
+    if _req is not None and (_req[0] != game_id or _talk_job is not None):
+        del st.session_state[_k]
+_booth_ready = bool(_providers) and not revealed.empty
 if not _providers:
     st.caption("Add `MOONSHOT_API_KEY` (Kimi) or `ANTHROPIC_API_KEY` (Claude) to "
                "`.streamlit/secrets.toml` or the environment to have two AI analysts "
@@ -908,38 +926,62 @@ elif revealed.empty:
     st.caption("No plays revealed yet.")
 else:
     _speakers = game_summary.DEBATE_SPEAKERS
-    _has_talk = (st.session_state.get("_talk") or {}).get("game_id") == game_id
     st.button("They're talking…" if _talk_job is not None and _talk_job["game_id"] == game_id
-              else ("Talk it over again" if _has_talk else "Let them talk it over"),
+              else ("New conversation" if _talk_base is not None else "Let them talk it over"),
               disabled=_talk_job is not None,
-              on_click=lambda gid=game_id: st.session_state.update(_talk_requested=gid),
+              on_click=lambda gid=game_id: st.session_state.update(_talk_requested=(gid,)),
               help=f"{_speakers[0]} covers {away}, {_speakers[1]} covers {home}. "
-                   "Only the plays you've unlocked are sent to the models.")
-    if st.session_state.get("_talk_requested") == game_id:
-        _future, _progress = game_summary.submit_discussion(_game_context(), list(_providers.values()))
-        st.session_state["_talk_job"] = {
-            "future": _future, "progress": _progress,
-            "game_id": game_id, "started": time.time(),
-            "anchor": cursor_anchor(timeline, cursor_idx),
-            "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
-        }
-        st.session_state.pop("_talk_error", None)
-        del st.session_state["_talk_requested"]
-        st.rerun()
+                   "Only the plays you've unlocked are sent to the models. The conversation "
+                   "before is kept below.")
 
 
-def _booth_lines(lines, teams: dict[str, str]) -> None:
-    """The lines as chat bubbles, each analyst with the logo of the team covered."""
+def _start_talk(kind: str, fan_text: str = "") -> None:
+    ctx, provs = _game_context(), list(_providers.values())
+    if kind == "reply":
+        base = _talks[_talk_base]["lines"] if _talk_base is not None else []
+        future, progress = game_summary.submit_reply(ctx, provs, base, fan_text)
+    else:
+        future, progress = game_summary.submit_discussion(ctx, provs)
+    st.session_state["_talk_job"] = {
+        "future": future, "progress": progress, "game_id": game_id, "started": time.time(),
+        "kind": kind, "base": _talk_base if kind == "reply" else None,
+        "anchor": cursor_anchor(timeline, cursor_idx),
+        "as_of": f"{game_summary.game_status(revealed)[0]}, play {cursor_idx + 1}",
+    }
+    st.session_state.pop("_talk_error", None)
+
+
+if _booth_ready and st.session_state.get("_talk_requested"):
+    _start_talk("new")
+    del st.session_state["_talk_requested"]
+    st.rerun()
+
+
+def _booth_lines(lines) -> None:
+    """The lines as chat bubbles: each analyst with the logo of the team
+    covered, the viewer's own lines as "You"."""
     for ln in lines:
+        if ln.speaker == game_summary.FAN:
+            with st.chat_message("user", avatar="🗣️"):
+                st.markdown(f"**You** · {ln.text}")
+            continue
         logo = team_logos.get(ln.team) or None
         with st.chat_message(ln.speaker, avatar=logo or ("🟠" if ln.team == away else "🔵")):
-            st.markdown(f"**{ln.speaker}** · {teams.get(ln.team, ln.team)}")
+            st.markdown(f"**{ln.speaker}** · {_names.get(ln.team, ln.team)}")
             st.markdown(ln.text)
+
+
+def _talk_download(talk: dict, n: int) -> None:
+    title = f"The booth: {_names.get(away, away)} at {_names.get(home, home)}, {season}"
+    st.download_button(
+        "💾 Save conversation", key=f"_talk_dl_{game_id}_{n}", on_click="ignore",
+        data=game_summary.discussion_markdown(talk["lines"], title, talk["as_of"], _names),
+        file_name=f"booth_{season}_{away}_at_{home}_{n + 1}.md", mime="text/markdown")
 
 
 @st.fragment(run_every=_SUMMARY_POLL_SECS if "_talk_job" in st.session_state else None)
 def _booth_result() -> None:
-    """The discussion so far, the one in progress, or why it failed."""
+    """The conversation, the one being written, or why it failed."""
     job = st.session_state.get("_talk_job")
     if job and job["future"].done():
         try:
@@ -949,35 +991,68 @@ def _booth_result() -> None:
                 "game_id": job["game_id"],
                 "text": str(e) if isinstance(e, game_summary.SummaryError) else f"The booth failed: {e}"}
         else:
-            st.session_state["_talk"] = {
-                "game_id": job["game_id"], "lines": res.lines,
-                "models": sorted({ln.model for ln in res.lines}),
-                "anchor": job["anchor"], "as_of": job["as_of"]}
+            talks = list(st.session_state["_talks"].get(job["game_id"], []))
+            models = {ln.model for ln in res.lines if ln.model}
+            if job["base"] is not None and job["base"] < len(talks):
+                old = talks[job["base"]]
+                later = job["anchor"] >= old["anchor"]
+                talks[job["base"]] = {
+                    "lines": res.lines, "models": sorted(models | set(old["models"])),
+                    "anchor": job["anchor"] if later else old["anchor"],
+                    "as_of": job["as_of"] if later else old["as_of"]}
+            else:
+                talks = (talks + [{"lines": res.lines, "models": sorted(models),
+                                   "anchor": job["anchor"], "as_of": job["as_of"]}])[-_TALKS_KEPT:]
+            st.session_state["_talks"] = {**st.session_state["_talks"], job["game_id"]: talks}
         del st.session_state["_talk_job"]
         st.rerun()
     if job and job["game_id"] == game_id:
         p = job["progress"]
-        # Lines written so far, behind the same gate as the finished talk.
-        if job["anchor"] <= cursor_anchor(timeline, cursor_max):
-            _booth_lines(list(p.lines), _names)
+        # Lines written so far, behind the same gate as a finished talk.
+        if _talk_edge is not None and job["anchor"] <= _talk_edge:
+            _booth_lines(list(p.lines))
         with st.status(f"🎙️ {p.status}… ({time.time() - job['started']:.0f}s)", state="running"):
             for step in p.steps:
                 st.markdown(f"✓ {step}")
-        return
-    err = st.session_state.get("_talk_error")
-    if err and err["game_id"] == game_id:
-        st.error(err["text"])
-    talk = st.session_state.get("_talk")
-    # As for the summary: only this game, and only up to the unlocked edge.
-    if talk and talk["game_id"] == game_id and talk["anchor"] <= cursor_anchor(timeline, cursor_max):
-        _booth_lines(talk["lines"], _names)
-        note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
-        if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
-            note += " · you've moved since, press Talk it over again to catch them up"
-        st.caption(note)
+    else:
+        err = st.session_state.get("_talk_error")
+        if err and err["game_id"] == game_id:
+            st.error(err["text"])
+        if _talk_base is not None:
+            talk = _talks[_talk_base]
+            _booth_lines(talk["lines"])
+            note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
+            if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
+                note += " · you've moved since: jump in or start a new conversation to catch them up"
+            st.caption(note)
+            _talk_download(talk, _talk_base)
+    earlier = [i for i in range(len(_talks)) if i != _talk_base and _visible_talk(i)]
+    if earlier:
+        with st.expander(f"Earlier conversations ({len(earlier)})", key="_exp_talks"):
+            for i in reversed(earlier):
+                st.markdown(f"**As of {_talks[i]['as_of']}**")
+                _booth_lines(_talks[i]["lines"])
+                _talk_download(_talks[i], i)
+                st.divider()
 
 
 _booth_result()
+
+# Jump in: the viewer's line goes into the conversation shown (or starts one)
+# and both analysts answer it. Outside the fragment, as the buttons are.
+if _booth_ready:
+    with st.container(key="booth_say"):
+        st.chat_input(
+            f"Jump in: ask {' and '.join(game_summary.DEBATE_SPEAKERS)} something", key="_talk_say",
+            max_chars=game_summary.FAN_MAX_CHARS, disabled=_talk_job is not None,
+            on_submit=lambda gid=game_id: st.session_state.update(
+                _talk_reply=(gid, st.session_state.get("_talk_say") or "")))
+    _req = st.session_state.get("_talk_reply")
+    if _req and _req[1].strip():
+        _start_talk("reply", _req[1])
+        del st.session_state["_talk_reply"]
+        st.rerun()
+    st.session_state.pop("_talk_reply", None)
 
 # ---------- Scoring timeline ----------
 st.markdown('<div id="plays"></div>', unsafe_allow_html=True)  # the nav's Plays link
