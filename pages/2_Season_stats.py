@@ -287,31 +287,6 @@ with tab_team:
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
                    "defense. Colors rank each game against every team-game in the selection: "
                    "green = top, red = bottom.")
-    chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
-    if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
-        with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
-            cg_label = st.segmented_control("Side", list(SIDES), default="Offense",
-                                            key="_ss_chart_side",
-                                            label_visibility="collapsed") or "Offense"
-            cg_side = SIDES[cg_label]
-            by_game, shades = team_chart_games(chart_games[cg_side], sel_games, team, cg_side)
-            if by_game.empty:
-                st.caption("No charted plays in this selection's games.")
-            else:
-                stat_table(style_chart_games(by_game, shades))
-                n_charted, n_games = tables["charted"]
-                ftn_games = "Motion %" in by_game.index
-                st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
-                           "the Schedule's EPA; **Season** adds them up (not opponent-adjusted). "
-                           "Results are colored against every team-game in the selection (green = "
-                           "best); the calls stay plain. Under C % and No-huddle % come from the "
-                           "play text"
-                           + (", the rest from FTN Data's charting via nflverse (CC-BY-SA 4.0), "
-                              "over the plays it has charted"
-                              + (f" ({n_charted} of the selection's {n_games} games so far)"
-                                 if n_charted < n_games else "") if ftn_games else "")
-                           + ". Definitions: the Teams tab's Charting view and Methodology.")
-
     st.markdown("<span id='ss-situations'></span>**Situational success rates**",
                 unsafe_allow_html=True)
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
@@ -348,6 +323,31 @@ with tab_team:
                             width="stretch", config={"displayModeBar": False})
     st.caption("From the offense's side, as on the replay; the grey dash and hover compare "
                "with the whole league over the same games. Colors are EPA/play.")
+
+    chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
+    if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
+        with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
+            cg_label = st.segmented_control("Side", list(SIDES), default="Offense",
+                                            key="_ss_chart_side",
+                                            label_visibility="collapsed") or "Offense"
+            cg_side = SIDES[cg_label]
+            by_game, shades = team_chart_games(chart_games[cg_side], sel_games, team, cg_side)
+            if by_game.empty:
+                st.caption("No charted plays in this selection's games.")
+            else:
+                stat_table(style_chart_games(by_game, shades))
+                n_charted, n_games = tables["charted"]
+                ftn_games = "Motion %" in by_game.index
+                st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
+                           "the Schedule's EPA; **Season** adds them up (not opponent-adjusted). "
+                           "Results are colored against every team-game in the selection (green = "
+                           "best); the calls stay plain. Under C % and No-huddle % come from the "
+                           "play text"
+                           + (", the rest from FTN Data's charting via nflverse (CC-BY-SA 4.0), "
+                              "over the plays it has charted"
+                              + (f" ({n_charted} of the selection's {n_games} games so far)"
+                                 if n_charted < n_games else "") if ftn_games else "")
+                           + ". Definitions: the Teams tab's Charting view and Methodology.")
 
     st.markdown("<span id='ss-leaders'></span>**Player leaders**", unsafe_allow_html=True)
     player_min = {k: _default_min(k) for k in PLAYER_MIN_PLAYS}
