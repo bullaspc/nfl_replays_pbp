@@ -160,6 +160,7 @@ _LEAGUE = {
         "baseline": "every team-game of the last 3 seasons",
         "defense": "tackles, sacks, QB hits, TFLs, INTs, passes defensed and forced fumbles",
         "notes": "",
+        "draft": "",
     },
     "CFB": {
         "analyst": "a college football analyst",
@@ -169,6 +170,10 @@ _LEAGUE = {
                     "college feed has no QB hits, and older games' feeds have no tackles, TFLs or hurries)"),
         "notes": (" College overtime is untimed: each team gets a possession from the "
                   "opponent's 25, and from the third overtime on, teams trade two-point tries."),
+        "draft": (" In the player leaders, Draft is a player's rank and position on next year's "
+                  "NFL draft boards (ESPN's big board, else Tankathon's) and Mock his pick in "
+                  "Tankathon's mock draft: you can say a player is a draft prospect, but judge him "
+                  "by the numbers given."),
     },
 }
 
@@ -609,7 +614,7 @@ MAX_TURNS = 8
 
 def system_prompt(league: str) -> str:
     t = _LEAGUE[league]
-    return SYSTEM_PROMPT.format(analyst=t["analyst"], model=t["model"], notes=t["notes"])
+    return SYSTEM_PROMPT.format(analyst=t["analyst"], model=t["model"], notes=t["notes"] + t["draft"])
 
 
 @dataclass
@@ -762,7 +767,7 @@ def debate_prompt(ctx: GameContext, speaker: int) -> str:
     teams, sides = (ctx.away, ctx.home), ("the away team", "the home team")
     return DEBATE_PROMPT.format(
         speaker=DEBATE_SPEAKERS[speaker], partner=DEBATE_SPEAKERS[1 - speaker],
-        analyst=t["analyst"], model=t["model"], notes=t["notes"],
+        analyst=t["analyst"], model=t["model"], notes=t["notes"] + t["draft"],
         team=teams[speaker], side=sides[speaker], other=teams[1 - speaker])
 
 
@@ -1045,7 +1050,7 @@ Ground rules:
 - If injury reports are given, weigh them: a starter who is Out or Doubtful takes his unit's season numbers with him, so say which matchup it changes and how much he plays (his snap share), e.g. two starting offensive linemen out against a strong pass rush. A Questionable player may play. The lineup lines count the same way, and add starters on injured reserve (not on the report) and starters back. Where "proj w/ lineup" is given, it already counts the players gone from both lineups: use it instead of proj for those stats, and say when it moves a matchup. Players back aren't in it: in backtests they made no measurable difference, so don't promise a lift from one. Mention only players the reports and lineup lines list, and if there are none, don't bring up anyone's health.
 
 Terms: EPA is expected points added by a play ({model}); success rate is the share of plays with positive EPA; both count a pass or run a penalty wiped out (its EPA is the penalty's). Each place is a team's rank among the season's teams (1st = best; for a defense, allowing less is better and forcing more turnovers and sacks is better). Edge "{{team}} N" means that team's unit ranks N percentile points better than the unit it faces; "Even" is within 5. proj is a guess for this game: the league average plus half of the offense's and the defense's distances from it; proj w/ lineup (EPA/play, pass EPA/play and pass SR only) moves it by what players gone have done to games before, about -0.09 EPA/play for a starting QB out, -0.02 for each other full-time player the offense is missing and +0.02 for each one the defense is missing, and came a little closer to the games in backtests. From game to game, EPA/play, passing and 1st-down rate carry over best; turnovers and lost possessions, 3rd-down rate, sacks and the run game carry over least, so don't hang the preview on an edge there alone. Plays are pass attempts (sacks included) and runs. ED SR is the success rate on 1st and 2nd down, passes and runs together. CPOE is completion percentage over expected, in points (nflfastR's completion model); RYOE/att is rushing yards over expected per designed run, against the league's average run from the same down, distance and field position. 1st Down % is first downs per play, 3rd Down % conversions per 3rd-down try, and RZ TD% touchdowns per play snapped inside the opponent's 20 (per play, not per trip). Turnovers are per game; Lost Poss. (per game) adds turnovers on downs and missed or blocked field goals. Sack % and QB Hit % are per dropback (hits include sacks); Stuff % (no gain or a loss) and Explosive Run % (10+ yards) are per designed run.
-Charting (FTN's, when given): PA % is play action per dropback and PA EPA/play the EPA per play-action dropback; Blitz % is dropbacks with a blitzer, Rushers the pass rushers per dropback, and Blitz EPA/play the EPA per dropback against a blitz (for a defense, when it blitzed); 8+ Box % is designed runs against 8 or more in the box; Catchable % is throws charted catchable of those aimed, Drop % drops per catchable ball, INT-worthy % throws that should have been intercepted; Motion %, Under C % (under center), No-huddle % and RPO % are per snap, Screen % per dropback. A call that meets a unit good against it (a heavy-blitzing defense against an offense with a high Blitz EPA/play) is worth a bullet; PA and Blitz EPA/play rest on fewer plays than EPA/play, so treat a small edge there as noise.
+Charting (FTN's, when given): PA % is play action per dropback and PA EPA/play the EPA per play-action dropback; Blitz % is dropbacks with a blitzer, Rushers the pass rushers per dropback, and Blitz EPA/play the EPA per dropback against a blitz (for a defense, when it blitzed); 8+ Box % is designed runs against 8 or more in the box; Catchable % is throws charted catchable of those aimed, Drop % drops per catchable ball, INT-worthy % throws that should have been intercepted; Motion %, Under C % (under center), No-huddle % and RPO % are per snap, Screen % per dropback. A call that meets a unit good against it (a heavy-blitzing defense against an offense with a high Blitz EPA/play) is worth a bullet; PA and Blitz EPA/play rest on fewer plays than EPA/play, so treat a small edge there as noise.{draft}
 
 Write Markdown, about 150 to 220 words:
 **Headline**: one sentence: who the numbers favor and why.
@@ -1057,7 +1062,7 @@ Write only the preview, without a preamble or notes about the data."""
 
 def matchup_prompt(league: str) -> str:
     t = _LEAGUE[league]
-    return MATCHUP_PROMPT.format(analyst=t["analyst"], model=t["model"])
+    return MATCHUP_PROMPT.format(analyst=t["analyst"], model=t["model"], draft=t["draft"])
 
 
 def preview(ctx: MatchupContext, provider: Provider, progress: Progress | None = None) -> Summary:

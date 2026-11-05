@@ -168,6 +168,12 @@ class League:
         league has none (the NFL)."""
         return {}
 
+    def draft_board(self, season: int, stamp: str) -> dict[tuple[str, str], dict]:
+        """(team, core.player_key(name)) → the leaders tables' Draft / Mock
+        cells (core.draft_keys, core.with_draft) for the players on the
+        next draft's boards; empty where the league has none (the NFL)."""
+        return {}
+
     def ticker(self, row: pd.Series) -> list[scoreboard.TickerGame]:
         """The league's other games on ESPN's scoreboard around now
         (scoreboard.ticker), never `row`'s: its live score would spoil it."""
@@ -708,6 +714,27 @@ def load_cfb_class_years(season: int, stamp: str) -> dict[tuple[str, str], str]:
     return core.class_year_keys(cfb_feed.read_rosters(season, load_cfb_team_names(season, stamp)))
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_cfb_team_ids(season: int, stamp: str) -> pd.DataFrame:
+    """(abbr, id): ESPN's team id → the abbreviation the pbp uses."""
+    return cfb_feed.team_ids(_cfb_season_or_empty(season, stamp)[0], load_cfb_schedule(season),
+                             cfb_feed.read_team_info(season))
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_cfb_draft_board(season: int, stamp: str) -> dict[tuple[str, str], dict]:
+    """The draft after `season` (the 2026 season's players go in the 2027
+    draft): ESPN's big board and Tankathon's board and mock draft, as
+    core.draft_keys(); empty if neither can be read. Tankathon is always on
+    the next draft, so a past season has ESPN's board alone. Cached a day."""
+    draft_year = int(season) + 1
+    names = load_cfb_team_names(season, stamp)
+    schools = {cfb_feed.school_key(school): abbr for abbr, school in names.items()}
+    board = pd.concat([cfb_feed.read_espn_draft_board(draft_year, load_cfb_team_ids(season, stamp)),
+                       cfb_feed.read_tankathon(draft_year, schools)], ignore_index=True)
+    return core.draft_keys(board, load_cfb_class_years(season, stamp))
+
+
 @st.cache_data(max_entries=2)
 def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
@@ -802,6 +829,9 @@ class CollegeLeague(League):
 
     def class_years(self, season: int, stamp: str) -> dict[tuple[str, str], str]:
         return load_cfb_class_years(season, stamp)
+
+    def draft_board(self, season: int, stamp: str) -> dict[tuple[str, str], dict]:
+        return load_cfb_draft_board(season, stamp)
 
     def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         try:
@@ -1256,9 +1286,10 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
                      if charting else "")
 
     years = league.class_years(season, stamp)
+    draft = league.draft_board(season, stamp)
 
     def _with_status(df: pd.DataFrame, team: str) -> pd.DataFrame:
-        df = core.with_class_year(df, years, team)
+        df = core.with_draft(core.with_class_year(df, years, team), draft, team)
         status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
         if not any(status):
             return df

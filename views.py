@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
-                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
+                         PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, DRAFT_COL, MOCK_COL, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
                          SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER, success_emoji, yl_label)
@@ -1149,6 +1149,42 @@ def _pinned_props() -> list[tuple[str, str]]:
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
+# A draft prospect's Player, Draft and Mock cells (replay_core.with_draft):
+# gold, not the tables' red (red zone, Out) or the theme's teal accent,
+# laid over the page background so a pinned Player cell stays opaque.
+DRAFT_TINT = ((212, 160, 23), 0.30)
+
+
+def _blend(tint: tuple[tuple[int, int, int], float], bg: str) -> str:
+    """`tint` (rgb, alpha) over the `bg` hex color, as an opaque hex color."""
+    (r, g, b), a = tint
+    bg = bg.lstrip("#")
+    if len(bg) == 3:
+        bg = "".join(c * 2 for c in bg)
+    try:
+        br, bgr, bb = (int(bg[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        br, bgr, bb = (255, 255, 255)
+    mix = [round(c * a + base * (1 - a)) for c, base in ((r, br), (g, bgr), (b, bb))]
+    return "#" + "".join(f"{v:02x}" for v in mix)
+
+
+def _draft_highlight(styled):
+    """Tints the Player, Draft and Mock cells of the rows whose player is on
+    a draft board (a non-empty `DRAFT_COL`), the name in bold."""
+    df = styled.data
+    if DRAFT_COL not in df.columns:
+        return styled
+    on = df[DRAFT_COL].fillna("").astype(str).ne("")
+    # !important: the pinned column's own background (stat_table) is the
+    # more specific rule.
+    css = f"background-color: {_blend(DRAFT_TINT, _page_bg())} !important"
+    cols = [c for c in (PINNED_COL, DRAFT_COL, MOCK_COL) if c in df.columns]
+    return styled.apply(
+        lambda col: [css + ("; font-weight: 600" if col.name == PINNED_COL else "") if o else ""
+                     for o in on], subset=cols)
+
+
 def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     """A table (DataFrame or Styler) as a static st.table: on a phone it
     scrolls with the page instead of catching swipes, its cells are tighter
@@ -1160,7 +1196,7 @@ def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     so the other text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither")
     are displayed with non-breaking spaces and hyphens to stay on one line.
     Only the display changes, so styles keyed on the values still match."""
-    styled = table.style if isinstance(table, pd.DataFrame) else table
+    styled = _draft_highlight(table.style if isinstance(table, pd.DataFrame) else table)
     df = styled.data
     text = [c for c in df.columns if c != "Description" and df[c].notna().any()
             and df[c].dropna().map(lambda v: isinstance(v, str)).all()]
