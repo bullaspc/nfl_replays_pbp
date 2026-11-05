@@ -881,7 +881,14 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     # center".
     crew = text.str.contains(_CREW)
     out["shotgun"] = text.str.contains("Shotgun", regex=False).astype(float).where(crew)
-    out["no_huddle"] = text.str.contains("No Huddle", regex=False).astype(float).where(crew)
+    # A college crew marks "No Huddle" whenever the offense didn't huddle
+    # (most look to the sideline), not only in a hurry-up as the NFL's does,
+    # and some crews never mark it: in a game where no snap is marked, the
+    # crew didn't chart it, so it's NaN there rather than every snap huddled
+    # (about 3% of 2026's crew games). The shotgun is still read.
+    no_huddle = text.str.contains("No Huddle", regex=False)
+    marked = no_huddle.groupby(gid).transform("any")
+    out["no_huddle"] = no_huddle.astype(float).where(crew & marked)
 
     live = ~no_play & ~lost_td
     out["touchdown"] = (_b(df["touchdown"]) & live).astype(float)

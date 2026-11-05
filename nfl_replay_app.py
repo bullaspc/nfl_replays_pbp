@@ -1310,12 +1310,13 @@ _chart = chart_table(revealed, home, away)
 if _chart.empty:
     st.caption("No snaps yet.")
 else:
-    stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)))
+    stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)),
+               labels=league.stat_labels)
     st.caption(
         "Each offense over the snaps shown so far, downs only; the other column is its "
         "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
         "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
-        "text."
+        "text." + league.chart_note
         + (" The rest is FTN Data's charting via nflverse (CC-BY-SA 4.0): Motion % and RPO % "
            "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with a "
            "blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "

@@ -58,13 +58,15 @@ _TODAY = date.today()
 LATEST_SEASON = _TODAY.year if _TODAY.month >= 9 else _TODAY.year - 1
 
 
-def _charting_note(side: str, ftn: bool, n_charted: int, n_games: int) -> str:
-    """What the charting columns are, for the captions."""
+def _charting_note(side: str, ftn: bool, n_charted: int, n_games: int,
+                   extra: str = "") -> str:
+    """What the charting columns are, for the captions; `extra` is the
+    league's `chart_note`."""
     note = ("**Charting**, downs only: Under C % (snaps under center, not in the shotgun or "
             "pistol) and No-huddle % per snap, from the play text")
     if not ftn:
         return note + (f". FTN's charting (motion, play action, blitzes, catchable throws …) "
-                       f"covers the NFL from {leagues.CHART_FIRST_SEASON} on.")
+                       f"covers the NFL from {leagues.CHART_FIRST_SEASON} on.") + extra
     return (note + "; the rest by FTN Data via nflverse (CC-BY-SA 4.0), over the plays FTN has "
             "charted" + (f" ({n_charted} of the selection's {n_games} games so far)"
                          if n_charted < n_games else "")
@@ -77,7 +79,7 @@ def _charting_note(side: str, ftn: bool, n_charted: int, n_games: int) -> str:
             "blitz" + (" (when this defense blitzed)" if side == "defteam" else "")
             + ". Catchable % is throws FTN charted catchable, of those aimed (no throwaways); "
             "Drop % is drops per catchable ball; INT-worthy % throws that should have been "
-            "picked, per throw.")
+            "picked, per throw." + extra)
 
 
 # ---------- Sidebar ----------
@@ -220,7 +222,7 @@ with tab_teams:
         # Best first: by rank, so "lower is better" stats sort the right way.
         order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
         table = full.loc[[t for t in order if t in shown_teams], cols]
-        stat_table(style_season_table(table, ranks))
+        stat_table(style_season_table(table, ranks), labels=league.stat_labels)
         n_charted, n_games = tables["charted"]
         st.caption(
             f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
@@ -238,7 +240,7 @@ with tab_teams:
                + " faced; play counts, penalties and the charting's choices are as played."
                if adjusted else ""))
         if charting and view in ("Charting", "All"):
-            st.caption(_charting_note(side, ftn, n_charted, n_games))
+            st.caption(_charting_note(side, ftn, n_charted, n_games, league.chart_note))
 
 # ---------- Team ----------
 with tab_team:
@@ -336,7 +338,7 @@ with tab_team:
         if chart_summary.empty:
             st.caption(f"Fewer than {min_team_plays} plays in this selection: not ranked.")
         else:
-            stat_table(style_team_chart(chart_summary, team))
+            stat_table(style_team_chart(chart_summary, team), labels=league.stat_labels)
             n_charted, n_games = tables["charted"]
             st.caption(
                 f"{sel_note} · the season: {team}'s offense and its defense. The results are "
@@ -344,7 +346,8 @@ with tab_team:
                 + ("; adjusted for the opponents faced" if adjusted else "") + "); the calls are "
                 "ranked by how high or low they run (\"4th highest\"), not best to worst, and "
                 "aren't colored. League is the teams' average. "
-                + _charting_note("defteam", "Motion %" in chart_summary.index, n_charted, n_games))
+                + _charting_note("defteam", "Motion %" in chart_summary.index, n_charted, n_games,
+                                 league.chart_note))
     chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
     if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
         with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
@@ -356,7 +359,7 @@ with tab_team:
             if by_game.empty:
                 st.caption("No charted plays in this selection's games.")
             else:
-                stat_table(style_chart_games(by_game, shades))
+                stat_table(style_chart_games(by_game, shades), labels=league.stat_labels)
                 n_charted, n_games = tables["charted"]
                 ftn_games = "Motion %" in by_game.index
                 st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
@@ -368,7 +371,8 @@ with tab_team:
                               "over the plays it has charted"
                               + (f" ({n_charted} of the selection's {n_games} games so far)"
                                  if n_charted < n_games else "") if ftn_games else "")
-                           + ". Definitions: the Teams tab's Charting view and Methodology.")
+                           + "." + league.chart_note
+                           + " Definitions: the Teams tab's Charting view and Methodology.")
 
     st.markdown("<span id='ss-leaders'></span>**Player leaders**", unsafe_allow_html=True)
     player_min = {k: _default_min(k) for k in PLAYER_MIN_PLAYS}
@@ -648,7 +652,7 @@ designed run from the same down, distance and field position (`models/xrush_yard
 the QB under center, not in the shotgun or pistol) and No-huddle % come from the play text, which
 marks both{" in the stat crew's text most college games have had since 2025 (each game's crew "
 "marks it, so a game is only as consistent as its crew)" if _college else ", every game"}; snaps on
-downs whose text marks the formation.{"" if _college else f''' The rest is
+downs whose text marks the formation.{league.chart_note}{"" if _college else f''' The rest is
 FTN Data's charting of every snap ({leagues.CHART_FIRST_SEASON} on), via nflverse (CC-BY-SA 4.0),
 published weekly during the season; it can be a game or two behind the play-by-play, so each of
 those numbers counts the charted plays only, on downs. Motion % and RPO % are per snap; PA % (play

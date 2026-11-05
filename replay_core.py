@@ -1273,7 +1273,7 @@ HEAVY_BOX = 8        # defenders in the box on a designed run, as NGS's 8+D%
 # Each number as (numerator, denominator) of `_chart_parts()` columns.
 _CHART_RATIO = {
     "Motion %": ("motion", "snap"), "Under C %": ("under", "f_snap"),
-    "No-huddle %": ("no_huddle", "f_snap"), "RPO %": ("rpo", "snap"), "PA %": ("pa", "drop"),
+    "No-huddle %": ("no_huddle", "h_snap"), "RPO %": ("rpo", "snap"), "PA %": ("pa", "drop"),
     "Screen %": ("screen", "drop"), "Blitz %": ("blitzed", "blitz_n"),
     "Rushers": ("rushers", "rushers_n"), "8+ Box %": ("heavy", "box_n"),
     "PA EPA/play": ("pa_epa", "pa_epa_n"), "Blitz EPA/play": ("blitz_epa", "blitz_epa_n"),
@@ -1308,8 +1308,9 @@ def _chart_col(td: pd.DataFrame, col: str) -> pd.Series:
 def _chart_parts(pbp: pd.DataFrame) -> pd.DataFrame:
     """Per play (downs only), its part in each charting number
     (`_CHART_RATIO`): from the play text, the snaps whose text marks the
-    formation (f_snap) and those under center or in no-huddle (Under C:
-    under center, i.e. not shotgun or pistol); where FTN has charted the
+    formation (f_snap) and those under center (Under C: not shotgun or
+    pistol), the snaps whose text marks the huddle (h_snap: a college crew
+    that never marks "No Huddle" leaves it NaN) and those in no-huddle; where FTN has charted the
     play, snaps (Motion, RPO), dropbacks (pass attempts plus sacks, no
     spikes: PA, Screen; Blitz is a blitzer, Rushers the pass rushers per
     dropback), designed runs against 8+ in the box, EPA on play-action
@@ -1325,8 +1326,10 @@ def _chart_parts(pbp: pd.DataFrame) -> pd.DataFrame:
     shotgun = pd.to_numeric(_chart_col(pbp, "shotgun"), errors="coerce")
     if (snaps & shotgun.notna()).any():
         f_snap = snaps & shotgun.notna()
+        huddle = pd.to_numeric(_chart_col(pbp, "no_huddle"), errors="coerce")
+        h_snap = f_snap & huddle.notna()
         parts.update(f_snap=f_snap, under=f_snap & (shotgun == 0),
-                     no_huddle=f_snap & (_chart_col(pbp, "no_huddle") == 1))
+                     h_snap=h_snap, no_huddle=h_snap & (huddle == 1))
     if "_ftn" in pbp.columns:
         flag = lambda c: _chart_col(pbp, c) == 1
         snap = snaps & pbp["_ftn"].fillna(False).astype(bool)

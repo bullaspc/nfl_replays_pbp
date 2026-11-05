@@ -1149,7 +1149,8 @@ def _pinned_props() -> list[tuple[str, str]]:
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
-def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
+def stat_table(table, hide_index: bool = False, pin: str | None = None,
+               labels=()) -> None:
     """A table (DataFrame or Styler) as a static st.table: on a phone it
     scrolls with the page instead of catching swipes, its cells are tighter
     than st.dataframe's, and its columns can't be sorted or dragged. A
@@ -1159,9 +1160,17 @@ def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     header cell too). Only one, since each sticks at left 0. st.table drops white-space styles,
     so the other text columns ("ARI 3 — 0 NO", "OWN 26", "A.Davis-Gaither")
     are displayed with non-breaking spaces and hyphens to stay on one line.
-    Only the display changes, so styles keyed on the values still match."""
+    Only the display changes, so styles keyed on the values still match.
+    `labels` ((name, shown) pairs, a league's `stat_labels`) renames row and
+    column labels as drawn, the same way."""
     styled = table.style if isinstance(table, pd.DataFrame) else table
     df = styled.data
+    shown = dict(labels)
+    if shown:
+        rename = lambda v: shown.get(v, v) if isinstance(v, str) else v
+        for axis, idx in ((0, df.index), (1, df.columns)):
+            if idx.nlevels == 1 and idx.isin(list(shown)).any():
+                styled = styled.format_index(rename, axis=axis)
     text = [c for c in df.columns if c != "Description" and df[c].notna().any()
             and df[c].dropna().map(lambda v: isinstance(v, str)).all()]
     if text:

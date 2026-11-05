@@ -85,6 +85,11 @@ class League:
     espn_id_col: str = "game_id"  # the games() column with ESPN's event id
     clock: core.ClockRules = core.NFL_CLOCK  # what Game management's clock estimates follow
     season_group_label: str = "Division"  # the Season stats page's team filter
+    # Display names for stats that mean something else in this league's data,
+    # as (stat, label) pairs: views.stat_table(labels=) renames the rows or
+    # columns as drawn, the tables keep the stat's own name.
+    stat_labels: tuple[tuple[str, str], ...] = ()
+    chart_note: str = ""  # appended to the Charting captions (and the previews' note)
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -864,7 +869,15 @@ COLLEGE = CollegeLeague(
     # ~3h20m. One college season has about as many team-games as three NFL ones.
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
     group_label="Conference", untimed_ot=True, clock=core.CFB_CLOCK,
-    season_group_label="Conference")
+    season_group_label="Conference",
+    # College crews mark "No Huddle" whenever the offense didn't huddle, not
+    # only a hurry-up, and each game's crew marks it its own way.
+    stat_labels=(("No-huddle %", "No-huddle % (crew)"),),
+    chart_note=(" No-huddle % (crew) is the snaps the stat crew marked \"No Huddle\": in "
+                "college that's any snap without a huddle (most offenses take the call from "
+                "the sideline), not only a hurry-up, so it runs far higher than the NFL's, and "
+                "some of it is the home crew's habit. Games whose crew never marks it are left "
+                "out."))
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
 
 
@@ -1284,6 +1297,7 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
                      + ("; the rest FTN Data's charting via nflverse, over the plays charted"
                         + (f" ({n_charted} of {n_games} games)" if n_charted < n_games else "")
                         if "Motion %" in chart_rows else "")
+                     + league.chart_note.replace("No-huddle % (crew)", "No-huddle %")
                      if charting else "")
 
     years = league.class_years(season, stamp)

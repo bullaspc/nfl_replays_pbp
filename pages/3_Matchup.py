@@ -211,7 +211,7 @@ chart_games = (f" ({n_charted} of the selection's {n_games} games so far)" if n_
                else "")
 chart_note = ("Under C % and No-huddle % from the play text"
               + (f"; the rest FTN Data's charting via nflverse, over the plays charted{chart_games}"
-                 if ftn else ""))
+                 if ftn else "") + league.chart_note.replace("No-huddle % (crew)", "No-huddle %"))
 # Before the final report there are no game statuses, so only roster moves count.
 no_status = [t for t in (away, home) if has_lineup and not (reports[t]["Status"] != "").any()]
 # What the injury report doesn't show: gone off the roster, or back.
@@ -423,7 +423,8 @@ if charting:
     for col, (off, def_) in zip(st.columns(2), ((away, home), (home, away))):
         with col:
             st.markdown(f"**{nm(off)} offense** vs {nm(def_)} defense")
-            stat_table(style_matchup_table(charting[off], off, def_, tints))
+            stat_table(style_matchup_table(charting[off], off, def_, tints),
+                       labels=league.stat_labels)
     st.caption(
         "Downs only. Under C % (snaps under center, not in the shotgun or pistol) and No-huddle % "
         "per snap come from the play text"
@@ -443,7 +444,7 @@ if charting:
         "**Blitz EPA/play** per dropback against a blitz (for the defense, when it blitzed): set "
         "the offense's against the defense's to see who wins the call. **Catchable %** is throws "
         "charted catchable, of those aimed (no throwaways); **Drop %** drops per catchable ball; "
-        "**INT-worthy %** throws that should have been picked, per throw."))
+        "**INT-worthy %** throws that should have been picked, per throw.") + league.chart_note)
 
 # ---------- Head to head ----------
 st.subheader("Head to head", anchor="head-to-head")
