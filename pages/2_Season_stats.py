@@ -23,7 +23,7 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year,
+    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note,
     with_nextgen,
 )
 from views import (
@@ -95,6 +95,8 @@ st.caption("The replay's team and player stats over a season. This page shows re
 stamp = league.stamp()
 # College rosters' class years (Fr … Sr) for the player tables; empty for the NFL.
 class_years = league.class_years(season, stamp)
+# Next year's NFL draft boards (college): the player tables' Draft / Mock.
+draft_board = league.draft_board(season, stamp)
 try:
     with st.spinner(f"Loading the {season} season…"):
         pbp_all = league.season_pbp(season, stamp)
@@ -378,7 +380,7 @@ with tab_team:
             for kind, n in kinds:
                 df = tables[kind]
                 df = df[df["Team"] == team].drop(columns="Team").head(n) if not df.empty else df
-                df = with_class_year(df, class_years, team)
+                df = with_draft(with_class_year(df, class_years, team), draft_board, team)
                 st.caption("Defense" if kind == "defenders" else kind.capitalize())
                 if df.empty:
                     st.caption("No data")
@@ -387,6 +389,8 @@ with tab_team:
                 else:
                     stat_table(style_player_table(df, kind, player_dists, player_min[kind]),
                                hide_index=True)
+    if draft_board:
+        st.caption(f"{draft_note(season)}.")
 
     # Snap counts and the latest injury report. Snap counts are whole games,
     # so they follow the selection's games (weeks, games, venue) but not its
@@ -481,7 +485,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
                            key=f"_ss_psort_{kind}")
     top_n = st.slider("Show", 10, 200, 50, step=10, key="_ss_topn")
     df = df.sort_values(sort_by, ascending=False, kind="stable").head(top_n).reset_index(drop=True)
-    df = with_class_year(df, class_years)
+    df = with_draft(with_class_year(df, class_years), draft_board)
     df.index = df.index + 1
     if kind == "defenders":
         stat_table(style_defense_table(df))
@@ -499,6 +503,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
                    f"{PLAYER_VOLUME_COL[kind].lower()} · green = top · red = bottom. A traded "
                    "player has a row per team."
                    + (" Yr is the class year on the season's roster." if class_years else "")
+                   + (f" {draft_note(season)}." if draft_board else "")
                    + (" SR% and EPA/play are adjusted for the defenses each player's plays "
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:

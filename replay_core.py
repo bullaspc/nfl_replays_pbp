@@ -2371,6 +2371,62 @@ def with_class_year(df: pd.DataFrame, years: dict, team: str | None = None) -> p
     return out
 
 
+# ---------- NFL draft prospects (college) ----------
+# A badge after the name of a player on next year's draft boards or mocks
+# (ESPN's big board, Tankathon's big board and mock draft): gold within the
+# top `DRAFT_GOLD_RANK` of any of them, silver further down.
+DRAFT_GOLD, DRAFT_SILVER = "🥇", "🥈"
+DRAFT_GOLD_RANK = 50
+
+
+def draft_note(season: int) -> str:
+    """The leaders tables' caption for the draft badges."""
+    return (f"{DRAFT_GOLD} top {DRAFT_GOLD_RANK} on a {int(season) + 1} NFL draft big board or "
+            f"mock draft (ESPN, Tankathon) · {DRAFT_SILVER} on one further down")
+
+
+def draft_keys(board: pd.DataFrame, roster_keys=None) -> dict[tuple[str, str], str]:
+    """(team, `player_key`) → `DRAFT_GOLD` or `DRAFT_SILVER` from the boards
+    (`cfb_feed.DRAFT_COLS` with team, `cfb_feed.board_teams()`): gold where his best
+    board rank or mock pick is within `DRAFT_GOLD_RANK`. A player is one
+    (team, full name) across the boards. Each goes in under his full name
+    and, where `roster_keys` (`class_year_keys`, whose keys two teammates
+    never share) has it, as stat-crew text writes it ("D.Lee"): without the
+    roster a "D.Lee" could be a teammate who isn't on any board."""
+    if board.empty:
+        return {}
+    b = board.dropna(subset=["team"]).copy()
+    b["key"] = (b["first_name"].fillna("") + " " + b["last_name"].fillna("")).map(player_key)
+    b["crew"] = (b["first_name"].fillna("").str[:1] + "." + b["last_name"].fillna("")).map(player_key)
+    b = b[b["key"] != ""]
+    b["best"] = np.fmin(pd.to_numeric(b["rank"], errors="coerce"),
+                        pd.to_numeric(b["mock_pick"], errors="coerce"))
+    out = {}
+    for (team, key), g in b.groupby(["team", "key"], sort=False):
+        badge = DRAFT_GOLD if g["best"].min() <= DRAFT_GOLD_RANK else DRAFT_SILVER
+        out[(team, key)] = badge
+        crew = g["crew"].iloc[0]
+        if roster_keys and (team, crew) in roster_keys:
+            out[(team, crew)] = min(out.get((team, crew), badge), badge,
+                                    key=lambda x: x != DRAFT_GOLD)
+    return out
+
+
+def with_draft(df: pd.DataFrame, draft: dict, team: str | None = None) -> pd.DataFrame:
+    """A leaders table with the draft badge (`draft_keys`) after the Player
+    of each prospect it knows; `team` as in `with_class_year`. Call it last:
+    the badge changes the name, so name lookups go first."""
+    if not draft or df.empty or "Player" not in df.columns:
+        return df
+    teams = df["Team"] if team is None and "Team" in df.columns else [team] * len(df)
+    badges = [draft.get((t, player_key(p)), "") for t, p in zip(teams, df["Player"])]
+    if not any(badges):
+        return df
+    out = df.copy()
+    out["Player"] = [f"{p} {b}" if b else p for p, b in zip(df["Player"], badges)]
+    return out
+
+
 def _phase_totals(s: pd.DataFrame) -> pd.DataFrame:
     """One team's snaps per game and phase (game_id × `SNAP_PHASES` labels),
     read off its fullest-playing player in each (snaps ÷ share)."""
