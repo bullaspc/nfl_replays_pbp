@@ -411,6 +411,8 @@ BASELINE_COLS = [
     "passer_player_name", "rusher_player_name", "receiver_player_name",
     "run_location", "run_gap", "pass_location", "pass_length",
     "cpoe", "xrush_yards",
+    # the charting's: play ids to match FTN's rows, and the text's formation
+    "play_id", "shotgun", "no_huddle",
 ]
 
 
@@ -1367,6 +1369,46 @@ def charted_games(pbp: pd.DataFrame) -> tuple[int, int]:
     if "_ftn" not in pbp.columns:
         return 0, games
     return int(pbp.loc[pbp["_ftn"], "game_id"].nunique()), games
+
+
+def chart_table(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
+    """The replay's Charting table: each offense's `CHART_ROWS` over the
+    revealed plays only (rows: the stats the plays have, columns [away,
+    home]); empty before the first snap. The other team's column is its
+    defense's side of the same plays."""
+    parts = _chart_parts(revealed)
+    snaps = revealed["down"].notna() & ((revealed["pass_attempt"].fillna(0) == 1)
+                                        | (revealed["rush_attempt"].fillna(0) == 1))
+    if parts.shape[1] == 0 or not snaps.any():
+        return pd.DataFrame()
+    keep = revealed["posteam"].isin([away, home])
+    sums = parts[keep].groupby(revealed.loc[keep, "posteam"]).sum().reindex([away, home],
+                                                                           fill_value=0.0)
+    out = chart_rates(sums).T
+    out.index.name = "Stat"
+    return out
+
+
+def chart_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Each charting number over every team-game in `raw` (baseline plays,
+    with FTN's charting where it has it), sorted: what the replay's Charting
+    results are colored against."""
+    rates = chart_rates(chart_by_game(raw, "posteam"))
+    return {c: np.sort(rates[c].dropna().to_numpy()) for c in rates.columns}
+
+
+def team_chart_summary(off: pd.DataFrame, def_: pd.DataFrame, team: str) -> pd.DataFrame:
+    """`team`'s charting over the season (Season stats Team tab): its offense
+    (a row of the season offense table `off`) and its defense (of `def_`:
+    its own calls, Blitz %, Rushers and 8+ Box %, and what it faced), each
+    with its place among the teams ("5th", or "4th highest" for the calls),
+    the League average, and `_off_pct` / `_def_pct` for the colors (NaN for
+    the calls). Empty where the tables have no charting."""
+    rows = [r for r in CHART_ROWS if r in off.columns and off[r].notna().any()]
+    if not rows or team not in off.index or team not in def_.index:
+        return pd.DataFrame()
+    return matchup_table(off, def_, team, team, rows)[
+        ["Offense", "Off rank", "Defense", "Def rank", "League", "_off_pct", "_def_pct"]]
 
 
 def chart_by_game(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:

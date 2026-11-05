@@ -31,7 +31,7 @@ import scoreboard
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
+    HEAVY_BOX, PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, with_class_year, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
@@ -40,7 +40,7 @@ from replay_core import (
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
-    stat_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
+    stat_table, style_chart_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
@@ -654,7 +654,7 @@ st.divider()
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Line", "line-play"), ("Tendencies", "tendencies")]
+             ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
@@ -1296,6 +1296,34 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
            f"kneels and scrambles: stuffed = no gain or a loss, explosive = {EXPLOSIVE_RUN_YDS}+ yards. "
            f"OL penalties: holding, false starts and ineligible man downfield on the "
            f"offense, per snap (pass, run or no-play).")
+
+# ---------- Charting ----------
+# Over the revealed plays only, like every section: the charting is per play
+# (FTN's rows by play id, the text's formation), so it grows snap by snap and
+# nothing past the cursor is read. Whether FTN has charted the game at all is
+# a fact about the data (loaded.charted), not about what happened in it.
+st.subheader("Charting", anchor="charting")
+_chart = chart_table(revealed, home, away)
+if _chart.empty:
+    st.caption("No snaps yet.")
+else:
+    stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)))
+    st.caption(
+        "Each offense over the snaps shown so far, downs only; the other column is its "
+        "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
+        "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
+        "text."
+        + (" The rest is FTN Data's charting via nflverse (CC-BY-SA 4.0): Motion % and RPO % "
+           "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with a "
+           "blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
+           f"{HEAVY_BOX}+ in the box; PA EPA/play per play-action dropback, Blitz EPA/play per "
+           "dropback against a blitz; Catchable % of the throws aimed at a receiver, Drop % per "
+           "catchable ball, INT-worthy % per throw. Results are colored against single games of "
+           f"the {league.baseline_label}; the calls stay plain."
+           if loaded.charted else
+           " FTN Data's charting (motion, play action, blitzes, catchable throws …) covers NFL "
+           "games from 2022 on, a day or two after they're played; it shows up here once FTN "
+           "has charted this one."))
 
 # ---------- Tendencies ----------
 st.subheader("Tendencies", anchor="tendencies")
