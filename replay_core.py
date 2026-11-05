@@ -2385,15 +2385,9 @@ def draft_note(season: int) -> str:
             f"mock draft (ESPN, Tankathon) · {DRAFT_SILVER} on one further down")
 
 
-def _mock_pick(v) -> float:
-    """A mock pick's number ("5 PHI" → 5); NaN for none."""
-    m = re.match(r"\s*(\d+)", v) if isinstance(v, str) else None
-    return float(m.group(1)) if m else np.nan
-
-
 def draft_keys(board: pd.DataFrame, roster_keys=None) -> dict[tuple[str, str], str]:
     """(team, `player_key`) → `DRAFT_GOLD` or `DRAFT_SILVER` from the boards
-    (`cfb_feed.DRAFT_COLS`, ESPN's and Tankathon's rows): gold where his best
+    (`cfb_feed.DRAFT_COLS` with team, `cfb_feed.board_teams()`): gold where his best
     board rank or mock pick is within `DRAFT_GOLD_RANK`. A player is one
     (team, full name) across the boards. Each goes in under his full name
     and, where `roster_keys` (`class_year_keys`, whose keys two teammates
@@ -2405,7 +2399,8 @@ def draft_keys(board: pd.DataFrame, roster_keys=None) -> dict[tuple[str, str], s
     b["key"] = (b["first_name"].fillna("") + " " + b["last_name"].fillna("")).map(player_key)
     b["crew"] = (b["first_name"].fillna("").str[:1] + "." + b["last_name"].fillna("")).map(player_key)
     b = b[b["key"] != ""]
-    b["best"] = np.fmin(pd.to_numeric(b["rank"], errors="coerce"), b["mock_team"].map(_mock_pick))
+    b["best"] = np.fmin(pd.to_numeric(b["rank"], errors="coerce"),
+                        pd.to_numeric(b["mock_pick"], errors="coerce"))
     out = {}
     for (team, key), g in b.groupby(["team", "key"], sort=False):
         badge = DRAFT_GOLD if g["best"].min() <= DRAFT_GOLD_RANK else DRAFT_SILVER

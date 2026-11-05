@@ -721,17 +721,18 @@ def load_cfb_team_ids(season: int, stamp: str) -> pd.DataFrame:
                              cfb_feed.read_team_info(season))
 
 
-@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
-def load_cfb_draft_board(season: int, stamp: str) -> dict[tuple[str, str], dict]:
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_cfb_draft_board(season: int, stamp: str) -> dict[tuple[str, str], str]:
     """The draft after `season` (the 2026 season's players go in the 2027
-    draft): ESPN's big board and Tankathon's board and mock draft, as
-    core.draft_keys(); empty if neither can be read. Tankathon is always on
-    the next draft, so a past season has ESPN's board alone. Cached a day."""
-    draft_year = int(season) + 1
-    names = load_cfb_team_names(season, stamp)
-    schools = {cfb_feed.school_key(school): abbr for abbr, school in names.items()}
-    board = pd.concat([cfb_feed.read_espn_draft_board(draft_year, load_cfb_team_ids(season, stamp)),
-                       cfb_feed.read_tankathon(draft_year, schools)], ignore_index=True)
+    draft): its latest snapshot in models/draft_boards.csv (ESPN's big board,
+    Tankathon's board and mock draft; tools/build_draft_board.py adds one a
+    week), as core.draft_keys(). No network calls; empty if the archive has
+    no snapshot of that draft."""
+    board = cfb_feed.read_draft_archive(int(season) + 1)
+    if board.empty:
+        return {}
+    board = cfb_feed.board_teams(board, load_cfb_team_ids(season, stamp),
+                                 load_cfb_team_names(season, stamp))
     return core.draft_keys(board, load_cfb_class_years(season, stamp))
 
 

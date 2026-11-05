@@ -30,6 +30,7 @@ import json
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -142,6 +143,10 @@ def read_rosters(season: int, names: dict[str, str]) -> pd.DataFrame:
 
 
 # ---------- NFL draft prospects ----------
+# The app reads the boards from models/draft_boards.csv, an archive that
+# tools/build_draft_board.py adds a snapshot to (weekly, from GitHub
+# Actions); these readers are for that script, so the app makes no calls.
+DRAFT_ARCHIVE = Path(__file__).resolve().parent / "models" / "draft_boards.csv"
 # ESPN's big board for a draft (Kiper and Reid's ranks: overall and by
 # position), best first; each entry is a link to the prospect's own record.
 DRAFT_BOARD_URL = ("https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/"
@@ -153,8 +158,12 @@ DRAFT_BOARD_MAX = 100
 # in the page's title.
 TANKATHON_BOARD_URL = "https://www.tankathon.com/nfl/big_board"
 TANKATHON_MOCK_URL = "https://www.tankathon.com/nfl/mock_draft"
-DRAFT_COLS = ["source", "team", "school", "first_name", "last_name", "pos", "rank",
-              "mock_team"]
+# One row per player and board: ESPN's college team id (ESPN rows) or the
+# school's name (Tankathon rows), the board's rank, and Tankathon's mock
+# pick and NFL team. The archive adds draft_year and as_of in front.
+DRAFT_COLS = ["source", "team_id", "school", "first_name", "last_name", "pos", "rank",
+              "mock_pick", "mock_team"]
+ARCHIVE_COLS = ["draft_year", "as_of", *DRAFT_COLS]
 _TK_ROW = re.compile(
     r'mock-row-pick-number">(\d+)</div>.*?<img[^>]*?alt="([^"]*)"[^>]*?src="([^"]*)"'
     r'.*?mock-row-name">([^<]*)</div>\s*<div class="mock-row-school-position">([^<]*)<', re.S)
@@ -170,10 +179,9 @@ def _split_name(full: str) -> tuple[str, str]:
     return first, last
 
 
-def read_espn_draft_board(draft_year: int, ids: pd.DataFrame) -> pd.DataFrame:
+def read_espn_draft_board(draft_year: int) -> pd.DataFrame:
     """ESPN's big board for `draft_year` (`DRAFT_COLS`, source "ESPN", rank
-    overall), team as the play-by-play's abbreviation through `ids`
-    (`team_ids()`: ESPN's college team id → abbr). Empty if unavailable."""
+    overall, its top `DRAFT_BOARD_MAX`). Empty if unavailable."""
     try:
         refs = [i["$ref"] for i in json.loads(_get(DRAFT_BOARD_URL.format(int(draft_year)),
                                                    timeout=20))["items"]]
@@ -188,19 +196,17 @@ def read_espn_draft_board(draft_year: int, ids: pd.DataFrame) -> pd.DataFrame:
 
     with ThreadPoolExecutor(8) as pool:
         players = [p for p in pool.map(one, refs[:DRAFT_BOARD_MAX]) if p]
-    abbr = dict(zip(ids["id"].astype(int), ids["abbr"])) if not ids.empty else {}
     rows = []
     for p in players:
         attrs = {a.get("name"): a.get("value") for a in p.get("attributes", [])}
         tid = re.search(r"/teams/(\d+)", (p.get("team") or {}).get("$ref", ""))
-        rank = attrs.get("overall")
-        if rank is None or not rank:
+        if not attrs.get("overall"):
             continue
-        rows.append({"source": "ESPN", "team": abbr.get(int(tid.group(1))) if tid else None,
+        rows.append({"source": "ESPN", "team_id": int(tid.group(1)) if tid else None,
                      "school": None, "first_name": p.get("firstName", ""),
                      "last_name": p.get("lastName", ""),
                      "pos": (p.get("position") or {}).get("abbreviation", ""),
-                     "rank": int(rank), "mock_team": None})
+                     "rank": int(attrs["overall"]), "mock_pick": None, "mock_team": None})
     return pd.DataFrame(rows, columns=DRAFT_COLS) if rows else _no_draft()
 
 
@@ -215,13 +221,17 @@ def _tankathon_rows(html_text: str, draft_year: int) -> list[tuple]:
     return [tuple(html.unescape(v).strip() for v in m) for m in _TK_ROW.findall(html_text)]
 
 
-def read_tankathon(draft_year: int, schools: dict[str, str]) -> pd.DataFrame:
+def tankathon_year(html_text: str) -> int | None:
+    """The draft a Tankathon page is on, from its title."""
+    m = _TK_YEAR.search(html_text)
+    return int(m.group(1)) if m else None
+
+
+def read_tankathon(draft_year: int) -> pd.DataFrame:
     """Tankathon's big board (source "Tankathon", rank its own) with each
-    player's pick in its mock draft (mock_team: the NFL team's abbreviation,
-    "1 LAC"), `DRAFT_COLS`. Only for the draft the site is on, which is the
-    next one. `schools`: `school_key()` → the play-by-play's abbreviation;
-    a school it doesn't know leaves team blank (school kept). Empty if
-    unavailable or another draft's."""
+    player's pick in its mock draft (mock_pick, and mock_team: the NFL
+    team's abbreviation), `DRAFT_COLS`. Only for the draft the site is on,
+    which is the next one. Empty if unavailable or another draft's."""
     try:
         board = _tankathon_rows(_get(TANKATHON_BOARD_URL, timeout=20).decode("utf-8", "replace"),
                                 draft_year)
@@ -237,8 +247,7 @@ def read_tankathon(draft_year: int, schools: dict[str, str]) -> pd.DataFrame:
     picks = {}
     for pick, _alt, src, name, _pos in mock:
         nfl = re.search(r"/nfl/([a-z]+)\.svg", src)
-        if nfl:
-            picks.setdefault(name, f"{pick} {nfl.group(1).upper()}")
+        picks.setdefault(name, (int(pick), nfl.group(1).upper() if nfl else None))
     rows, seen = [], set()
     for rank, _alt, _src, name, pos_school in board:
         if name in seen:
@@ -246,10 +255,36 @@ def read_tankathon(draft_year: int, schools: dict[str, str]) -> pd.DataFrame:
         seen.add(name)
         pos, _, school = (s.strip() for s in pos_school.partition("|"))
         first, last = _split_name(name)
-        rows.append({"source": "Tankathon", "team": schools.get(school_key(school)),
-                     "school": school, "first_name": first, "last_name": last, "pos": pos,
-                     "rank": int(rank), "mock_team": picks.get(name)})
+        pick, nfl_team = picks.get(name, (None, None))
+        rows.append({"source": "Tankathon", "team_id": None, "school": school,
+                     "first_name": first, "last_name": last, "pos": pos, "rank": int(rank),
+                     "mock_pick": pick, "mock_team": nfl_team})
     return pd.DataFrame(rows, columns=DRAFT_COLS)
+
+
+def read_draft_archive(draft_year: int, path: Path = DRAFT_ARCHIVE) -> pd.DataFrame:
+    """The latest snapshot of `draft_year`'s boards in the archive
+    (`DRAFT_COLS` plus as_of); empty if it has none."""
+    try:
+        a = pd.read_csv(path, dtype={"school": str, "mock_team": str})
+    except Exception:
+        return pd.DataFrame(columns=["as_of", *DRAFT_COLS])
+    a = a[a["draft_year"] == int(draft_year)]
+    if a.empty:
+        return pd.DataFrame(columns=["as_of", *DRAFT_COLS])
+    return a[a["as_of"] == a["as_of"].max()].drop(columns="draft_year").reset_index(drop=True)
+
+
+def board_teams(board: pd.DataFrame, ids: pd.DataFrame, names: dict[str, str]) -> pd.DataFrame:
+    """The boards with team: the play-by-play's abbreviation, from ESPN's team
+    id through `ids` (`team_ids()`) or the school's name through `names`
+    (`team_names()`, abbreviation → school) by `school_key()`."""
+    by_id = dict(zip(ids["id"].astype(int), ids["abbr"])) if not ids.empty else {}
+    by_school = {school_key(school): abbr for abbr, school in names.items()}
+    tid = pd.to_numeric(board["team_id"], errors="coerce")
+    team = [by_id.get(int(t)) if pd.notna(t) else by_school.get(school_key(s))
+            for t, s in zip(tid, board["school"])]
+    return board.assign(team=team)
 
 
 # School names as other sites write them, where they differ from CFBD's
