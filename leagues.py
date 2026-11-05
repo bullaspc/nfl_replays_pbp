@@ -1289,11 +1289,12 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
     draft = league.draft_board(season, stamp)
 
     def _with_status(df: pd.DataFrame, team: str) -> pd.DataFrame:
-        df = core.with_draft(core.with_class_year(df, years, team), draft, team)
+        df = core.with_class_year(df, years, team)
         status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
-        if not any(status):
-            return df
-        return df.copy().assign(Status=status)[["Player", "Status", *[c for c in df.columns if c != "Player"]]]
+        if any(status):
+            df = df.copy().assign(Status=status)[["Player", "Status",
+                                                  *[c for c in df.columns if c != "Player"]]]
+        return core.with_draft(df, draft, team)
 
     leaders = {}
     for kind, n in core.MATCHUP_LEADERS:

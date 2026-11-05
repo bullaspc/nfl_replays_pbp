@@ -224,14 +224,14 @@ def _off_report(team: str) -> pd.DataFrame:
 
 def _with_status(df: pd.DataFrame, team: str, badge: bool) -> pd.DataFrame:
     """A leaders table with a Status column after Player, if any of its
-    players has a game status, and a college player's class year (Yr)."""
-    df = with_draft(with_class_year(df, class_years, team), draft_board, team)
+    players has a game status, and a college player's class year (Yr) and
+    draft badge (after the name lookups: the badge changes the name)."""
+    df = with_class_year(df, class_years, team)
     status = [statuses[team].get(p, "") for p in df["Player"]] if "Player" in df.columns else []
-    if not any(status):
-        return df
-    df = df.copy()
-    df.insert(1, "Status", [status_badge(s) for s in status] if badge else status)
-    return df
+    if any(status):
+        df = df.copy()
+        df.insert(1, "Status", [status_badge(s) for s in status] if badge else status)
+    return with_draft(df, draft_board, team)
 
 kick = pd.Timestamp(game["game_date"])
 when = f"{week} · {kick:%a %b} {kick.day}" + (" · neutral site" if game.get("neutral") else "")
@@ -491,7 +491,7 @@ for col, team in zip(st.columns(2), (away, home)):
 st.caption("Season totals over the same games. SR%, aDOT and EPA/play are colored against the "
            "season's players with enough plays, as on the Season stats page. **Status** is the "
            "player's game status on this week's injury report, where he has one."
-           + (f" {draft_note(season).capitalize()}." if draft_board else ""))
+           + (f" {draft_note(season)}." if draft_board else ""))
 
 # ---------- How to read this ----------
 st.divider()

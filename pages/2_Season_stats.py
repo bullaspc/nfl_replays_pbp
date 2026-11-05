@@ -23,7 +23,7 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note, DRAFT_COL,
+    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note,
     with_nextgen,
 )
 from views import (
@@ -390,7 +390,7 @@ with tab_team:
                     stat_table(style_player_table(df, kind, player_dists, player_min[kind]),
                                hide_index=True)
     if draft_board:
-        st.caption(f"{draft_note(season).capitalize()}.")
+        st.caption(f"{draft_note(season)}.")
 
     # Snap counts and the latest injury report. Snap counts are whole games,
     # so they follow the selection's games (weeks, games, venue) but not its
@@ -503,7 +503,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
                    f"{PLAYER_VOLUME_COL[kind].lower()} · green = top · red = bottom. A traded "
                    "player has a row per team."
                    + (" Yr is the class year on the season's roster." if class_years else "")
-                   + (f" {draft_note(season).capitalize()}." if DRAFT_COL in df.columns else "")
+                   + (f" {draft_note(season)}." if draft_board else "")
                    + (" SR% and EPA/play are adjusted for the defenses each player's plays "
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:
