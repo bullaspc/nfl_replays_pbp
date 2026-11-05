@@ -23,14 +23,15 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_chart_games, team_schedule, with_class_year, with_nextgen,
+    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year,
+    with_nextgen,
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
     style_availability_summary, SCATTER_MAX_LABELS,
     style_defense_table, style_injury_report,
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
-    style_team_season,
+    style_team_chart, style_team_season,
     style_team_schedule, style_weekly_snaps,
 )
 
@@ -243,9 +244,11 @@ with tab_team:
     sit_plays = leagues.season_plays(league, season, stamp, weeks, part, play_filter)
     pbp = venue_plays(sit_plays, VENUES[venue])
     # The tab runs about fifteen phone screens: one sticky row of links to its sections.
+    team_charting = any(c in team_tables["offense"].columns for c in CHART_ROWS)
     section_nav([("Season", "ss-season"), ("Schedule", "ss-schedule"),
-                 ("Situations", "ss-situations"), ("Tendencies", "ss-tendencies"),
-                 ("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
+                 ("Situations", "ss-situations"), ("Tendencies", "ss-tendencies")]
+                + ([("Charting", "ss-charting")] if team_charting else [])
+                + [("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
                 + ([("Injuries", "ss-injuries")] if league.availability(season).source else []))
     st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"), anchor="ss-season")
     col_o, col_d = st.columns(2)
@@ -258,12 +261,12 @@ with tab_team:
             if team not in full.index:
                 st.caption(f"Fewer than {min_team_plays} plays in this selection: not ranked.")
                 continue
-            stat_table(style_team_season(full.loc[team], season_ranks(full, lower).loc[team],
+            # The charting has its own summary below (Charting).
+            card = full.loc[team].drop(CHART_ROWS, errors="ignore")
+            stat_table(style_team_season(card, season_ranks(full, lower).loc[team],
                                          season_rank_label(full, team, lower)))
     st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays"
-               + ("; the charting's choices (motion, play action, blitzes …) are ranked by how high or "
-                  "low they run, not best to worst, and aren't colored"
-                  if any(c in team_tables["offense"].columns for c in CHART_ROWS) else "") + ".")
+               + (" · the charting is under Charting, below." if team_charting else "."))
 
     # Whole games, for the final score (and the snap counts below); the EPA
     # follows the situation filters, over both offenses (not `pbp`, which
@@ -287,31 +290,6 @@ with tab_team:
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
                    "defense. Colors rank each game against every team-game in the selection: "
                    "green = top, red = bottom.")
-    chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
-    if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
-        with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
-            cg_label = st.segmented_control("Side", list(SIDES), default="Offense",
-                                            key="_ss_chart_side",
-                                            label_visibility="collapsed") or "Offense"
-            cg_side = SIDES[cg_label]
-            by_game, shades = team_chart_games(chart_games[cg_side], sel_games, team, cg_side)
-            if by_game.empty:
-                st.caption("No charted plays in this selection's games.")
-            else:
-                stat_table(style_chart_games(by_game, shades))
-                n_charted, n_games = tables["charted"]
-                ftn_games = "Motion %" in by_game.index
-                st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
-                           "the Schedule's EPA; **Season** adds them up (not opponent-adjusted). "
-                           "Results are colored against every team-game in the selection (green = "
-                           "best); the calls stay plain. Under C % and No-huddle % come from the "
-                           "play text"
-                           + (", the rest from FTN Data's charting via nflverse (CC-BY-SA 4.0), "
-                              "over the plays it has charted"
-                              + (f" ({n_charted} of the selection's {n_games} games so far)"
-                                 if n_charted < n_games else "") if ftn_games else "")
-                           + ". Definitions: the Teams tab's Charting view and Methodology.")
-
     st.markdown("<span id='ss-situations'></span>**Situational success rates**",
                 unsafe_allow_html=True)
     sr, counts = situational_table(pbp, [team, None], subtotals=True)
@@ -348,6 +326,47 @@ with tab_team:
                             width="stretch", config={"displayModeBar": False})
     st.caption("From the offense's side, as on the replay; the grey dash and hover compare "
                "with the whole league over the same games. Colors are EPA/play.")
+
+    # Charting: the season's summary, then game by game.
+    chart_summary = team_chart_summary(team_tables["offense"], team_tables["defense"], team)
+    if team_charting:
+        st.markdown("<span id='ss-charting'></span>**Charting**", unsafe_allow_html=True)
+        if chart_summary.empty:
+            st.caption(f"Fewer than {min_team_plays} plays in this selection: not ranked.")
+        else:
+            stat_table(style_team_chart(chart_summary, team))
+            n_charted, n_games = tables["charted"]
+            st.caption(
+                f"{sel_note} · the season: {team}'s offense and its defense. The results are "
+                "ranked among the teams and colored (green = best"
+                + ("; adjusted for the opponents faced" if adjusted else "") + "); the calls are "
+                "ranked by how high or low they run (\"4th highest\"), not best to worst, and "
+                "aren't colored. League is the teams' average. "
+                + _charting_note("defteam", "Motion %" in chart_summary.index, n_charted, n_games))
+    chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
+    if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
+        with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
+            cg_label = st.segmented_control("Side", list(SIDES), default="Offense",
+                                            key="_ss_chart_side",
+                                            label_visibility="collapsed") or "Offense"
+            cg_side = SIDES[cg_label]
+            by_game, shades = team_chart_games(chart_games[cg_side], sel_games, team, cg_side)
+            if by_game.empty:
+                st.caption("No charted plays in this selection's games.")
+            else:
+                stat_table(style_chart_games(by_game, shades))
+                n_charted, n_games = tables["charted"]
+                ftn_games = "Motion %" in by_game.index
+                st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
+                           "the Schedule's EPA; **Season** adds them up (not opponent-adjusted). "
+                           "Results are colored against every team-game in the selection (green = "
+                           "best); the calls stay plain. Under C % and No-huddle % come from the "
+                           "play text"
+                           + (", the rest from FTN Data's charting via nflverse (CC-BY-SA 4.0), "
+                              "over the plays it has charted"
+                              + (f" ({n_charted} of the selection's {n_games} games so far)"
+                                 if n_charted < n_games else "") if ftn_games else "")
+                           + ". Definitions: the Teams tab's Charting view and Methodology.")
 
     st.markdown("<span id='ss-leaders'></span>**Player leaders**", unsafe_allow_html=True)
     player_min = {k: _default_min(k) for k in PLAYER_MIN_PLAYS}

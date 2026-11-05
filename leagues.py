@@ -48,6 +48,9 @@ class LoadedGame:
     live_state: str             # ESPN's "pre" / "in" / "post"
     notes: list[str]            # sidebar captions about where the data comes from
     warning: str | None = None  # something the viewer should know (e.g. no models)
+    # FTN has charted the game, and `pbp` carries it (core.with_charting); a
+    # fact about the data, not the game, so the replay can say so up front
+    charted: bool = False
 
 
 @dataclass
@@ -479,7 +482,7 @@ def load_nextgen(season: int, kind: str, stamp: str) -> pd.DataFrame:
 CHART_FIRST_SEASON = 2022  # FTN's charting starts in 2022
 
 
-@st.cache_data(max_entries=2)
+@st.cache_data(max_entries=5)  # the season shown plus the replay baseline's three
 def load_charting(season: int, stamp: str) -> pd.DataFrame:
     """FTN's charting of `season` (nflverse's ftn_charting release, weekly
     during the season), one row per play; empty if nflverse has none."""
@@ -536,8 +539,14 @@ class NFLLeague(League):
 
     def load_game(self, row: pd.Series, season: int, stamp: str) -> LoadedGame:
         if row["source"] == "nflfastR":
-            return LoadedGame(_nfl_game(season, stamp, row["game_id"]), "post",
-                              [f"📊 Official nflfastR play-by-play · nflverse data as of {stamp}"])
+            pbp = _nfl_game(season, stamp, row["game_id"])
+            # FTN's charting, once it has charted the game (a day or two after it).
+            ftn = self.charting(season)
+            ftn = (ftn[ftn["nflverse_game_id"] == row["game_id"]]
+                   if not ftn.empty and "nflverse_game_id" in ftn.columns else ftn.iloc[0:0])
+            return LoadedGame(core.with_charting(pbp, ftn) if not ftn.empty else pbp, "post",
+                              [f"📊 Official nflfastR play-by-play · nflverse data as of {stamp}"],
+                              charted=not ftn.empty)
         # Not published by nflverse yet: ESPN's live play feed, run through
         # nflfastR's own EP/WP models. Switches to the official data by
         # itself once nflverse publishes the game.
@@ -907,6 +916,28 @@ def tendency_baselines(league: League, season: int) -> dict[str, dict[str, pd.Da
 def player_baselines(league: League, season: int) -> dict[str, dict[str, np.ndarray]]:
     """Player leaders percentile baselines for `season`, by table kind and stat."""
     return _player_baselines(league.name, season)
+
+
+@st.cache_data(ttl=86400)
+def _chart_baselines(league: str, season: int) -> dict[str, np.ndarray]:
+    lg = LEAGUES[league]
+    try:
+        raw = lg.baseline_pbp(season)
+    except Exception:
+        return {}
+    if raw is None or raw.empty or "play_id" not in raw.columns:
+        return {}
+    # FTN's charting of the baseline seasons it has (2022 on), from game ids' seasons.
+    seasons = sorted({int(g[:4]) for g in raw["game_id"].astype(str).unique() if g[:4].isdigit()})
+    ftn = [c for c in (lg.charting(s) for s in seasons) if not c.empty]
+    raw = core.with_charting(raw, pd.concat(ftn, ignore_index=True)) if ftn else raw
+    return core.chart_distributions(raw)
+
+
+def chart_baselines(league: League, season: int) -> dict[str, np.ndarray]:
+    """The replay's Charting baselines for `season`: each number over the
+    baseline seasons' team-games (FTN's where it has charted them), by stat."""
+    return _chart_baselines(league.name, season)
 
 
 def line_baselines(league: League, season: int) -> dict[str, np.ndarray]:

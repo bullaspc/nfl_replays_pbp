@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
@@ -347,6 +347,43 @@ def style_chart_games(df: pd.DataFrame, shades: pd.DataFrame):
     styled = (shown.style.apply(lambda _: colors, axis=None)
               .set_properties(subset=["Season"], **{"font-weight": "bold"}))
     return _centered(styled)
+
+
+def style_chart_table(df: pd.DataFrame, baselines: dict | None = None):
+    """The replay's Charting table (`replay_core.chart_table`: stats as rows,
+    a column per team): each value formatted as the season tables' are, the
+    results colored by percentile against single games of the baseline
+    seasons (flipped where lower is better), the calls (`CHART_STYLE`) plain."""
+    baselines = baselines or {}
+    shown = pd.DataFrame([[_season_format(stat)(v) for v in df.loc[stat]] for stat in df.index],
+                         index=df.index, columns=df.columns)
+
+    def _color(stat: str, v) -> str:
+        arr = baselines.get(stat)
+        if stat in CHART_STYLE or arr is None or not len(arr) or pd.isna(v):
+            return ""
+        pct = percentile_of(float(v), arr)
+        return percentile_color(100.0 - pct if stat in CHART_LOWER_IS_BETTER else pct)
+
+    colors = pd.DataFrame([[_color(stat, v) for v in df.loc[stat]] for stat in df.index],
+                          index=df.index, columns=df.columns)
+    return _centered(shown.style.apply(lambda _: colors, axis=None))
+
+
+def style_team_chart(df: pd.DataFrame, team: str):
+    """A `replay_core.team_chart_summary`: the team's offense and defense,
+    each value with its place ("18th", "4th highest" for the calls) and the
+    results colored by percentile among the teams; League plain."""
+    off_col, def_col = f"{team} offense", f"{team} defense"
+    shown = pd.DataFrame({
+        off_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Offense"], df["Off rank"])],
+        def_col: [_ranked(s, v, p) for s, v, p in zip(df.index, df["Defense"], df["Def rank"])],
+        "League": [_season_format(s)(v) for s, v in zip(df.index, df["League"])],
+    }, index=df.index)
+    pcts = {off_col: df["_off_pct"], def_col: df["_def_pct"]}
+    return _centered(shown.style.apply(
+        lambda col: [percentile_color(p) for p in pcts[col.name]] if col.name in pcts
+        else [""] * len(col)))
 
 
 def _result_tint(result: str) -> str:
