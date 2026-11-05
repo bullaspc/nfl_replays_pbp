@@ -676,6 +676,11 @@ def build_live_pbp(summary: dict, sched: dict, models: dict | None, fg_table: pd
         import nflfastr_models as nm
         df = nm.add_ep_wp(df, models, fg_table)
     df["play_id"] = np.arange(1, len(df) + 1, dtype=float)
+    # The formation, as nflfastR reads it from the same text: "(Shotgun)",
+    # "(No Huddle, Shotgun)".
+    desc = df["desc"].fillna("")
+    df["shotgun"] = desc.str.contains("Shotgun", regex=False).astype(float)
+    df["no_huddle"] = desc.str.contains("No Huddle", regex=False).astype(float)
     for c in columns:
         if c not in df.columns:
             df[c] = np.nan

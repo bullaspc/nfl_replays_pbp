@@ -1088,6 +1088,27 @@ def season_nextgen(league: League, season: int, stamp: str, weeks: tuple[int, in
                            core.VENUES[venue])
 
 
+@st.cache_data(max_entries=4, show_spinner=False)
+def _season_chart_games(league_name: str, season: int, stamp: str, chart_stamp: str,
+                        weeks: tuple[int, int], part: str, play_filter: core.PlayFilter) -> dict:
+    league = LEAGUES[league_name]
+    pbp = core.with_charting(season_plays(league, season, stamp, weeks, part, play_filter),
+                             league.charting(season))
+    return {side: core.chart_by_game(pbp, side) for side in ("posteam", "defteam")}
+
+
+def season_chart_games(league: League, season: int, stamp: str, weeks: tuple[int, int], part: str,
+                       play_filter: core.PlayFilter = core.NO_FILTER) -> dict[str, pd.DataFrame]:
+    """Each team-game's charting counts over the selection (`core.chart_by_game`,
+    "posteam" for offenses, "defteam" for what each defense faced), for the
+    Season stats Team tab's Charting by game: the play text's formation, plus
+    FTN's charting where the league has it (`League.charting`)."""
+    chart_stamp = (nflverse_stamp("ftn_charting")
+                   if isinstance(league, NFLLeague) and season >= CHART_FIRST_SEASON else "")
+    return _season_chart_games(league.name, season, stamp, chart_stamp, tuple(weeks), part,
+                               play_filter)
+
+
 @st.cache_data(max_entries=2, show_spinner=False)
 def _season_player_ids(league_name: str, season: int, stamp: str) -> pd.DataFrame:
     return core.player_ids(LEAGUES[league_name].season_pbp(season, stamp))
@@ -1197,8 +1218,10 @@ def pregame(league: League, season: int, stamp: str, game: pd.Series) -> Pregame
                  home: core.matchup_table(off_table, def_table, home, away, chart_rows)}
                 if chart_rows else {})
     n_charted, n_games = tables["charted"]
-    charting_note = ("FTN Data's charting via nflverse, over the plays charted"
-                     + (f" ({n_charted} of {n_games} games)" if n_charted < n_games else "")
+    charting_note = ("Under C % and No-huddle % from the play text"
+                     + ("; the rest FTN Data's charting via nflverse, over the plays charted"
+                        + (f" ({n_charted} of {n_games} games)" if n_charted < n_games else "")
+                        if "Motion %" in chart_rows else "")
                      if charting else "")
 
     years = league.class_years(season, stamp)

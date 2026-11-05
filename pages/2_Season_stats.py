@@ -23,13 +23,14 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_schedule, with_class_year, with_nextgen,
+    situational_table, team_chart_games, team_schedule, with_class_year, with_nextgen,
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
     style_availability_summary, SCATTER_MAX_LABELS,
     style_defense_table, style_injury_report,
-    style_player_table, style_season_table, style_snap_table, style_sr_table, style_team_season,
+    style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
+    style_team_season,
     style_team_schedule, style_weekly_snaps,
 )
 
@@ -54,6 +55,29 @@ PLAYER_KINDS = {"Passing": "passing", "Rushing": "rushing", "Receiving": "receiv
 _TODAY = date.today()
 # A season is named for the year it starts in; before September it's last year's.
 LATEST_SEASON = _TODAY.year if _TODAY.month >= 9 else _TODAY.year - 1
+
+
+def _charting_note(side: str, ftn: bool, n_charted: int, n_games: int) -> str:
+    """What the charting columns are, for the captions."""
+    note = ("**Charting**, downs only: Under C % (snaps under center, not in the shotgun or "
+            "pistol) and No-huddle % per snap, from the play text")
+    if not ftn:
+        return note + (f". FTN's charting (motion, play action, blitzes, catchable throws …) "
+                       f"covers the NFL from {leagues.CHART_FIRST_SEASON} on.")
+    return (note + "; the rest by FTN Data via nflverse (CC-BY-SA 4.0), over the plays FTN has "
+            "charted" + (f" ({n_charted} of the selection's {n_games} games so far)"
+                         if n_charted < n_games else "")
+            + ". Motion % and RPO % are per snap; PA % (play action) and Screen % per dropback; "
+            f"Blitz % is dropbacks with a blitzer, Rushers the pass rushers per dropback, 8+ Box % "
+            f"designed runs against {HEAVY_BOX}+ in the box"
+            + (": the defense's own calls, the rest what it faced" if side == "defteam"
+               else ": the defenses' calls")
+            + ". PA EPA/play is per play-action dropback, Blitz EPA/play per dropback against a "
+            "blitz" + (" (when this defense blitzed)" if side == "defteam" else "")
+            + ". Catchable % is throws FTN charted catchable, of those aimed (no throwaways); "
+            "Drop % is drops per catchable ball; INT-worthy % throws that should have been "
+            "picked, per throw.")
+
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -175,11 +199,13 @@ with tab_teams:
                                 key="_ss_view") or "Efficiency"
     side = SIDES[side_label]
     full = team_tables["offense" if side == "posteam" else "defense"]
-    charting = CHART_ROWS[0] in full.columns  # FTN's charting: NFL 2022 on
+    # The play text's formation (Under C %, No-huddle %) and FTN's charting (NFL 2022 on).
+    charting = any(c in full.columns for c in CHART_ROWS)
+    ftn = "Motion %" in full.columns
     if view == "Charting" and not charting:
-        st.info(f"FTN's charting covers the NFL from {leagues.CHART_FIRST_SEASON} on."
-                if league.season_group_label == "Conference" or season < leagues.CHART_FIRST_SEASON
-                else f"FTN's charting of {season} couldn't be read. Try again later.")
+        st.info("No charting for this season: FTN's covers the NFL from "
+                f"{leagues.CHART_FIRST_SEASON} on, and this season's play text doesn't mark the "
+                "formation.")
     else:
         lower = season_lower_is_better(side)
         ranks = season_ranks(full, lower)
@@ -201,27 +227,15 @@ with tab_teams:
             + ("; for a defense, less allowed is better and more turnovers and sacks forced is"
                if side == "defteam" else "") + "). Plays, dropbacks, runs and snaps aren't "
             "colored: volume isn't good or bad"
-            + ("; nor are the charting's choices (motion, under center, no-huddle, RPO, play "
-               "action, screens, blitzes, rushers, 8+ box)" if charting and view in ("Charting", "All")
-               else "") + ". Sorted best first."
+            + ("; nor are the charting's choices ("
+               + ("motion, under center, no-huddle, RPO, play action, screens, blitzes, rushers, "
+                  "8+ box" if ftn else "under center, no-huddle") + ")"
+               if charting and view in ("Charting", "All") else "") + ". Sorted best first."
             + (" Adjusted for the " + ("offenses" if side == "defteam" else "defenses")
                + " faced; play counts, penalties and the charting's choices are as played."
                if adjusted else ""))
         if charting and view in ("Charting", "All"):
-            st.caption(
-                "**Charting** by FTN Data via nflverse (CC-BY-SA 4.0), downs only, over the plays "
-                "FTN has charted"
-                + (f": {n_charted} of the selection's {n_games} games so far" if n_charted < n_games
-                   else "") + ". Motion %, Under C % (under center), No-huddle % and RPO % are "
-                "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with "
-                f"a blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
-                f"{HEAVY_BOX}+ in the box"
-                + (": the defense's own calls, the rest what it faced" if side == "defteam" else
-                   ": the defenses' calls") + ". PA EPA/play is per play-action dropback, Blitz "
-                "EPA/play per dropback against a blitz"
-                + (" (when this defense blitzed)" if side == "defteam" else "") + ". Catchable % "
-                "is throws FTN charted catchable, of those aimed (no throwaways); Drop % is drops "
-                "per catchable ball; INT-worthy % throws that should have been picked, per throw.")
+            st.caption(_charting_note(side, ftn, n_charted, n_games))
 
 # ---------- Team ----------
 with tab_team:
@@ -249,7 +263,7 @@ with tab_team:
     st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays"
                + ("; the charting's choices (motion, play action, blitzes …) are ranked by how high or "
                   "low they run, not best to worst, and aren't colored"
-                  if CHART_ROWS[0] in team_tables["offense"].columns else "") + ".")
+                  if any(c in team_tables["offense"].columns for c in CHART_ROWS) else "") + ".")
 
     # Whole games, for the final score (and the snap counts below); the EPA
     # follows the situation filters, over both offenses (not `pbp`, which
@@ -273,6 +287,30 @@ with tab_team:
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
                    "defense. Colors rank each game against every team-game in the selection: "
                    "green = top, red = bottom.")
+    chart_games = leagues.season_chart_games(league, season, stamp, weeks, part, play_filter)
+    if chart_games["posteam"].shape[1]:  # the play text's formation and/or FTN's charting
+        with st.expander("Charting by game", expanded=False, key="_ss_exp_chart_games"):
+            cg_label = st.segmented_control("Side", list(SIDES), default="Offense",
+                                            key="_ss_chart_side",
+                                            label_visibility="collapsed") or "Offense"
+            cg_side = SIDES[cg_label]
+            by_game, shades = team_chart_games(chart_games[cg_side], sel_games, team, cg_side)
+            if by_game.empty:
+                st.caption("No charted plays in this selection's games.")
+            else:
+                stat_table(style_chart_games(by_game, shades))
+                n_charted, n_games = tables["charted"]
+                ftn_games = "Motion %" in by_game.index
+                st.caption(f"{cg_label}: each game as played, downs only, over the same plays as "
+                           "the Schedule's EPA; **Season** adds them up (not opponent-adjusted). "
+                           "Results are colored against every team-game in the selection (green = "
+                           "best); the calls stay plain. Under C % and No-huddle % come from the "
+                           "play text"
+                           + (", the rest from FTN Data's charting via nflverse (CC-BY-SA 4.0), "
+                              "over the plays it has charted"
+                              + (f" ({n_charted} of the selection's {n_games} games so far)"
+                                 if n_charted < n_games else "") if ftn_games else "")
+                           + ". Definitions: the Teams tab's Charting view and Methodology.")
 
     st.markdown("<span id='ss-situations'></span>**Situational success rates**",
                 unsafe_allow_html=True)
@@ -581,21 +619,25 @@ flags) per snap.
 probability model per pass{" (the college data has none, so it's blank)" if _college else ""}. RYOE/att
 is rushing yards over expected per designed run: each run's yards less the league's average
 designed run from the same down, distance and field position (`models/xrush_yards.csv`).
-{"" if _college else f'''
-**Charting** (Teams' Charting view, {leagues.CHART_FIRST_SEASON} on). FTN Data's charting of every
-snap, via nflverse (CC-BY-SA 4.0), published weekly during the season; it can be a game or two
-behind the play-by-play, so each number counts the charted plays only, on downs. Motion %, Under C %
-(QB under center, not in the shotgun or pistol), No-huddle % and RPO % are per snap; PA % (play
+
+**Charting** (Teams' Charting view, Team tab cards and Charting by game). Under C % (snaps with
+the QB under center, not in the shotgun or pistol) and No-huddle % come from the play text, which
+marks both{" in the stat crew's text most college games have had since 2025 (each game's crew "
+"marks it, so a game is only as consistent as its crew)" if _college else ", every game"}; snaps on
+downs whose text marks the formation.{"" if _college else f''' The rest is
+FTN Data's charting of every snap ({leagues.CHART_FIRST_SEASON} on), via nflverse (CC-BY-SA 4.0),
+published weekly during the season; it can be a game or two behind the play-by-play, so each of
+those numbers counts the charted plays only, on downs. Motion % and RPO % are per snap; PA % (play
 action) and Screen % per dropback (pass attempts plus sacks, no spikes); Blitz % is the dropbacks
 where FTN counted a blitzer, Rushers the average pass rushers per dropback, and 8+ Box % the
-designed runs against {HEAVY_BOX} or more defenders in the box. They're choices rather than results,
-so they aren't colored or adjusted, and the Team tab ranks them by how high or low they run ("4th
-highest of 32"), not best to worst; for a defense Blitz %, Rushers and 8+ Box % are its own calls
-and the others what it faced. PA EPA/play is EPA per play-action dropback and Blitz EPA/play per
-dropback against a blitz (for a defense, when it blitzed). Catchable % is the throws FTN rated
-catchable among those aimed at a receiver (throwaways left out), Drop % the drops per catchable
-ball and INT-worthy % the throws that should have been intercepted, per throw.
-'''}
+designed runs against {HEAVY_BOX} or more defenders in the box. PA EPA/play is EPA per play-action
+dropback and Blitz EPA/play per dropback against a blitz (for a defense, when it blitzed).
+Catchable % is the throws FTN rated catchable among those aimed at a receiver (throwaways left
+out), Drop % the drops per catchable ball and INT-worthy % the throws that should have been
+intercepted, per throw.'''} The calls are choices rather than results, so they aren't colored or
+adjusted, and they're ranked by how high or low they run ("4th highest of 32"), not best to worst;
+for a defense{"" if _college else " Blitz %, Rushers and 8+ Box % are its own calls and"} the others
+are what it faced.
 **Per game and colors.** Counts and yards are divided by the games each team played. Every
 colored cell is the team's percentile within its column among the ranked teams: green is best,
 red worst. Where lower is better (turnovers, penalties, sacks, stuffs …) the scale is flipped,
