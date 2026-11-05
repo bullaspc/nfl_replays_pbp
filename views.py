@@ -335,6 +335,20 @@ def style_team_schedule(df: pd.DataFrame):
     return _centered(styled)
 
 
+def style_chart_games(df: pd.DataFrame, shades: pd.DataFrame):
+    """A `replay_core.team_chart_games` table (stats as rows, a column per
+    game, then Season): each value formatted as the season tables' are, the
+    results colored by their percentile among the selection's team-games
+    (`shades`; the calls and Season stay plain), Season in bold."""
+    shown = pd.DataFrame([[_season_format(stat)(v) for v in df.loc[stat]] for stat in df.index],
+                         index=df.index, columns=df.columns)
+    colors = pd.DataFrame([[percentile_color(p) for p in shades.loc[stat]] for stat in df.index],
+                          index=df.index, columns=df.columns)
+    styled = (shown.style.apply(lambda _: colors, axis=None)
+              .set_properties(subset=["Season"], **{"font-weight": "bold"}))
+    return _centered(styled)
+
+
 def _result_tint(result: str) -> str:
     """Green for a win ("W 27–20"), red for a loss, nothing for a tie or a
     game still to play ("Wed Nov 5")."""

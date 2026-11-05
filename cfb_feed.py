@@ -706,6 +706,12 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     zone = text.str.extract(_CREW_PASS_DIR)
     out["pass_length"] = zone[0].where(real_pass)
     out["pass_location"] = zone[1].where(real_pass)
+    # The formation, from stat-crew text only ('No Huddle-Shotgun #9 L.Avant
+    # rush ...'): the older text never marks it, so it's NaN there, not "under
+    # center".
+    crew = text.str.contains(_CREW)
+    out["shotgun"] = text.str.contains("Shotgun", regex=False).astype(float).where(crew)
+    out["no_huddle"] = text.str.contains("No Huddle", regex=False).astype(float).where(crew)
 
     live = ~no_play & ~lost_td
     out["touchdown"] = (_b(df["touchdown"]) & live).astype(float)

@@ -40,6 +40,10 @@ PBP_COLS = [
     # (add_expected_rush(), from the league's table in models/)
     "cpoe", "xrush_yards",
     "run_location", "run_gap", "pass_location", "pass_length",
+    # the formation the play text marks, as nflfastR reads it: "Shotgun"
+    # (pistol included) and "No Huddle", 1/0; NaN where the text doesn't say
+    # (college text without the stat crew's markers)
+    "shotgun", "no_huddle",
     "third_down_converted", "third_down_failed",
     "fourth_down_converted", "fourth_down_failed",
     "goal_to_go", "yardline_100", "drive",
@@ -1236,19 +1240,26 @@ def venue_plays(pbp: pd.DataFrame, venue: str | None, side: str = "posteam") -> 
     return pbp if venue is None else pbp[pbp[side] == pbp[venue]]
 
 
-# ---------- FTN charting ----------
-# FTN Data's charting of every NFL snap since 2022 (nflverse's ftn_charting
-# release, published weekly during the season, CC-BY-SA 4.0: credit FTN Data
-# via nflverse): what the play-by-play doesn't say, such as motion, play
-# action, the blitz and whether a throw was catchable. `with_charting()` puts
-# it on the play-by-play; the season team tables then add `CHART_ROWS`, each
-# over the charted plays only (FTN can be a game or two behind nflverse's pbp).
-CHART_FLAGS = ["is_motion", "is_no_huddle", "is_rpo", "is_play_action", "is_screen_pass",
+# ---------- Charting ----------
+# What the play-by-play doesn't say, team by team. Two numbers come from the
+# play text itself, so every game of either league has them where the text
+# marks the formation (`shotgun` / `no_huddle`: nflverse's, and the live and
+# college loaders read them the same way): Under C % and No-huddle %. The
+# rest is FTN Data's charting of every NFL snap since 2022 (nflverse's
+# ftn_charting release, published weekly during the season, CC-BY-SA 4.0:
+# credit FTN Data via nflverse): motion, play action, the blitz, whether a
+# throw was catchable. `with_charting()` puts it on the play-by-play; each FTN
+# number counts the charted plays only (FTN can be a game or two behind the
+# pbp). `_chart_parts()` gives each play's share of every number, so a team's
+# season (`season_team_table`) and each of its games (`chart_by_game`) add up
+# the same counts.
+CHART_FLAGS = ["is_motion", "is_rpo", "is_play_action", "is_screen_pass",
                "is_throw_away", "is_catchable_ball", "is_drop", "is_interception_worthy"]
 CHART_COUNTS = ["n_pass_rushers", "n_blitzers", "n_defense_box"]
 CHART_ROWS = ["Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen %", "Blitz %",
               "Rushers", "8+ Box %", "PA EPA/play", "Blitz EPA/play", "Catchable %", "Drop %",
               "INT-worthy %"]
+FORMATION_ROWS = ["Under C %", "No-huddle %"]  # from the play text, not FTN
 # Choices, not results (an offense's, or for a defense its own blitzes, rushers
 # and box): never colored, like the volumes, and ranked only by how high or low
 # they run ("4th highest", `style_place`), never best to worst.
@@ -1257,16 +1268,25 @@ CHART_STYLE = {"Motion %", "Under C %", "No-huddle %", "RPO %", "PA %", "Screen 
 CHART_LOWER_IS_BETTER = {"Drop %", "INT-worthy %"}
 CHART_RATES = {c for c in CHART_ROWS if c.endswith("%")}  # fractions, 0–1
 HEAVY_BOX = 8        # defenders in the box on a designed run, as NGS's 8+D%
-_QB_SPOTS = {"S", "U", "P"}  # FTN's qb_location: shotgun, under center, pistol
+# Each number as (numerator, denominator) of `_chart_parts()` columns.
+_CHART_RATIO = {
+    "Motion %": ("motion", "snap"), "Under C %": ("under", "f_snap"),
+    "No-huddle %": ("no_huddle", "f_snap"), "RPO %": ("rpo", "snap"), "PA %": ("pa", "drop"),
+    "Screen %": ("screen", "drop"), "Blitz %": ("blitzed", "blitz_n"),
+    "Rushers": ("rushers", "rushers_n"), "8+ Box %": ("heavy", "box_n"),
+    "PA EPA/play": ("pa_epa", "pa_epa_n"), "Blitz EPA/play": ("blitz_epa", "blitz_epa_n"),
+    "Catchable %": ("catchable", "aimed"), "Drop %": ("dropped", "catchable"),
+    "INT-worthy %": ("int_worthy", "thrown"),
+}
 
 
 def with_charting(pbp: pd.DataFrame, charting: pd.DataFrame | None) -> pd.DataFrame:
-    """`pbp` with FTN's charting (`CHART_FLAGS` as 1/0, `CHART_COUNTS`,
-    `qb_location`) matched by game and play id, and `_ftn` True on the plays
-    FTN has charted; `pbp` unchanged without charting."""
+    """`pbp` with FTN's charting (`CHART_FLAGS` as 1/0, `CHART_COUNTS`)
+    matched by game and play id, and `_ftn` True on the plays FTN has
+    charted; `pbp` unchanged without charting."""
     if charting is None or charting.empty or pbp.empty:
         return pbp
-    cols = [c for c in ["qb_location", *CHART_FLAGS, *CHART_COUNTS] if c in charting.columns]
+    cols = [c for c in [*CHART_FLAGS, *CHART_COUNTS] if c in charting.columns]
     ftn = charting.drop_duplicates(["nflverse_game_id", "nflverse_play_id"])
     ftn = ftn[cols].set_axis(pd.MultiIndex.from_arrays(
         [ftn["nflverse_game_id"].astype(str), ftn["nflverse_play_id"].astype(float)]))
@@ -1275,8 +1295,7 @@ def with_charting(pbp: pd.DataFrame, charting: pd.DataFrame | None) -> pd.DataFr
     out = pbp.copy()
     out["_ftn"] = key.isin(ftn.index)
     for c in cols:
-        out[c] = (hit[c].astype(str).str.strip().where(out["_ftn"]) if c == "qb_location"
-                  else pd.to_numeric(hit[c].astype(float), errors="coerce"))
+        out[c] = pd.to_numeric(hit[c].astype(float), errors="coerce")
     return out
 
 
@@ -1284,46 +1303,62 @@ def _chart_col(td: pd.DataFrame, col: str) -> pd.Series:
     return td[col] if col in td.columns else pd.Series(np.nan, index=td.index)
 
 
-def _chart_stats(td: pd.DataFrame) -> dict[str, float]:
-    """FTN's numbers for offensive plays `td` (one offense's, or what one
-    defense faced), downs only and over the charted plays: Motion, Under C
-    (under center, of the snaps with a QB spot), No-huddle and RPO per snap;
-    PA and Screen per dropback (pass attempts plus sacks, no spikes); Blitz
-    (a blitzer) per dropback and Rushers per dropback; 8+ Box per designed
-    run; EPA per play-action dropback and per dropback against a blitz;
-    Catchable per aimed throw (no throwaways), Drop per catchable ball and
-    INT-worthy per throw. FTN's impossible counts (0 or 50-odd rushers) are
-    left out."""
-    flag = lambda c: _chart_col(td, c) == 1
-    charted = _chart_col(td, "_ftn").fillna(False).astype(bool) & td["down"].notna()
-    snap = charted & ((td["pass_attempt"].fillna(0) == 1) | (td["rush_attempt"].fillna(0) == 1))
-    drop = snap & (td["pass_attempt"].fillna(0) == 1) & (td["qb_spike"].fillna(0) == 0)
-    thrown = drop & (td["sack"].fillna(0) == 0)
-    aimed = thrown & ~flag("is_throw_away")
-    run = charted & _designed_runs(td)
-    rushers = _chart_col(td, "n_pass_rushers").where(lambda s: s.between(1, 11))
-    blitzers = _chart_col(td, "n_blitzers").where(lambda s: s.between(0, 10) & rushers.notna())
-    box = _chart_col(td, "n_defense_box").where(lambda s: s.between(1, 11))
-    spot = _chart_col(td, "qb_location").where(lambda s: s.isin(_QB_SPOTS))
-    pa, blitzed = drop & flag("is_play_action"), drop & (blitzers > 0)
-    catchable = aimed & flag("is_catchable_ball")
-    n_snap, n_drop = snap.sum(), drop.sum()
-    return {
-        "Motion %":       _rate((snap & flag("is_motion")).sum(), n_snap),
-        "Under C %":      _rate((snap & (spot == "U")).sum(), (snap & spot.notna()).sum()),
-        "No-huddle %":    _rate((snap & flag("is_no_huddle")).sum(), n_snap),
-        "RPO %":          _rate((snap & flag("is_rpo")).sum(), n_snap),
-        "PA %":           _rate(pa.sum(), n_drop),
-        "Screen %":       _rate((drop & flag("is_screen_pass")).sum(), n_drop),
-        "Blitz %":        _rate(blitzed.sum(), (drop & blitzers.notna()).sum()),
-        "Rushers":        float(rushers[drop].mean()) if (drop & rushers.notna()).any() else np.nan,
-        "8+ Box %":       _rate((run & (box >= HEAVY_BOX)).sum(), (run & box.notna()).sum()),
-        "PA EPA/play":    float(td.loc[pa, "epa"].mean()) if pa.any() else np.nan,
-        "Blitz EPA/play": float(td.loc[blitzed, "epa"].mean()) if blitzed.any() else np.nan,
-        "Catchable %":    _rate(catchable.sum(), aimed.sum()),
-        "Drop %":         _rate((catchable & flag("is_drop")).sum(), catchable.sum()),
-        "INT-worthy %":   _rate((thrown & flag("is_interception_worthy")).sum(), thrown.sum()),
-    }
+def _chart_parts(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Per play (downs only), its part in each charting number
+    (`_CHART_RATIO`): from the play text, the snaps whose text marks the
+    formation (f_snap) and those under center or in no-huddle (Under C:
+    under center, i.e. not shotgun or pistol); where FTN has charted the
+    play, snaps (Motion, RPO), dropbacks (pass attempts plus sacks, no
+    spikes: PA, Screen; Blitz is a blitzer, Rushers the pass rushers per
+    dropback), designed runs against 8+ in the box, EPA on play-action
+    dropbacks and against a blitz, throws, aimed throws (no throwaways),
+    catchable ones, drops and INT-worthy throws. FTN's impossible counts (0
+    or 50-odd rushers) are left out. No columns for a source `pbp` doesn't
+    have: the formation where no play's text marks it (older college text),
+    FTN's without `with_charting`."""
+    on_down = pbp["down"].notna()
+    passed = pbp["pass_attempt"].fillna(0) == 1
+    snaps = on_down & (passed | (pbp["rush_attempt"].fillna(0) == 1))
+    parts = {}
+    shotgun = pd.to_numeric(_chart_col(pbp, "shotgun"), errors="coerce")
+    if (snaps & shotgun.notna()).any():
+        f_snap = snaps & shotgun.notna()
+        parts.update(f_snap=f_snap, under=f_snap & (shotgun == 0),
+                     no_huddle=f_snap & (_chart_col(pbp, "no_huddle") == 1))
+    if "_ftn" in pbp.columns:
+        flag = lambda c: _chart_col(pbp, c) == 1
+        snap = snaps & pbp["_ftn"].fillna(False).astype(bool)
+        drop = snap & passed & (pbp["qb_spike"].fillna(0) == 0)
+        thrown = drop & (pbp["sack"].fillna(0) == 0)
+        aimed = thrown & ~flag("is_throw_away")
+        run = snap & _designed_runs(pbp)
+        rushers = _chart_col(pbp, "n_pass_rushers").where(lambda v: v.between(1, 11))
+        blitzers = _chart_col(pbp, "n_blitzers").where(lambda v: v.between(0, 10) & rushers.notna())
+        box = _chart_col(pbp, "n_defense_box").where(lambda v: v.between(1, 11))
+        epa = pbp["epa"]
+        pa, blitzed = drop & flag("is_play_action"), drop & (blitzers > 0)
+        catchable = aimed & flag("is_catchable_ball")
+        has_rushers = drop & rushers.notna()
+        parts.update(
+            snap=snap, motion=snap & flag("is_motion"), rpo=snap & flag("is_rpo"),
+            drop=drop, pa=pa, screen=drop & flag("is_screen_pass"),
+            blitz_n=drop & blitzers.notna(), blitzed=blitzed,
+            rushers=rushers.where(has_rushers, 0.0), rushers_n=has_rushers,
+            box_n=run & box.notna(), heavy=run & (box >= HEAVY_BOX),
+            pa_epa=epa.where(pa & epa.notna(), 0.0), pa_epa_n=pa & epa.notna(),
+            blitz_epa=epa.where(blitzed & epa.notna(), 0.0), blitz_epa_n=blitzed & epa.notna(),
+            thrown=thrown, aimed=aimed, catchable=catchable,
+            dropped=catchable & flag("is_drop"),
+            int_worthy=thrown & flag("is_interception_worthy"))
+    return pd.DataFrame(parts, index=pbp.index).astype(float)
+
+
+def chart_rates(sums: pd.DataFrame) -> pd.DataFrame:
+    """`CHART_ROWS` from summed `_chart_parts()` (one row per team, or per
+    team-game), only those the parts have; NaN where a denominator is 0."""
+    rows = [r for r in CHART_ROWS if _CHART_RATIO[r][1] in sums.columns]
+    return pd.DataFrame({r: sums[_CHART_RATIO[r][0]] / sums[_CHART_RATIO[r][1]].where(
+        sums[_CHART_RATIO[r][1]] > 0) for r in rows}, index=sums.index)
 
 
 def charted_games(pbp: pd.DataFrame) -> tuple[int, int]:
@@ -1332,6 +1367,51 @@ def charted_games(pbp: pd.DataFrame) -> tuple[int, int]:
     if "_ftn" not in pbp.columns:
         return 0, games
     return int(pbp.loc[pbp["_ftn"], "game_id"].nunique()), games
+
+
+def chart_by_game(pbp: pd.DataFrame, side: str = "posteam") -> pd.DataFrame:
+    """`_chart_parts()` summed per team-game: index (game_id, team), the
+    offense's with side="posteam", what each defense faced with "defteam"."""
+    parts = _chart_parts(pbp)
+    keep = pbp[side].notna()
+    return parts[keep].groupby([pbp.loc[keep, "game_id"], pbp.loc[keep, side]]).sum()
+
+
+def team_chart_games(sums: pd.DataFrame, games: pd.DataFrame, team: str,
+                     side: str = "posteam") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`team`'s charting game by game: `sums` (`chart_by_game()` over the
+    selection, every team) for its games in `games` (whole games, in order),
+    as a table with the stats as rows and a column per game ("8 @ SEA"), then
+    Season (its games added up, as played). Also each cell's 0–100 percentile
+    among every team-game in `sums` (100 = best), NaN for the choices
+    (`CHART_STYLE`) and the Season column."""
+    rates = chart_rates(sums)
+    mine = games[(games["home_team"] == team) | (games["away_team"] == team)]
+    g = mine.groupby("game_id").agg(week=("week", "first"), postseason=("postseason", "first"),
+                                    home_team=("home_team", "first"),
+                                    away_team=("away_team", "first")).reset_index()
+    g = g.sort_values(["postseason", "week", "game_id"], kind="stable")
+    g = g[[(gid, team) in rates.index for gid in g["game_id"]]]
+    if g.empty or rates.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    lower = season_lower_is_better(side)
+    pct = rates.rank(pct=True) * 100
+    for col in pct.columns:
+        if col in lower:
+            pct[col] = 100.0 - pct[col] + 100.0 / max(rates[col].notna().sum(), 1)
+        if col in CHART_STYLE:
+            pct[col] = np.nan
+    # As the Schedule's Week and Opp: "8 @ SEA", "19 (post) vs BUF".
+    labels = [f"{int(r.week)}{' (post)' if r.postseason else ''} "
+              f"{'vs' if r.home_team == team else '@'} "
+              f"{r.away_team if r.home_team == team else r.home_team}" for r in g.itertuples()]
+    keys = list(zip(g["game_id"], [team] * len(g)))
+    table = rates.loc[keys].set_axis(labels).T
+    table["Season"] = chart_rates(sums.loc[keys].sum().to_frame().T).iloc[0]
+    shades = pct.loc[keys].set_axis(labels).T
+    shades["Season"] = np.nan
+    table.index.name = shades.index.name = "Stat"
+    return table, shades
 
 
 # ---------- Season ----------
@@ -1365,10 +1445,12 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
     then Team stats and Line play (`SEASON_COLS`) for its offense, or with
     side="defteam" what its defense allowed. Counts (`SEASON_PER_GAME`) are
     per game. `venue` ("home_team" / "away_team", `VENUES`) keeps each team's
-    own home or away games. Play-by-play with FTN's charting
-    (`with_charting`) adds `CHART_ROWS`."""
+    own home or away games. Then the `CHART_ROWS` the play-by-play has
+    (`_chart_parts`): Under C % and No-huddle % where its text marks the
+    formation, the rest with FTN's charting (`with_charting`)."""
     teams = sorted(pbp[side].dropna().unique())
-    charted = "_ftn" in pbp.columns
+    parts = _chart_parts(pbp)
+    chart_cols = list(chart_rates(parts.head(0)).columns)
     rows = {}
     for team in teams:
         plays = pbp if venue is None else pbp[pbp[venue] == team]
@@ -1377,13 +1459,13 @@ def season_team_table(pbp: pd.DataFrame, side: str = "posteam",
             continue
         stats = dict(zip(TEAM_STAT_ROWS, _team_col(plays, team, side)))
         stats.update(_line_stats(mine))
-        if charted:
-            stats.update(_chart_stats(mine))
+        if chart_cols:
+            stats.update(chart_rates(parts.loc[mine.index].sum().to_frame().T).iloc[0].to_dict())
         n = int(mine["game_id"].nunique())
         rows[team] = {"Games": n, **{k: (v / n if k in SEASON_PER_GAME and n else v)
                                      for k, v in stats.items()}}
     df = pd.DataFrame.from_dict(rows, orient="index",
-                                columns=SEASON_COLS + (CHART_ROWS if charted else []))
+                                columns=SEASON_COLS + chart_cols)
     df.index.name = "Team"
     if side != "posteam":
         df = df.drop(columns=[c for c in SEASON_DEFENSE_SKIP if c in df.columns])
