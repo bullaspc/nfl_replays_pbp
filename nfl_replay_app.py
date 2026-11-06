@@ -32,7 +32,7 @@ from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     HEAVY_BOX, PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
-    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, with_class_year, with_draft, draft_note, wp_crossings,
+    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, special_teams_box, kick_log, top_kickers, top_punters, with_class_year, with_draft, draft_note, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
@@ -40,7 +40,7 @@ from replay_core import (
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
-    stat_table, style_chart_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
+    stat_table, style_chart_table, style_defense_table, style_kick_log, style_kicking_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
@@ -655,7 +655,7 @@ st.divider()
 # One row of links to the sections, sticky under Streamlit's header
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
-             ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
+             ("Kicking", "kicking"), ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
              ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
@@ -665,6 +665,13 @@ st.subheader("Boxscore", anchor="boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
+# Kicking and punting so far, per team: field goals made/attempted overall and
+# by distance, the longest, extra points; punts with gross and net average.
+st.caption("Kicking and punting")
+stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
+st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
+           "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
+           "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks")
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -1212,6 +1219,36 @@ if _snap is not None:
         st.caption(f"Clock scenarios show up in the last {SCENARIO_SECS // 60} minutes of each half.")
 elif not revealed.empty:
     st.caption("Nothing to estimate: the half is over, or the last play hasn't been scored yet.")
+
+# ---------- Kicking ----------
+# Each team's kickers and punters so far, then every field goal try and punt.
+st.subheader("Kicking", anchor="kicking")
+if hide_leaders:
+    st.caption("Kickers and punters are hidden with the player leaders (Spoiler shield).")
+else:
+    col_a, col_h = st.columns(2)
+    for col, team in [(col_a, away), (col_h, home)]:
+        with col:
+            st.markdown(f"**{team}**")
+            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
+                                   ("Punting", top_punters(revealed, team))]:
+                st.caption(_label)
+                if not _st_df.empty:
+                    stat_table(style_kicking_table(with_draft(with_class_year(
+                        _st_df, class_years, team), draft_board, team)), hide_index=True)
+                else:
+                    st.caption("None yet")
+    _kicks_df = kick_log(revealed)
+    with st.expander(f"Field goal tries and punts ({len(_kicks_df)})", expanded=False,
+                     key="_exp_kicks"):
+        if _kicks_df.empty:
+            st.caption("No kicks yet.")
+        else:
+            stat_table(style_kick_log(_kicks_df), hide_index=True)
+    st.caption("FG and its distance bands: made/attempted · Long: longest made (yds) · FG EPA / "
+               "Punt EPA: expected points his tries or punts added · Avg / Net: gross and net yards "
+               "per punt (net takes off the return and 20 a touchback) · In20: punts that left the "
+               "receiver inside his 20 · TB: touchbacks.")
 
 # ---------- Explosive plays ----------
 if not revealed.empty:

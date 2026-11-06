@@ -11,6 +11,7 @@ replay_core computes, views styles.
 
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -18,7 +19,8 @@ import leagues
 from replay_core import (
     ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
-    PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL,
+    PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL, FG_BANDS, KICK_GLOSSARY, KICK_MIN_PER_GAME, KICK_RATE_COLS,
+    KICK_VOLUME_COL, PUNT_GLOSSARY, PUNT_TOUCHBACK_YDS,
     OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
@@ -29,7 +31,7 @@ from replay_core import (
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
     style_availability_summary, SCATTER_MAX_LABELS,
-    style_defense_table, style_injury_report,
+    style_defense_table, style_injury_report, style_kicking_table,
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
     style_team_chart, style_team_season,
     style_team_schedule, style_weekly_snaps,
@@ -52,7 +54,7 @@ TEAM_VIEWS = {
 }
 SIDES = {"Offense": "posteam", "Defense (allowed)": "defteam"}
 PLAYER_KINDS = {"Passing": "passing", "Rushing": "rushing", "Receiving": "receiving",
-                "Defense": "defenders"}
+                "Defense": "defenders", "Kicking": "kicking", "Punting": "punting"}
 _TODAY = date.today()
 # A season is named for the year it starts in; before September it's last year's.
 LATEST_SEASON = _TODAY.year if _TODAY.month >= 9 else _TODAY.year - 1
@@ -456,8 +458,53 @@ with tab_team:
                     f"From {avail.source}.")
 
 # ---------- Players ----------
+def _special_leaderboard(kind: str, c2, c3) -> None:
+    """The Players tab's kicking or punting leaderboard: every kicker or
+    punter over a minimum of field goal tries or punts, as played."""
+    df = tables.get(kind, pd.DataFrame())
+    if df.empty:
+        st.info("No kicks in this selection." if kind == "kicking" else "No punts in this selection.")
+        return
+    df = df[df["Team"].isin(shown_teams)]
+    vol = KICK_VOLUME_COL[kind]
+    default = max(1, round(KICK_MIN_PER_GAME[kind] * games_max * play_share))
+    min_n = int(c2.number_input(f"Min {'FG tries' if kind == 'kicking' else 'punts'}",
+                                min_value=0, value=default, step=1,
+                                key=f"_ss_min_{kind}_{default}"))
+    numeric = [c for c in df.columns if c not in ("Player", "Team", CLASS_COL)
+               and pd.api.types.is_numeric_dtype(df[c])]
+    first = "Pts" if kind == "kicking" else "Net"
+    sort_by = c3.selectbox("Sort by", numeric, index=numeric.index(first), key=f"_ss_psort_{kind}")
+    base = tables[kind]
+    qualified_all = base[base[vol] >= min_n]
+    dists = {c: np.sort(qualified_all[c].dropna().to_numpy(float)) for c in KICK_RATE_COLS[kind]}
+    df = df[df[vol] >= min_n]
+    top_n = st.slider("Show", 10, 200, 50, step=10, key="_ss_topn")
+    df = df.sort_values(sort_by, ascending=False, kind="stable").head(top_n).reset_index(drop=True)
+    df = with_draft(with_class_year(df, class_years), draft_board)
+    df.index = df.index + 1
+    if df.empty:
+        st.info(f"No one has {min_n}+ {'field goal tries' if kind == 'kicking' else 'punts'} "
+                "in this selection.")
+        return
+    stat_table(style_kicking_table(df, dists))
+    glossary = KICK_GLOSSARY if kind == "kicking" else PUNT_GLOSSARY
+    shown = [c for c in df.columns if c in glossary]
+    st.caption(f"Season totals ({sel_note.replace(' · opponent-adjusted', '')}), as played: "
+               "no opponent adjustment. "
+               + "; ".join(f"**{c}** {glossary[c]}" for c in shown) + ". "
+               + f"{' and '.join(KICK_RATE_COLS[kind])} colors rank each "
+               f"{'kicker' if kind == 'kicking' else 'punter'} among those with {min_n}+ "
+               f"{'field goal tries' if kind == 'kicking' else 'punts'} · green = top · red = bottom."
+               + (" Yr is the class year on the season's roster." if class_years else "")
+               + (f" {draft_note(season)}." if draft_board else ""))
+
+
 def _leaderboard(kind: str, c2, c3) -> None:
     """The Players tab's `kind` leaderboard, with its minimum and sort controls."""
+    if kind in KICK_VOLUME_COL:
+        _special_leaderboard(kind, c2, c3)
+        return
     df = tables[kind]
     if df.empty:
         st.info("No players in this selection.")
@@ -679,7 +726,15 @@ yards. The grey dash and hover are the whole league over the same games.
 **Players.** Season totals for the selection; a traded player has a row per team. Rates (SR%,
 aDOT, EPA/play) are colored only for players above the minimum, by default the per-game
 minimum ({PLAYER_MIN_PLAYS["passing"]} dropbacks, {PLAYER_MIN_PLAYS["rushing"]} carries,
-{PLAYER_MIN_PLAYS["receiving"]} targets) times the most games a team played.{" College tackles, "
+{PLAYER_MIN_PLAYS["receiving"]} targets) times the most games a team played. Kicking and
+punting are as played: field goals made/attempted overall and by distance
+({", ".join(b for b, _, _ in FG_BANDS)} yds, the kick's length), extra points, and FG EPA, the
+expected points his field goal tries added (a make from 50 is worth more than one from 25, a miss
+costs); punts with gross and net average (net takes off the return and {PUNT_TOUCHBACK_YDS} yards a
+touchback), punts that left the receiver inside his 20, touchbacks, blocks and Punt EPA, the
+expected points his punts added (higher is better). Their default minimum is
+{KICK_MIN_PER_GAME["kicking"]} field goal try or {KICK_MIN_PER_GAME["punting"]} punts per game
+times the most games a team played.{" College tackles, "
 "TFLs and hurries need the stat-crew play text, which only some games have, so they undercount."
 if _college else ""}
 {"" if _college else '''

@@ -61,6 +61,8 @@ RAW_COLS = [
     "passer_player_name", "rusher_player_name", "receiver_player_name",
     "sack_player_name", "sack_player_name2", "interception_player_name",
     "pass_breakup_player_name", "fumble_forced_player_name",
+    "fg_kicker_player_name", "yds_fg", "xp_kicker_player_name",
+    "punter_player_name", "yds_punted", "yds_punt_return", "punt_tb", "punt_blocked",
     "pointAfterAttempt.text", "status_type_completed",
     "start.homeTeamTimeouts", "start.awayTeamTimeouts", "end.homeTeamTimeouts", "end.awayTeamTimeouts",
 ]
@@ -925,6 +927,17 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     _crew_columns(out, text, scrimmage)
     _nullified_names(out, text)
 
+    # Kicking and punting, as nflfastR's kicker/punter/kick_distance columns.
+    fg, punt = play_type == "field_goal", play_type == "punt"
+    out["kicker_player_name"] = df["fg_kicker_player_name"].where(fg & (df["fg_kicker_player_name"] != "TEAM"))
+    out["punter_player_name"] = df["punter_player_name"].where(punt & (df["punter_player_name"] != "TEAM"))
+    out["punt_blocked"] = (_b(df["punt_blocked"]) & punt).astype(float)
+    out["kick_distance"] = np.where(fg, _num(df["yds_fg"]),
+                                    np.where(punt, _num(df["yds_punted"]).mask(out["punt_blocked"] == 1, 0.0),
+                                             np.nan))
+    out["touchback"] = (_b(df["punt_tb"]) & punt).astype(float)
+    out["return_yards"] = _num(df["yds_punt_return"]).fillna(0.0).where(punt)
+
     # Timeouts left before the play, and on a timeout's own row after it, as
     # nflfastR has them.
     for side in ("home", "away"):
@@ -1094,6 +1107,10 @@ def _try_rows(out: pd.DataFrame, df: pd.DataFrame, pre_h: pd.Series, pre_a: pd.S
     for c in out.columns:
         if c.endswith("_player_name"):
             tries[c] = None
+    for c in ("kick_distance", "return_yards", "touchback", "punt_blocked"):
+        tries[c] = np.nan
+    xp_kicker = df.loc[idx, "xp_kicker_player_name"]
+    tries["kicker_player_name"] = xp_kicker.where(~is_two & (xp_kicker != "TEAM")).values
     # The try's pre-snap win probability is the touchdown's after-play one.
     tries["home_wp"] = _num(df.loc[idx, "home_wp_after"]).values
     tries["away_wp"] = _num(df.loc[idx, "away_wp_after"]).values
