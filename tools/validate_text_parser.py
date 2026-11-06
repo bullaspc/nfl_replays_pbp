@@ -27,30 +27,42 @@ NAME_COLS = [
     "sack_player_name", "half_sack_1_player_name", "half_sack_2_player_name",
     "qb_hit_1_player_name", "tackle_for_loss_1_player_name", "interception_player_name",
     "pass_defense_1_player_name", "forced_fumble_player_1_player_name",
+    "kicker_player_name", "punter_player_name",
 ]
 FLAG_COLS = ["pass_attempt", "rush_attempt", "complete_pass", "sack", "interception",
              "touchdown", "pass_touchdown", "rush_touchdown", "penalty", "qb_kneel", "qb_spike",
-             "safety", "qb_hit"]
+             "safety", "qb_hit", "punt_blocked"]
 VALUE_COLS = ["play_type", "yards_gained", "passing_yards", "rushing_yards", "receiving_yards",
               "field_goal_result", "extra_point_result", "two_point_conv_result",
               "penalty_team", "penalty_yards",
-              "pass_length", "pass_location", "run_location", "run_gap"]
+              "pass_length", "pass_location", "run_location", "run_gap",
+              "kick_distance"]
+# Compared on punts only: nflverse fills them on kickoffs too.
+PUNT_COLS = ["touchback", "return_yards"]
 
 
 def main(season: int, path: str | None = None, show: str | None = None) -> None:
     pbp = core.name_nullified(pd.read_parquet(path or PBP_URL.format(y=season)))
     parsed = pd.DataFrame([lf.parse_play_text(d) for d in pbp["desc"]], index=pbp.index)
     print(f"{season}: {len(pbp)} plays")
-    for col in NAME_COLS + VALUE_COLS + FLAG_COLS:
+    punts = pbp["play_type"] == "punt"
+    for col in NAME_COLS + VALUE_COLS + FLAG_COLS + PUNT_COLS:
         a = parsed[col] if col in parsed else pd.Series(np.nan, index=pbp.index)
         b = pbp[col]
-        if col in FLAG_COLS:
+        if col in PUNT_COLS:
+            a, b = a.fillna(0).astype(float), b.fillna(0).astype(float)
+            rows = punts
+        elif col in FLAG_COLS:
             a, b = a.fillna(0).astype(float), b.fillna(0).astype(float)
             rows = pd.Series(True, index=pbp.index)
         else:
             rows = a.notna() | b.notna()
             if col in ("yards_gained",):
                 rows &= pbp["play_type"].isin(["pass", "run"])
+            if col == "kicker_player_name":
+                rows &= pbp["play_type"].isin(["field_goal", "extra_point"])
+            if col == "kick_distance":  # nflverse gives every PAT 33 yards (15 before 2015)
+                rows &= pbp["play_type"].isin(["field_goal", "punt"])
         same = (a[rows] == b[rows]) | (a[rows].isna() & b[rows].isna())
         print(f"  {col:36s} {same.mean():8.3%}  of {rows.sum()}")
         if show == col:

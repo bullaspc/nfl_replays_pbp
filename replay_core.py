@@ -59,6 +59,11 @@ PBP_COLS = [
     "interception_player_name",
     "pass_defense_1_player_name", "pass_defense_2_player_name",
     "forced_fumble_player_1_player_name", "forced_fumble_player_2_player_name",
+    # kicking and punting: the kicker of a field goal or extra point, the
+    # punter, the kick's distance (a field goal's or a punt's gross yards),
+    # and on punts the return yards, touchback and block flags
+    "kicker_player_name", "punter_player_name", "kick_distance",
+    "return_yards", "touchback", "punt_blocked",
 ]
 
 GAME_SECONDS = 3600.0
@@ -1187,6 +1192,162 @@ def top_defenders(revealed: pd.DataFrame, team: str, n: int = 5,
     )
     g = g.drop(columns=[c for c in drop if c in g.columns])
     return g.sort_values("_sort", ascending=False).drop(columns=["_sort"]).head(n)
+
+
+# ---------- Kicking and punting ----------
+# Field goals by distance (yards the kick travelled: line of scrimmage + 17ish).
+FG_BANDS = [("0–39", 0, 39), ("40–49", 40, 49), ("50+", 50, 999)]
+# A punt into the end zone comes out at the 20 in both leagues: net punting
+# charges the punter those 20 yards, as the NFL's net average does.
+PUNT_TOUCHBACK_YDS = 20
+KICK_GLOSSARY = {
+    "FG": "field goals made / attempted", "FG%": "field goal %",
+    "Long": "longest made field goal (yds)", "XP": "extra points made / attempted",
+    "Pts": "points kicked (3 a field goal, 1 an extra point)",
+    "FG EPA": "expected points added over his field goal tries (a make from 50 adds more than "
+              "one from 25; a miss costs)",
+    **{b: f"field goals from {b} yds, made / attempted" for b, _, _ in FG_BANDS},
+}
+PUNT_GLOSSARY = {
+    "Punts": "punts", "Yds": "gross punting yards", "Avg": "gross yards per punt",
+    "Net": "net yards per punt (gross less returns and 20 a touchback)",
+    "Long": "longest punt (yds)", "In20": "punts that left the receiver inside his 20",
+    "TB": "touchbacks", "Blk": "punts blocked",
+    "Punt EPA": "expected points added over his punts (higher is better: pinning a team deep "
+                "adds, a long return costs)",
+}
+
+
+# The Season stats leaderboards: the volume column and the default minimum
+# per game played (about half a game's field goal tries or punts).
+KICK_VOLUME_COL = {"kicking": "FGA", "punting": "Punts"}
+KICK_MIN_PER_GAME = {"kicking": 1, "punting": 2}
+# Colored by percentile among the qualified (higher is better for each).
+KICK_RATE_COLS = {"kicking": ["FG%", "FG EPA"], "punting": ["Avg", "Net", "Punt EPA"]}
+
+
+def _made_att(made: int, att: int) -> str:
+    return f"{int(made)}/{int(att)}"
+
+
+def _kicks(td: pd.DataFrame) -> pd.DataFrame:
+    """Field goal and extra point tries (a penalty's no_play excluded)."""
+    return td[td["play_type"].isin(["field_goal", "extra_point"])]
+
+
+def _punts(td: pd.DataFrame) -> pd.DataFrame:
+    """Punts, with `_net` (gross less the return and 20 a touchback) and
+    `_in20` (the receiving team starts inside its 20, a touchback not)."""
+    p = td[td["play_type"] == "punt"].copy()
+    dist = pd.to_numeric(p["kick_distance"], errors="coerce").fillna(0.0)
+    ret = pd.to_numeric(p["return_yards"], errors="coerce").fillna(0.0)
+    tb = p["touchback"].fillna(0).astype(float)
+    blk = p["punt_blocked"].fillna(0).astype(float)
+    p["_gross"] = dist
+    p["_net"] = dist - ret - PUNT_TOUCHBACK_YDS * tb
+    # Where the receiving team takes over, yards from its own goal line.
+    spot = p["yardline_100"] - dist + ret
+    p["_in20"] = ((tb == 0) & (blk == 0) & (spot > 0) & (spot < 20)).astype(float)
+    p["_tb"], p["_blk"] = tb, blk
+    return p
+
+
+def _kicking_line(k: pd.DataFrame) -> dict:
+    """One kicking line (a team's or a kicker's) from its tries."""
+    fg = k[k["play_type"] == "field_goal"]
+    xp = k[k["play_type"] == "extra_point"]
+    made = fg["field_goal_result"] == "made"
+    dist = pd.to_numeric(fg["kick_distance"], errors="coerce")
+    xp_made = int((xp["extra_point_result"] == "good").sum())
+    line = {"FG": _made_att(made.sum(), len(fg)),
+            "FG%": round(100 * made.mean(), 1) if len(fg) else np.nan,
+            "Long": int(dist[made].max()) if made.any() and dist[made].notna().any() else np.nan}
+    for label, lo, hi in FG_BANDS:
+        band = dist.between(lo, hi)
+        line[label] = _made_att((made & band).sum(), band.sum())
+    line["XP"] = _made_att(xp_made, len(xp))
+    line["Pts"] = int(3 * made.sum() + xp_made)
+    line["FG EPA"] = round(float(fg["epa"].sum()), 1) if fg["epa"].notna().any() else np.nan
+    # Numbers the leaderboards sort and filter by.
+    line["_fgm"], line["_fga"] = int(made.sum()), len(fg)
+    return line
+
+
+def _punting_line(p: pd.DataFrame) -> dict:
+    """One punting line from `_punts()` rows."""
+    n = len(p)
+    return {"Punts": n, "Yds": int(p["_gross"].sum()),
+            "Avg": round(p["_gross"].mean(), 1) if n else np.nan,
+            "Net": round(p["_net"].mean(), 1) if n else np.nan,
+            "Long": int(p["_gross"].max()) if n else np.nan,
+            "In20": int(p["_in20"].sum()), "TB": int(p["_tb"].sum()), "Blk": int(p["_blk"].sum()),
+            "Punt EPA": round(float(p["epa"].sum()), 1) if p["epa"].notna().any() else np.nan}
+
+
+def special_teams_box(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
+    """The boxscore's kicking and punting line per team (away first): field
+    goals made/attempted overall and by distance, the longest, extra points,
+    then punts with gross and net average, inside the 20 and touchbacks."""
+    rows = []
+    for team in (away, home):
+        td = revealed[revealed["posteam"] == team]
+        k, p = _kicking_line(_kicks(td)), _punting_line(_punts(td))
+        rows.append({"Team": team, "FG": k["FG"], "Long": k["Long"],
+                     **{b: k[b] for b, _, _ in FG_BANDS}, "XP": k["XP"],
+                     "Punts": p["Punts"], "Avg": p["Avg"], "Net": p["Net"],
+                     "In20": p["In20"], "TB": p["TB"]})
+    return pd.DataFrame(rows)
+
+
+def top_kickers(revealed: pd.DataFrame, team: str, n: int = 3) -> pd.DataFrame:
+    """A team's kickers: field goals (overall and by distance), FG%, long,
+    extra points, points and the EPA of his field goal tries."""
+    k = _kicks(revealed[revealed["posteam"] == team])
+    k = k[k["kicker_player_name"].notna()]
+    if k.empty:
+        return pd.DataFrame()
+    rows = [{"Player": name, **_kicking_line(g)} for name, g in k.groupby("kicker_player_name")]
+    out = pd.DataFrame(rows).sort_values(["Pts", "_fga"], ascending=False)
+    return out.drop(columns=["_fgm", "_fga"]).head(n).reset_index(drop=True)
+
+
+def top_punters(revealed: pd.DataFrame, team: str, n: int = 2) -> pd.DataFrame:
+    """A team's punters: punts, gross and net average, long, inside the 20,
+    touchbacks, blocks and the EPA of his punts."""
+    p = _punts(revealed[revealed["posteam"] == team])
+    p = p[p["punter_player_name"].notna()]
+    if p.empty:
+        return pd.DataFrame()
+    rows = [{"Player": name, **_punting_line(g)} for name, g in p.groupby("punter_player_name")]
+    return pd.DataFrame(rows).sort_values("Punts", ascending=False).head(n).reset_index(drop=True)
+
+
+def season_kickers(pbp: pd.DataFrame, teams=None) -> pd.DataFrame:
+    """Every kicker's line over `pbp`, one row per kicker and team, with
+    Team, G (games with a try) and FGA (for the minimum)."""
+    k = _kicks(pbp[pbp["kicker_player_name"].notna()])
+    if teams is not None:
+        k = k[k["posteam"].isin(teams)]
+    if k.empty:
+        return pd.DataFrame()
+    rows = [{"Player": name, "Team": team, "G": g["game_id"].nunique(), **_kicking_line(g)}
+            for (team, name), g in k.groupby(["posteam", "kicker_player_name"])]
+    out = pd.DataFrame(rows).rename(columns={"_fga": "FGA"}).drop(columns=["_fgm"])
+    out.insert(out.columns.get_loc("FG") + 1, "FGA", out.pop("FGA"))
+    return out.sort_values(["Pts", "FGA"], ascending=False, ignore_index=True)
+
+
+def season_punters(pbp: pd.DataFrame, teams=None) -> pd.DataFrame:
+    """Every punter's line over `pbp`, one row per punter and team, with
+    Team and G."""
+    p = _punts(pbp[pbp["punter_player_name"].notna()])
+    if teams is not None:
+        p = p[p["posteam"].isin(teams)]
+    if p.empty:
+        return pd.DataFrame()
+    rows = [{"Player": name, "Team": team, "G": g["game_id"].nunique(), **_punting_line(g)}
+            for (team, name), g in p.groupby(["posteam", "punter_player_name"])]
+    return pd.DataFrame(rows).sort_values("Punts", ascending=False, ignore_index=True)
 
 
 # ---------- Season filters ----------

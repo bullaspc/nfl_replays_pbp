@@ -257,6 +257,33 @@ def style_defense_table(df: pd.DataFrame):
     return df.style.format("{:g}", subset=df.select_dtypes("number").columns)
 
 
+_KICK_FORMATS = {"FG%": "{:.1f}", "Long": "{:.0f}", "Avg": "{:.1f}", "Net": "{:.1f}",
+                 "FG EPA": "{:+.1f}", "Punt EPA": "{:+.1f}", "G": "{:.0f}", "FGA": "{:.0f}",
+                 "Pts": "{:.0f}", "Punts": "{:.0f}", "Yds": "{:.0f}", "In20": "{:.0f}",
+                 "TB": "{:.0f}", "Blk": "{:.0f}", "In20%": "{:.1f}"}
+
+
+def style_kicking_table(df: pd.DataFrame, dists: dict | None = None,
+                        qualified: pd.Series | None = None):
+    """A kicking or punting table (replay_core.top_kickers / top_punters,
+    season_kickers / season_punters). With `dists` ({column: sorted values}),
+    those columns are colored by percentile, only on the `qualified` rows
+    (all if None); lower is better for none of them."""
+    styled = df.style.format({c: f for c, f in _KICK_FORMATS.items() if c in df.columns},
+                             na_rep="—")
+    cols = [c for c in (dists or {}) if c in df.columns]
+    if not cols:
+        return styled
+    ok = pd.Series(True, index=df.index) if qualified is None else qualified.reindex(df.index, fill_value=False)
+
+    def _colors(col):
+        arr = dists[col.name]
+        return [percentile_color(percentile_of(float(v), arr)) if q and pd.notna(v) and len(arr) else ""
+                for v, q in zip(col, ok)]
+
+    return styled.apply(_colors, subset=cols)
+
+
 def style_player_table(df: pd.DataFrame, kind: str, baselines: dict | None = None,
                        min_plays: int | None = None):
     """A passing/rushing/receiving leaders table: its rates (`PLAYER_RATE_COLS`,

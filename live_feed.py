@@ -213,6 +213,26 @@ def parse_play_text(desc: str) -> dict:
         out["extra_point_result"] = ("good" if re.search(r"extra point is GOOD", body)
                                      else "blocked" if "BLOCKED" in upper
                                      else "aborted" if "Aborted" in body else "failed")
+    # --- kicking and punting, as nflfastR's kicker/punter/kick_distance ---
+    if play_type == "field_goal":
+        m = re.search(rf"({NAME}) (\d+) yard field goal", body)
+        if m:
+            out["kicker_player_name"], out["kick_distance"] = m.group(1), float(m.group(2))
+    if play_type == "extra_point":
+        out["kicker_player_name"] = _first(rf"({NAME}) extra point", body)
+    if play_type == "punt":
+        out["punter_player_name"] = _first(rf"({NAME}) (?:punts |punt is BLOCKED)", body)
+        out["punt_blocked"] = float("BLOCKED" in upper)
+        out["touchback"] = float(bool(re.search(r"\bTouchback\b", body, re.I)))
+        dist = _first(r" punts (-?\d+) yards?", body)
+        if dist is not None or out["punt_blocked"]:
+            out["kick_distance"] = float(dist or 0)  # a blocked punt goes 0, as nflverse has it
+        # The return: the first "for N yards" after the punt, before any
+        # fumble or flag; a fair catch, touchback or punt out of bounds has none.
+        after = re.split(r" punts -?\d+ yards?", body, maxsplit=1)
+        ret = re.split(r"FUMBLES|MUFFS|PENALTY on", after[1])[0] if len(after) > 1 else ""
+        rm = _YARDS.search(ret)
+        out["return_yards"] = 0.0 if not rm or rm.group(2) else float(rm.group(1))
     out["fumble"] = float("FUMBLES" in upper)
     out["_recovered_by"] = _first(r"RECOVERED by ([A-Z]{2,3})-", body)
     out["penalty"] = float(bool(re.search(r"PENALTY on", body, re.I)))

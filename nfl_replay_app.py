@@ -32,7 +32,7 @@ from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     HEAVY_BOX, PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
-    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, with_class_year, with_draft, draft_note, wp_crossings,
+    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, special_teams_box, top_kickers, top_punters, with_class_year, with_draft, draft_note, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
@@ -40,7 +40,7 @@ from replay_core import (
 from views import (
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
-    stat_table, style_chart_table, style_defense_table, style_line_table, style_matchup_table, style_player_table,
+    stat_table, style_chart_table, style_defense_table, style_kicking_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
@@ -665,6 +665,13 @@ st.subheader("Boxscore", anchor="boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
+# Kicking and punting so far, per team: field goals made/attempted overall and
+# by distance, the longest, extra points; punts with gross and net average.
+st.caption("Kicking and punting")
+stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
+st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
+           "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
+           "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks")
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -1394,6 +1401,14 @@ if not hide_leaders:
                 stat_table(style_defense_table(_def_df), hide_index=True)
             else:
                 st.caption("No data yet")
+            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
+                                   ("Punting", top_punters(revealed, team))]:
+                st.caption(_label)
+                if not _st_df.empty:
+                    stat_table(style_kicking_table(with_draft(with_class_year(
+                        _st_df, class_years, team), draft_board, team)), hide_index=True)
+                else:
+                    st.caption("No data yet")
 
 # ---------- Win probability chart ----------
 # x is each play's place on the play timeline, so overtime plots after
