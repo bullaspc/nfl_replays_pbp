@@ -2295,6 +2295,160 @@ def with_nextgen(df: pd.DataFrame, ngs: pd.DataFrame, ids: pd.DataFrame) -> pd.D
         df.index)
 
 
+# ---------- Season comparison ----------
+# The Season stats page's Team and Players tabs set the season against
+# earlier ones (NFL): the same selection (games, weeks, situation, venue,
+# Raw / Opponent-adjusted) taken over each picked season.
+# How a change is written: relative to the earlier value, or as the difference.
+COMPARE_MODES = {"%": "pct", "Normal": "abs"}
+# Franchises that moved: today's abbreviation → the one in older seasons' data.
+FRANCHISE_MOVES = {"LV": "OAK", "LAC": "SD", "LA": "STL"}
+# A change this large (relative) gets the strongest green or red.
+COMPARE_FULL_PCT = 25.0
+# Per leaderboard, the columns where less is better, for the colors (a
+# passer's interceptions are bad, a defender's good).
+PLAYER_LOWER_IS_BETTER = {"passing": {"INT", "Sacks", "Hits"}, "rushing": {"Stuffed"},
+                          "receiving": set(), "defenders": set(), "kicking": set(),
+                          "punting": {"TB", "Blk"}}
+# Player columns a change in isn't good or bad.
+PLAYER_COMPARE_STYLE = {"G", "aDOT", "Att", "Tgt", "Car", "Punts", "FGA", "TTT", "CAY", "AYD", "AYTS",
+                        "Long CAD", "Cush", "IAY", "TAY%", "8+D%", "TLOS", "Eff"}
+
+
+def variation(cur, prev, mode: str = "pct"):
+    """`cur` against `prev`: their difference (`mode` "abs"), or the change
+    as a percent of |prev| ("pct"; NaN where prev is 0). Scalars or Series."""
+    cur, prev = pd.to_numeric(cur, errors="coerce"), pd.to_numeric(prev, errors="coerce")
+    diff = cur - prev
+    if mode == "abs":
+        return diff
+    base = abs(prev)
+    if np.ndim(base):
+        return (diff / base.where(base > 0)) * 100
+    return diff / base * 100 if base > 0 else np.nan
+
+
+def compare_team(team: str, table: pd.DataFrame) -> str | None:
+    """`team` as it's named in an earlier season's `table` (a moved franchise
+    under its old abbreviation), or None if it isn't there."""
+    for t in (team, FRANCHISE_MOVES.get(team)):
+        if t is not None and t in table.index:
+            return t
+    return None
+
+
+def team_season_compare(current: pd.Series, earlier: dict[int, pd.Series | None], season: int,
+                        mode: str = "pct") -> pd.DataFrame:
+    """One team's season (`current`, a `season_team_table` row) against the
+    same team's `earlier` seasons ({season: row, or None if it has none}):
+    one row per stat, a column for `season`'s value, then per earlier season
+    (newest first) its value and the change from it (`variation`), named
+    "{year}" and "Δ {year}" ("Δ% {year}" in "pct" mode)."""
+    out = pd.DataFrame({str(season): pd.to_numeric(current, errors="coerce")})
+    tag = "Δ%" if mode == "pct" else "Δ"
+    for year in sorted(earlier, reverse=True):
+        row = earlier[year]
+        prev = (pd.to_numeric(row, errors="coerce").reindex(out.index) if row is not None
+                else pd.Series(np.nan, index=out.index))
+        out[str(year)] = prev
+        out[f"{tag} {year}"] = variation(out[str(season)], prev, mode)
+    out.index.name = "Stat"
+    return out
+
+
+# Stats that sit near 0 or below it, where a relative change says little: a
+# comparison is colored by the difference instead, strongest at this much.
+COMPARE_ABS_FULL = {"EPA/play": 0.15, "CPOE": 4.0, "RYOE/att": 0.5, "Total EPA": 30.0,
+                    "FG EPA": 5.0, "Punt EPA": 10.0}
+
+
+def compare_strength(stat: str, cur, prev) -> float:
+    """How strongly a comparison cell is colored, −1 … 1 (the sign is the
+    direction of the change, not better or worse): the difference over
+    `COMPARE_ABS_FULL` for stats near 0 (any "… EPA/play"), else the
+    relative change over `COMPARE_FULL_PCT`. NaN without both values."""
+    full = COMPARE_ABS_FULL.get("EPA/play" if stat.endswith("EPA/play") else stat)
+    v = (variation(cur, prev, "abs") / full if full
+         else variation(cur, prev, "pct") / COMPARE_FULL_PCT)
+    return float(np.clip(v, -1, 1)) if pd.notna(v) else np.nan
+
+
+def _player_keys(df: pd.DataFrame, ids: pd.DataFrame | None) -> pd.Series:
+    """Each leaderboard row's identity across seasons: its gsis id where
+    `ids` (`player_ids`) has one, else "name:{Player}"."""
+    names = "name:" + df["Player"].astype(str)
+    if ids is None or ids.empty or df.empty:
+        return names.set_axis(df.index)
+    gsis = df.merge(ids.rename(columns={"team": "Team", "name": "Player"}),
+                    on=["Team", "Player"], how="left")["gsis_id"].set_axis(df.index)
+    return gsis.where(gsis.notna(), names)
+
+
+def _earlier_rows(df: pd.DataFrame, prev: pd.DataFrame, cur_ids, prev_ids, volume: str | None):
+    """`prev`'s row for each of `df`'s players (NaN where none): by gsis id
+    where he has one; without an id by name, where one player in all of
+    `prev` has it, else the same team's (a moved franchise's old
+    abbreviation counts); a traded player's busiest row."""
+    if prev.empty:
+        return pd.DataFrame(index=df.index, columns=prev.columns)
+    prev = prev.assign(_key=_player_keys(prev, prev_ids))
+    if volume in prev.columns:
+        prev = prev.sort_values(volume, ascending=False, kind="stable")
+    by_key = prev.drop_duplicates("_key").set_index("_key")
+    unique_names = prev["Player"].value_counts()
+    unique_names = set(unique_names.index[unique_names == 1])
+    by_team = prev.drop_duplicates(["Team", "Player"]).set_index(["Team", "Player"])
+    keys = _player_keys(df, cur_ids)
+    rows = []
+    for idx, key in keys.items():
+        name, team = df.at[idx, "Player"], df.at[idx, "Team"]
+        by_id = not str(key).startswith("name:")
+        hit = by_key.loc[key] if by_id and key in by_key.index else None
+        if hit is None and not by_id and name in unique_names:
+            hit = prev[prev["Player"] == name].iloc[0]
+        if hit is None:  # a shared name: the same team's (with no id of its own there)
+            for t in (team, FRANCHISE_MOVES.get(team)):
+                if t is not None and (t, name) in by_team.index:
+                    row = by_team.loc[(t, name)]
+                    if not by_id or str(row["_key"]).startswith("name:"):
+                        hit = row
+                    break
+        rows.append(hit if hit is not None else pd.Series(dtype=object))
+    return pd.DataFrame(rows, index=df.index).reindex(columns=prev.columns)
+
+
+def player_season_compare(df: pd.DataFrame, earlier: dict[int, pd.DataFrame], stats: list[str],
+                          season: int, mode: str = "pct", ids: dict | None = None,
+                          volume: str | None = None) -> pd.DataFrame:
+    """A leaderboard's players (`df`, `season_players` / `season_defenders` /
+    `season_kickers` / `season_punters` rows) against their own `earlier`
+    seasons ({season: that season's same leaderboard}): Player, Team, then
+    per stat its value this season and, per earlier season (newest first),
+    that season's value ("{stat} '{yy}") and the change ("Δ '{yy}" or
+    "Δ% '{yy}", `variation`). A player is found by gsis id (`ids`, {season:
+    `player_ids`}) where there is one, else by name (`_earlier_rows`); NaN
+    where he has no row that season. `_`-prefixed columns carry each
+    change's `compare_strength` for the colors."""
+    ids = ids or {}
+    out = df[["Player", "Team"]].copy()
+    tag = "Δ%" if mode == "pct" else "Δ"
+    years = sorted(earlier, reverse=True)
+    prev_rows = {y: _earlier_rows(df, earlier[y], ids.get(season), ids.get(y), volume) for y in years}
+    for stat in stats:
+        cur = pd.to_numeric(df[stat], errors="coerce") if stat in df.columns else np.nan
+        out[stat] = cur
+        for y in years:
+            prev = prev_rows[y]
+            pv = (pd.to_numeric(prev[stat], errors="coerce") if stat in prev.columns
+                  else pd.Series(np.nan, index=df.index))
+            yy = f"'{y % 100:02d}"
+            out[f"{stat} {yy}"] = pv
+            out[f"{stat} {tag} {yy}"] = variation(out[stat], pv, mode)
+            out[f"_pct {stat} {yy}"] = [compare_strength(stat, c, p)
+                                        for c, p in zip(out[stat], pv)]
+    return out
+
+
 # ---------- Matchup ----------
 # The Matchup page sets two teams' season tables (season_team_table, ranked
 # among the season's teams) against each other for a game not played yet.

@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
@@ -450,6 +450,92 @@ def _season_format(col: str):
         f = "{:.0f}"
     return lambda v: "—" if pd.isna(v) else f.format(v)
 
+
+# ---------- Season comparison ----------
+def _change_color(strength: float, lower_is_better: bool) -> str:
+    """Green for a change for the better, red for worse, by its
+    `compare_strength` (−1 … 1)."""
+    if pd.isna(strength):
+        return ""
+    return percentile_color(50 - 50 * strength if lower_is_better else 50 + 50 * strength)
+
+
+def _signed(fmt, v) -> str:
+    """`fmt`(|v|) with a + or − in front."""
+    if pd.isna(v):
+        return "—"
+    s = fmt(abs(v)).lstrip("+")
+    return s if v == 0 else ("+" if v > 0 else "−") + s
+
+
+def _team_delta_format(stat: str, mode: str):
+    """A team stat's change: "+12.3%" relative, else in the stat's own
+    format with a sign (a rate's in percentage points, "+3.1 pp")."""
+    if mode == "pct":
+        return lambda v: _signed(lambda x: f"{x:.1f}%", v)
+    if stat in _RATE_ROWS or (stat.endswith("%") and stat not in LINE_COUNT_ROWS):
+        return lambda v: _signed(lambda x: f"{x * 100:.1f} pp", v)
+    return lambda v: _signed(_season_format(stat), v)
+
+
+def style_team_compare(df: pd.DataFrame, lower: set, mode: str):
+    """A `replay_core.team_season_compare` table: values formatted as the
+    season cards are, each change ("Δ …") green for the better and red for
+    the worse by its `compare_strength` (`lower` = the side's
+    lower-is-better stats), volumes (`SEASON_VOLUME`) plain."""
+    deltas = [c for c in df.columns if str(c).startswith("Δ")]
+    cur = df[df.columns[0]]
+    shown = pd.DataFrame(index=df.index)
+    for c in df.columns:
+        fmt = (lambda st_: _team_delta_format(st_, mode)) if c in deltas else _season_format
+        shown[c] = [fmt(stat)(v) for stat, v in df[c].items()]
+    styled = shown.style
+    for c in deltas:
+        prev = df[c.split(" ", 1)[1]]
+        cc = ["" if stat in SEASON_VOLUME else
+              _change_color(compare_strength(stat, cur[stat], prev[stat]), stat in lower)
+              for stat in df.index]
+        styled = styled.apply(lambda _col, cc=cc: cc, subset=[c])
+    return (styled.set_properties(**{"text-align": "center"})
+            .set_table_styles([{"selector": "th", "props": [("text-align", "center"),
+                                                            ("font-weight", "bold")]}]))
+
+
+def _player_format(stat: str):
+    f = {**_KICK_FORMATS, **_PLAYER_FORMATS}.get(stat)
+    if f is not None:
+        return lambda v: "—" if pd.isna(v) else f.format(v)
+    return lambda v: "—" if pd.isna(v) else f"{v:.0f}" if float(v).is_integer() else f"{v:.2f}"
+
+
+def style_player_compare(df: pd.DataFrame, stats: list[str], mode: str, lower: set = frozenset()):
+    """A `replay_core.player_season_compare` table over `stats`: each stat
+    and its earlier values in the leaderboard's format, each change green
+    for the better and red for the worse by its `compare_strength` (`lower`, the
+    leaderboard's `PLAYER_LOWER_IS_BETTER`, the other way round;
+    `PLAYER_COMPARE_STYLE` stays plain)."""
+    shown = df[[c for c in df.columns if not c.startswith("_")]]
+    fmt, colors = {}, {}
+    for stat in stats:
+        base = _player_format(stat)
+        for c in shown.columns:
+            if c == stat or not c.startswith(stat + " "):
+                if c == stat:
+                    fmt[c] = base
+                continue
+            rest = c[len(stat) + 1:]
+            if not rest.startswith("Δ"):  # an earlier season's value
+                fmt[c] = base
+                continue
+            fmt[c] = ((lambda v: _signed(lambda x: f"{x:.1f}%", v)) if mode == "pct"
+                      else (lambda v, b=base: _signed(b, v)))
+            pct = df.get(f"_pct {stat} {rest.split(' ', 1)[1]}")
+            if pct is not None and stat not in PLAYER_COMPARE_STYLE:
+                colors[c] = [_change_color(p, stat in lower) for p in pct]
+    styled = shown.style.format(fmt)
+    for c, cc in colors.items():
+        styled = styled.apply(lambda _col, cc=cc: cc, subset=[c])
+    return styled.set_properties(**{"text-align": "center"})
 
 # ---------- Matchup ----------
 # The Matchup page's tables are drawn as text: each value carries its place

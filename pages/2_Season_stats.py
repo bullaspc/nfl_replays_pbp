@@ -17,7 +17,7 @@ import streamlit as st
 
 import leagues
 from replay_core import (
-    ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
+    ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, COMPARE_ABS_FULL, COMPARE_FULL_PCT, COMPARE_MODES, PLAYER_LOWER_IS_BETTER, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL, FG_BANDS, KICK_GLOSSARY, KICK_MIN_PER_GAME, KICK_RATE_COLS,
     KICK_VOLUME_COL, PUNT_GLOSSARY, PUNT_TOUCHBACK_YDS,
@@ -26,7 +26,7 @@ from replay_core import (
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
     situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note,
-    with_nextgen,
+    with_nextgen, compare_team, player_season_compare, team_season_compare,
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
@@ -34,7 +34,7 @@ from views import (
     style_defense_table, style_injury_report, style_kicking_table,
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
     style_team_chart, style_team_season,
-    style_team_schedule, style_weekly_snaps,
+    style_team_schedule, style_weekly_snaps, style_player_compare, style_team_compare,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -193,6 +193,57 @@ def _default_min(kind: str) -> int:
     return max(1, round(PLAYER_MIN_PLAYS[kind] * games_max * play_share))
 
 
+# ---------- Comparison with earlier seasons (NFL) ----------
+# The Team and Players tabs set the season against earlier ones, each taken
+# over the same selection: games, weeks, situation, venue and Raw / adjusted.
+CAN_COMPARE = isinstance(league, leagues.NFLLeague)
+COMPARE_MAX = 3  # earlier seasons at once: each is a season's play-by-play to load
+COMPARE_STATS_MAX = 4
+COMPARE_DEFAULTS = {"passing": ["EPA/play", "Yds"], "rushing": ["EPA/play", "Yds"],
+                    "receiving": ["EPA/play", "Yds"], "defenders": ["Tackles", "Sacks"],
+                    "kicking": ["FG%", "FG EPA"], "punting": ["Net", "Punt EPA"]}
+
+
+def _compare_controls(where: str) -> tuple[list[int], str]:
+    """The earlier seasons to compare with (a dropdown, newest first) and
+    how a change is written (a radio: % or Normal), as `COMPARE_MODES`."""
+    earlier = list(range(season - 1, league.first_season - 1, -1))
+    c1, c2 = st.columns([3, 2])
+    years = c1.multiselect("Compare with seasons", earlier, max_selections=COMPARE_MAX,
+                           placeholder="Pick earlier seasons", key=f"_ss_cmp_{where}_{season}")
+    mode = c2.radio("Variation", list(COMPARE_MODES), horizontal=True, key=f"_ss_cmp_mode_{where}",
+                    help="%: the change relative to the earlier season's value. Normal: the "
+                         "difference, in the stat's own units (rates in percentage points).")
+    return sorted(years, reverse=True), COMPARE_MODES[mode]
+
+
+def _earlier_tables(years: list[int]) -> dict[int, dict]:
+    """`leagues.season_tables` for each earlier season, over the selection."""
+    out = {}
+    for y in years:
+        try:
+            with st.spinner(f"Loading the {y} season…"):
+                out[y] = leagues.season_tables(league, y, stamp, weeks, part, adjust,
+                                               play_filter, venue)
+        except leagues.GameLoadError as e:
+            st.warning(f"{y}: {e}")
+    return out
+
+
+def _compare_note(mode: str) -> str:
+    """What the comparison tables show, for their captions."""
+    return ("Each earlier season is taken over the same selection (" + (sel_note or "all games")
+            + "; the same week numbers). "
+            + ("Δ% is the change relative to the earlier value (one near 0, like an EPA/play, "
+               "makes it large: Normal reads better there). " if mode == "pct" else
+               "Δ is the difference, in the stat's units (rates in percentage points). ")
+            + f"Green is a change for the better, red for the worse, strongest at ±{COMPARE_FULL_PCT:.0f}%"
+            " relative (EPA, CPOE and RYOE, which sit near 0, by the difference: ±"
+            f"{COMPARE_ABS_FULL['EPA/play']} EPA/play, ±{COMPARE_ABS_FULL['CPOE']:.0f} CPOE, "
+            f"±{COMPARE_ABS_FULL['RYOE/att']} RYOE/att); volumes and style stay plain. "
+            "A dash: no row that season.")
+
+
 tab_teams, tab_team, tab_players = st.tabs(["Teams", "Team", "Players"])
 
 # ---------- Teams ----------
@@ -249,7 +300,9 @@ with tab_team:
     pbp = venue_plays(sit_plays, VENUES[venue])
     # The tab runs about fifteen phone screens: one sticky row of links to its sections.
     team_charting = any(c in team_tables["offense"].columns for c in CHART_ROWS)
-    section_nav([("Season", "ss-season"), ("Schedule", "ss-schedule"),
+    section_nav([("Season", "ss-season")]
+                + ([("Compare", "ss-compare")] if CAN_COMPARE else [])
+                + [("Schedule", "ss-schedule"),
                  ("Situations", "ss-situations"), ("Tendencies", "ss-tendencies")]
                 + ([("Charting", "ss-charting")] if team_charting else [])
                 + [("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
@@ -271,6 +324,36 @@ with tab_team:
                                          season_rank_label(full, team, lower)))
     st.caption(f"{sel_note} · per game where it's a count · rank among the teams with {min_team_plays}+ plays"
                + (" · the charting is under Charting, below." if team_charting else "."))
+
+    if CAN_COMPARE:
+        st.markdown("<span id='ss-compare'></span>**Compare with earlier seasons**",
+                    unsafe_allow_html=True)
+        cmp_years, cmp_mode = _compare_controls("team")
+        if not cmp_years:
+            st.caption(f"Pick up to {COMPARE_MAX} earlier seasons to set {team}'s numbers against.")
+        else:
+            prev_tables = _earlier_tables(cmp_years)
+            col_o, col_d = st.columns(2)
+            for col, side_label in [(col_o, "Offense"), (col_d, "Defense (allowed)")]:
+                side = SIDES[side_label]
+                which = "offense" if side == "posteam" else "defense"
+                full = team_tables[which]
+                with col:
+                    st.markdown(f"**{side_label}**")
+                    if team not in full.index:
+                        st.caption(f"Fewer than {min_team_plays} plays in this selection.")
+                        continue
+                    earlier = {}
+                    for y, t in prev_tables.items():
+                        prev = season_qualified(t[which], min_team_plays)
+                        name = compare_team(team, prev)
+                        earlier[y] = prev.loc[name] if name else None
+                    cmp = team_season_compare(full.loc[team].drop(CHART_ROWS, errors="ignore"),
+                                              earlier, season, cmp_mode)
+                    stat_table(style_team_compare(cmp, season_lower_is_better(side), cmp_mode))
+            st.caption(_compare_note(cmp_mode) + " Moved franchises are matched (OAK → LV, "
+                       "SD → LAC, STL → LA); a season where the team had fewer than "
+                       f"{min_team_plays} plays shows a dash. For a defense, less allowed is better.")
 
     # Whole games, for the final score (and the snap counts below); the EPA
     # follows the situation filters, over both offenses (not `pbp`, which
@@ -488,6 +571,7 @@ def _special_leaderboard(kind: str, c2, c3) -> None:
                 "in this selection.")
         return
     stat_table(style_kicking_table(df, dists))
+    _player_compare(kind, df)
     glossary = KICK_GLOSSARY if kind == "kicking" else PUNT_GLOSSARY
     shown = [c for c in df.columns if c in glossary]
     st.caption(f"Season totals ({sel_note.replace(' · opponent-adjusted', '')}), as played: "
@@ -536,6 +620,7 @@ def _leaderboard(kind: str, c2, c3) -> None:
     df.index = df.index + 1
     if kind == "defenders":
         stat_table(style_defense_table(df))
+        _player_compare(kind, df)
         if "Tackles" in df.columns and league.season_group_label == "Conference":
             st.caption("College tackles, TFLs and hurries come from the play text's stat-crew "
                        "notes, which only some games have, so season totals undercount.")
@@ -555,7 +640,37 @@ def _leaderboard(kind: str, c2, c3) -> None:
                       "came against; counts and aDOT are as played." if adjusted else ""))
         if has_ngs:
             st.caption(_ngs_note(kind))
+        _player_compare(kind, df)
         _player_scatter(kind, qualified, min_plays)
+
+
+def _player_compare(kind: str, df: pd.DataFrame) -> None:
+    """The leaderboard's shown players (`df`) against their own earlier
+    seasons (NFL): the picked stats, each season's value and the change."""
+    if not CAN_COMPARE or df.empty:
+        return
+    st.markdown("**Compare with earlier seasons**")
+    years, mode = _compare_controls("players")
+    base = tables[kind]
+    numeric = [c for c in base.columns if c not in ("Player", "Team", CLASS_COL)
+               and pd.api.types.is_numeric_dtype(base[c])]
+    defaults = [c for c in COMPARE_DEFAULTS[kind] if c in numeric] or numeric[:2]
+    stats = st.multiselect("Stats to compare", numeric, default=defaults,
+                           max_selections=COMPARE_STATS_MAX, key=f"_ss_cmp_stats_{kind}")
+    if not years or not stats:
+        st.caption(f"Pick up to {COMPARE_MAX} earlier seasons and up to {COMPARE_STATS_MAX} stats "
+                   "to set the players shown above against their own earlier seasons.")
+        return
+    prev = _earlier_tables(years)
+    ids = {y: leagues.season_player_ids(league, y, stamp) for y in [season, *prev]}
+    volume = PLAYER_VOLUME_COL.get(kind, KICK_VOLUME_COL.get(kind))
+    cmp = player_season_compare(df, {y: t.get(kind, pd.DataFrame()) for y, t in prev.items()},
+                                stats, season, mode, ids, volume)
+    stat_table(style_player_compare(cmp, stats, mode, PLAYER_LOWER_IS_BETTER[kind]))
+    st.caption(_compare_note(mode) + " The players are the leaderboard's above, in its order; "
+               "each one's earlier row is his own (by gsis id where the play-by-play has one, "
+               "else by name), whatever team he was on, his busiest if he was traded. Counts "
+               "are season totals over the selection.")
 
 
 # The players chart's starting picks per leaderboard: with Next Gen Stats
