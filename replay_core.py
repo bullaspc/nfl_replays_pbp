@@ -1322,6 +1322,29 @@ def top_punters(revealed: pd.DataFrame, team: str, n: int = 2) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("Punts", ascending=False).head(n).reset_index(drop=True)
 
 
+def kick_log(revealed: pd.DataFrame) -> pd.DataFrame:
+    """Every field goal try and punt so far, in game order: when, the
+    kicking team, the kicker or punter, the distance, how it came out (a
+    field goal's result; a punt's net yards, inside the 20, touchback or
+    block) and its EPA."""
+    fg = revealed[revealed["play_type"] == "field_goal"]
+    punts = _punts(revealed)
+    rows = []
+    for idx, r in pd.concat([fg, punts]).sort_index().iterrows():
+        dist = pd.to_numeric(r["kick_distance"], errors="coerce")
+        if r["play_type"] == "field_goal":
+            kind, who = "FG", r["kicker_player_name"]
+            result = {"made": "Good", "blocked": "Blocked"}.get(r["field_goal_result"], "No good")
+        else:
+            kind, who = "Punt", r["punter_player_name"]
+            result = ("Blocked" if r["_blk"] else "Touchback" if r["_tb"]
+                      else f"Net {r['_net']:.0f}" + (" · In20" if r["_in20"] else ""))
+        rows.append({"Qtr": period_label(r["qtr"]), "Clock": r["time"] if isinstance(r["time"], str) else "",
+                     "Team": r["posteam"], "Kick": kind, "Player": who if isinstance(who, str) else "",
+                     "Yds": dist, "Result": result, "EPA": pd.to_numeric(r["epa"], errors="coerce")})
+    return pd.DataFrame(rows)
+
+
 def season_kickers(pbp: pd.DataFrame, teams=None) -> pd.DataFrame:
     """Every kicker's line over `pbp`, one row per kicker and team, with
     Team, G (games with a try) and FGA (for the minimum)."""

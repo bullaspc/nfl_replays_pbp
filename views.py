@@ -257,10 +257,24 @@ def style_defense_table(df: pd.DataFrame):
     return df.style.format("{:g}", subset=df.select_dtypes("number").columns)
 
 
-_KICK_FORMATS = {"FG%": "{:.1f}", "Long": "{:.0f}", "Avg": "{:.1f}", "Net": "{:.1f}",
+_KICK_FORMATS = {"EPA": "{:+.2f}", "FG%": "{:.1f}", "Long": "{:.0f}", "Avg": "{:.1f}", "Net": "{:.1f}",
                  "FG EPA": "{:+.1f}", "Punt EPA": "{:+.1f}", "G": "{:.0f}", "FGA": "{:.0f}",
                  "Pts": "{:.0f}", "Punts": "{:.0f}", "Yds": "{:.0f}", "In20": "{:.0f}",
                  "TB": "{:.0f}", "Blk": "{:.0f}", "In20%": "{:.1f}"}
+
+
+def style_kick_log(df: pd.DataFrame):
+    """The Kicking section's list of field goal tries and punts: Result
+    tinted green for a good field goal or a punt inside the 20, red for a
+    miss or a block."""
+    def _tint(v):
+        if v == "Good" or "In20" in str(v):
+            return "background-color: #d4edda; color: #155724"
+        if v in ("No good", "Blocked"):
+            return "background-color: #f8d7da; color: #721c24"
+        return ""
+    fmt = {c: f for c, f in {**_KICK_FORMATS, "Yds": "{:.0f}"}.items() if c in df.columns}
+    return smap(df.style.format(fmt, na_rep="—"), _tint, subset=["Result"])
 
 
 def style_kicking_table(df: pd.DataFrame, dists: dict | None = None,
