@@ -1314,7 +1314,10 @@ def ticker_html(games: list[TickerGame]) -> str:
 #   sidebar open) the buttons show their icons alone;
 # - row_* (other wrap=False rows: the Recent plays pager, Game management's
 #   two team cards): no narrower than their content instead of 8rem, so they
-#   stay one row on a phone.
+#   stay one row on a phone. Streamlit gives a wrap=False row overflow:auto,
+#   and its last caption runs a few pixels past the row's box, which made the
+#   row a scroll area of its own (a swipe over the win probability cards
+#   scrolled inside them, not the page), so these rows don't clip or scroll.
 # - .secnav (section_nav()'s links): its element sticks under Streamlit's
 #   header, and a section it scrolls to stops below it (scroll-margin).
 _MOBILE_CSS = """<style>
@@ -1328,6 +1331,8 @@ _MOBILE_CSS = """<style>
 .st-key-stepbar { container-type: inline-size; }
 .st-key-stepbar [data-testid="stColumn"] { min-width: 0; }
 [class*="st-key-row_"] [data-testid="stColumn"] { min-width: min-content; }
+.st-key-stepbar [data-testid="stHorizontalBlock"],
+[class*="st-key-row_"] [data-testid="stHorizontalBlock"] { overflow: visible; }
 @container (max-width: 680px) {
   .st-key-stepbar button [data-testid="stMarkdownContainer"] { display: none; }
   .st-key-stepbar button { padding-left: 0; padding-right: 0; min-width: 0; }
