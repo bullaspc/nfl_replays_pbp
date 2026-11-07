@@ -2373,6 +2373,38 @@ def compare_strength(stat: str, cur, prev) -> float:
     return float(np.clip(v, -1, 1)) if pd.notna(v) else np.nan
 
 
+def teams_season_compare(current: pd.DataFrame, earlier: dict[int, pd.DataFrame], stats: list[str],
+                         season: int, mode: str = "pct") -> pd.DataFrame:
+    """Every team in `current` (a `season_team_table`, in its order) against
+    its own `earlier` seasons ({season: that season's table}): per stat its
+    value this season and, per earlier season (newest first), that season's
+    value ("{stat} '{yy}") and the change ("Δ '{yy}" or "Δ% '{yy}",
+    `variation`); NaN where the team has no row that season (a moved
+    franchise is found under its old abbreviation, `compare_team`).
+    `_`-prefixed columns carry each change's `compare_strength`."""
+    out = pd.DataFrame(index=current.index)
+    tag = "Δ%" if mode == "pct" else "Δ"
+    years = sorted(earlier, reverse=True)
+    prev_rows = {}
+    for y in years:
+        table = earlier[y]
+        names = [compare_team(t, table) for t in current.index]
+        prev_rows[y] = pd.DataFrame([table.loc[n] if n else pd.Series(dtype=float) for n in names],
+                                    index=current.index).reindex(columns=table.columns)
+    for stat in stats:
+        cur = pd.to_numeric(current[stat], errors="coerce")
+        out[stat] = cur
+        for y in years:
+            prev = prev_rows[y]
+            pv = (pd.to_numeric(prev[stat], errors="coerce") if stat in prev.columns
+                  else pd.Series(np.nan, index=out.index))
+            yy = f"'{y % 100:02d}"
+            out[f"{stat} {yy}"] = pv
+            out[f"{stat} {tag} {yy}"] = variation(cur, pv, mode)
+            out[f"_pct {stat} {yy}"] = [compare_strength(stat, c, v) for c, v in zip(cur, pv)]
+    return out
+
+
 def _player_keys(df: pd.DataFrame, ids: pd.DataFrame | None) -> pd.Series:
     """Each leaderboard row's identity across seasons: its gsis id where
     `ids` (`player_ids`) has one, else "name:{Player}"."""
