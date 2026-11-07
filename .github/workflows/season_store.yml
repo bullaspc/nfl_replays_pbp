@@ -1,0 +1,89 @@
+# Precomputed Season stats for finished NFL seasons (season_store.py), published
+# as assets of the `season-store` release, which the app downloads instead of
+# a season's play-by-play (Streamlit Community Cloud starts every deploy with
+# an empty disk). Files carry a hash of the code that built them and the app
+# ignores files from other code, so the store is rebuilt whenever that code
+# changes on main, and once a year after the season ends. Run it by hand from
+# the Actions tab too.
+name: Season store
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - replay_core.py
+      - leagues.py
+      - cfb_feed.py
+      - live_feed.py
+      - nflfastr_models.py
+      - season_store.py
+      - tools/build_season_store.py
+      - .github/workflows/season_store.yml
+  schedule:
+    - cron: "23 7 2 3 *"  # March 2, once leagues.NFL.season_final() counts last season
+  workflow_dispatch:
+    inputs:
+      first:
+        description: First season
+        default: "2016"
+      last:
+        description: Last season (blank = the last finished one)
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: season-store
+  cancel-in-progress: true  # a newer push makes these files stale anyway
+
+env:
+  RELEASE: season-store
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      seasons: ${{ steps.seasons.outputs.seasons }}
+    steps:
+      - id: seasons
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime, json
+          today = datetime.date.today()
+          # leagues.NFL.season_over: a season is over from March 1 of the next year.
+          finished = today.year - 1 if (today.month, today.day) >= (3, 1) else today.year - 2
+          first = int("${{ github.event.inputs.first }}" or 2016)
+          last = int("${{ github.event.inputs.last }}" or finished)
+          print("seasons=" + json.dumps(list(range(first, min(last, finished) + 1))))
+          EOF
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --latest=false \
+              --title "Season store" \
+              --notes "Precomputed Season stats for finished NFL seasons, read by the app (season_store.py). Built by .github/workflows/season_store.yml."
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJson(needs.plan.outputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python tools/build_season_store.py ${{ matrix.season }} ${{ matrix.season }} out
+      - name: Upload to the release (manifest last)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*.zip
+          gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*_manifest.json

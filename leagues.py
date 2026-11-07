@@ -17,6 +17,10 @@ with the sidebar's League radio and otherwise never branches on the league.
 The loaders here are cached with Streamlit; the modules they call aren't.
 """
 
+import hashlib
+import json
+import os
+import pickle
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -35,6 +39,7 @@ import game_summary
 import live_feed
 import nflfastr_models
 import replay_core as core
+import season_store
 import scoreboard
 
 
@@ -85,6 +90,9 @@ class League:
     espn_id_col: str = "game_id"  # the games() column with ESPN's event id
     clock: core.ClockRules = core.NFL_CLOCK  # what Game management's clock estimates follow
     season_group_label: str = "Division"  # the Season stats page's team filter
+    # The day of `season` + 1 from which the season is over and won't change
+    # (month, day): its Season stats are then kept on disk (`season_final`).
+    season_over: tuple[int, int] = (3, 1)
 
     def stamp(self) -> str:
         """When the published data was last rebuilt; a cache key."""
@@ -128,8 +136,22 @@ class League:
     def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         """Every finished game of `season` published so far (PBP_COLS), plus
         `postseason` (bool), for the Season stats page. Raises
-        GameLoadError if the season isn't published."""
+        GameLoadError if the season isn't published. A finished season
+        (`season_final`) is read from the disk cache after the first time."""
+        if self.season_final(season):
+            return _final_season_pbp(self.name, season)
+        return self._season_pbp(season, stamp)
+
+    def _season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+        """`season_pbp` from the published data."""
         raise NotImplementedError
+
+    def season_final(self, season: int) -> bool:
+        """Whether `season` is over and its published data won't change: past
+        `season_over` of the next year (the NFL's Super Bowl in February,
+        college's title game in January, with a margin for the last rebuilds)."""
+        month, day = self.season_over
+        return date.today() >= date(season + 1, month, day)
 
     def season_teams(self, season: int, stamp: str) -> pd.Series:
         """The teams the Season stats page ranks, abbreviation → group
@@ -582,7 +604,7 @@ class NFLLeague(League):
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return frozenset({"Hurries"})  # nflfastR has QB hits instead
 
-    def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+    def _season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         try:
             return _nfl_season_pbp(season, stamp)
         except ValueError as e:
@@ -834,7 +856,7 @@ class CollegeLeague(League):
     def draft_board(self, season: int, stamp: str) -> dict[tuple[str, str], dict]:
         return load_cfb_draft_board(season, stamp)
 
-    def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
+    def _season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         try:
             return _cfb_season_pbp(season, stamp)
         except Exception as e:
@@ -864,7 +886,7 @@ COLLEGE = CollegeLeague(
     # ~3h20m. One college season has about as many team-games as three NFL ones.
     broadcast_minutes=200.0, baseline_label="last season's FBS-vs-FBS games",
     group_label="Conference", untimed_ot=True, clock=core.CFB_CLOCK,
-    season_group_label="Conference")
+    season_group_label="Conference", season_over=(2, 1))
 LEAGUES = {lg.name: lg for lg in (NFL, COLLEGE)}
 
 
@@ -993,6 +1015,146 @@ def situational_baselines(league: League, season: int) -> dict[str, dict[str, np
     return _situational_baselines(league.name, season)
 
 
+# ---------- Disk cache (finished seasons) ----------
+# A finished season's published data doesn't change, so its play-by-play and
+# Season stats tables are computed once and kept on disk: a restart, or the
+# server sleeping, doesn't mean downloading and computing them again. Files
+# are keyed by what they were built from plus a hash of the code that builds
+# them, so a change to the stat logic starts over instead of serving old
+# numbers. The oldest-used files go once the folder passes its size cap.
+SEASON_CACHE_DIR = Path(os.environ.get("SEASON_CACHE_DIR",
+                                       nflfastr_models.CACHE_DIR / "seasons"))
+SEASON_CACHE_MAX_BYTES = int(float(os.environ.get("SEASON_CACHE_MAX_GB", "2")) * 1e9)
+# Bump to drop every saved season (e.g. after nflverse republishes old seasons).
+SEASON_CACHE_EPOCH = 1
+_CODE_FILES = ("replay_core.py", "leagues.py", "cfb_feed.py", "live_feed.py",
+               "nflfastr_models.py", "season_store.py")
+
+
+def _code_version() -> str:
+    """A hash of the modules the cached data is built with."""
+    h = hashlib.sha256(str(SEASON_CACHE_EPOCH).encode())
+    here = Path(__file__).resolve().parent
+    for name in _CODE_FILES:
+        try:
+            h.update((here / name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
+
+_CODE_VERSION = _code_version()
+
+
+def _disk_path(kind: str, key: tuple) -> Path:
+    digest = hashlib.sha256(repr((key, _CODE_VERSION)).encode()).hexdigest()[:24]
+    return SEASON_CACHE_DIR / f"{kind}_{key[0].replace(' ', '_')}_{key[1]}_{digest}.pkl"
+
+
+def disk_cached(kind: str, key: tuple, build):
+    """`build()`'s result, saved under (`kind`, `key`, the code's hash) the
+    first time and read back after that. `key` starts (league name, season).
+    A file that can't be read is built again; a cache that can't be written
+    is skipped, so the page works the same, only slower."""
+    path = _disk_path(kind, key)
+    try:
+        with path.open("rb") as f:
+            value = pickle.load(f)
+        os.utime(path)  # most recently used: pruned last
+        return value
+    except FileNotFoundError:
+        pass
+    except Exception:  # truncated or from another pandas: build it again
+        path.unlink(missing_ok=True)
+    value = build()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        with tmp.open("wb") as f:
+            pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)  # whole files only, for other sessions reading it
+        _prune_disk_cache()
+    except OSError:
+        pass
+    return value
+
+
+def _prune_disk_cache() -> None:
+    """Delete the least recently used files past `SEASON_CACHE_MAX_BYTES`
+    (files from an older version of the code are never read again, so they
+    go first)."""
+    stats = []
+    for p in SEASON_CACHE_DIR.glob("*.pkl"):
+        try:
+            stats.append((p.stat().st_mtime, p.stat().st_size, p))
+        except OSError:
+            continue
+    total = sum(size for _, size, _ in stats)
+    for _, size, p in sorted(stats):
+        if total <= SEASON_CACHE_MAX_BYTES:
+            break
+        p.unlink(missing_ok=True)
+        total -= size
+
+
+# ---------- Season store (precomputed finished seasons) ----------
+# A fresh deploy has an empty disk, so finished seasons' common selections are
+# also published precomputed (season_store.py; tools/build_season_store.py and
+# .github/workflows/season_store.yml build them) as release assets of this
+# public repo. A file built by other code than the app's is ignored.
+SEASON_STORE_URL = os.environ.get(
+    "SEASON_STORE_URL",
+    "https://github.com/bullaspc/nfl_replays_pbp/releases/download/season-store")
+# The leagues and first seasons the workflow publishes.
+SEASON_STORE_FIRST = {"NFL": 2016}
+
+
+def _store_get(name: str) -> bytes | None:
+    try:
+        r = requests.get(f"{SEASON_STORE_URL}/{name}", timeout=20)
+        return r.content if r.status_code == 200 else None
+    except requests.RequestException:
+        return None
+
+
+@st.cache_data(ttl=3600, max_entries=40, show_spinner=False)
+def _store_manifest(league_name: str, season: int) -> dict | None:
+    """The season's store manifest (reg_weeks, code), if it was built by
+    this code; checked again hourly, so files the workflow publishes after
+    a deploy are picked up."""
+    if season < SEASON_STORE_FIRST.get(league_name, 10_000):
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, "manifest"))
+    try:
+        manifest = json.loads(data) if data else None
+    except ValueError:
+        return None
+    return manifest if manifest and manifest.get("code") == _CODE_VERSION else None
+
+
+def _stored_tables(league_name: str, season: int, weeks: tuple[int, int], part: str,
+                   play_filter: core.PlayFilter, venue: str | None, adjusted: bool) -> dict | None:
+    """The selection's tables from the season store, or None if it doesn't
+    keep this selection (or can't be reached)."""
+    manifest = _store_manifest(league_name, season)
+    name = manifest and season_store.lookup(manifest, weeks, part, play_filter, venue, adjusted)
+    if not name:
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, name))
+    try:
+        return season_store.unpack_tables(data, _CODE_VERSION) if data else None
+    except Exception:
+        return None
+
+
+@st.cache_data(max_entries=4, show_spinner=False)
+def _final_season_pbp(league_name: str, season: int) -> pd.DataFrame:
+    """A finished season's `League.season_pbp`, from the disk cache."""
+    league = LEAGUES[league_name]
+    return disk_cached("pbp", (league_name, season),
+                       lambda: league._season_pbp(season, league.stamp()))
+
+
 # ---------- Season stats ----------
 # Which games the Season stats page counts: (regular season, postseason).
 SEASON_PARTS = {"Regular season": (True, False), "Postseason": (False, True),
@@ -1029,6 +1191,33 @@ def _scrimmage(pbp: pd.DataFrame) -> int:
 def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
                    part: str, play_filter: core.PlayFilter, venue: str | None,
                    adjusted: bool, chart_stamp: str = "") -> dict:
+    return _build_season_tables(league_name, season, stamp, weeks, part, play_filter, venue,
+                                adjusted)
+
+
+@st.cache_data(max_entries=6, show_spinner=False)
+def _final_season_tables(league_name: str, season: int, weeks: tuple[int, int], part: str,
+                         play_filter: core.PlayFilter, venue: str | None,
+                         adjusted: bool) -> dict:
+    """`_season_tables` for a finished season, from the disk cache, else the
+    season store, else computed (and saved to disk); no stamps, since the
+    data won't change."""
+    league = LEAGUES[league_name]
+
+    def build() -> dict:
+        stored = _stored_tables(league_name, season, weeks, part, play_filter, venue, adjusted)
+        if stored is not None:
+            return stored
+        return _build_season_tables(league_name, season, league.stamp(), weeks, part,
+                                    play_filter, venue, adjusted)
+
+    return disk_cached(
+        "tables", (league_name, season, weeks, part, tuple(play_filter), venue, adjusted), build)
+
+
+def _build_season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
+                         part: str, play_filter: core.PlayFilter, venue: str | None,
+                         adjusted: bool) -> dict:
     league = LEAGUES[league_name]
     # FTN's charting adds core.CHART_ROWS to the team tables (chart_stamp keys the cache).
     pbp = core.with_charting(season_plays(league, season, stamp, weeks, part, play_filter),
@@ -1111,6 +1300,9 @@ def season_tables(league: League, season: int, stamp: str, weeks: tuple[int, int
     and defenders aren't. Where the league has FTN's charting
     (`League.charting`), the team tables add `core.CHART_ROWS`, and
     "charted" is (games charted, games) in the selection."""
+    if league.season_final(season):  # kept on disk: loads in well under a second
+        return _final_season_tables(league.name, season, tuple(int(w) for w in weeks), part,
+                                    play_filter, core.VENUES[venue], SEASON_ADJUST[adjust])
     chart_stamp = (nflverse_stamp("ftn_charting")
                    if isinstance(league, NFLLeague) and season >= CHART_FIRST_SEASON else "")
     return _season_tables(league.name, season, stamp, tuple(weeks), part, play_filter,
@@ -1179,10 +1371,29 @@ def _season_player_ids(league_name: str, season: int, stamp: str) -> pd.DataFram
     return core.player_ids(LEAGUES[league_name].season_pbp(season, stamp))
 
 
+@st.cache_data(max_entries=6, show_spinner=False)
+def _final_season_player_ids(league_name: str, season: int) -> pd.DataFrame:
+    def build() -> pd.DataFrame:
+        if _store_manifest(league_name, season):
+            data = _store_get(season_store.asset_name(league_name, season, "ids"))
+            try:
+                ids = season_store.unpack_frame(data, _CODE_VERSION) if data else None
+            except Exception:
+                ids = None
+            if ids is not None:
+                return ids
+        league = LEAGUES[league_name]
+        return core.player_ids(league.season_pbp(season, league.stamp()))
+    return disk_cached("ids", (league_name, season), build)
+
+
 def season_player_ids(league: League, season: int, stamp: str) -> pd.DataFrame:
     """(team, name, gsis_id) for the season's passers, rushers and receivers
     (`core.player_ids`), to find a season table's players on an injury
-    report. Empty without ids (college)."""
+    report. Empty without ids (college). A finished season's comes from the
+    disk cache or the season store, without its play-by-play."""
+    if league.season_final(season):
+        return _final_season_player_ids(league.name, season)
     return _season_player_ids(league.name, season, stamp)
 
 
