@@ -1131,10 +1131,18 @@ def _end_rows(out: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
     ends = out.loc[idx, ["game_id", "season", "week", "game_date", "home_team", "away_team",
                          "qtr", "total_home_score", "total_away_score", "home_wp", "away_wp",
                          "_ord"]].copy()
+    # Some older games' first rows carry no period, so their quarter is
+    # unknown: no END QUARTER for those, but a finished game keeps END GAME.
+    fin = done[idx].to_numpy()
+    keep = ends["qtr"].notna().to_numpy() | fin
+    ends, fin = ends[keep], fin[keep]
+    if ends.empty:
+        return pd.DataFrame()
     q = ends["qtr"]
-    ends["desc"] = np.where(done[idx], "END GAME",
-                            np.where(q <= 4, "END QUARTER " + q.astype(int).astype(str),
-                                     "END OVERTIME " + (q - 4).astype(int).astype(str)))
+    qi = q.fillna(0).astype(int)
+    ends["desc"] = np.where(fin, "END GAME",
+                            np.where(q <= 4, "END QUARTER " + qi.astype(str),
+                                     "END OVERTIME " + (qi - 4).astype(str)))
     ends["time"] = np.where(q <= 4, "0:00", None)
     ends["game_seconds_remaining"] = np.where(q <= 4, (4 - q) * 900, np.nan)
     ends["posteam"] = ends["defteam"] = ends["play_type"] = None

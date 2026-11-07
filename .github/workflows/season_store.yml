@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       seasons: ${{ steps.seasons.outputs.seasons }}
-      current: ${{ steps.seasons.outputs.current }}
+      baseline_jobs: ${{ steps.seasons.outputs.baseline_jobs }}
     steps:
       - id: seasons
         run: |
@@ -58,8 +58,13 @@ jobs:
           first = int("${{ github.event.inputs.first }}" or 2016)
           last = int("${{ github.event.inputs.last }}" or finished)
           print("seasons=" + json.dumps(list(range(first, min(last, finished) + 1))))
-          # The season the app opens on (pages: year if August or later), for the baselines.
-          print("current=" + str(today.year if today.month >= 8 else today.year - 1))
+          # Percentile baselines for every season up to the one the app opens on
+          # (year if August or later), from leagues.BASELINE_STORE_FIRST, 6 a job.
+          current = today.year if today.month >= 8 else today.year - 1
+          jobs = [{"league": lg, "first": a, "last": min(a + 5, current)}
+                  for lg, first_b in (("NFL", 2000), ("College football", 2015))
+                  for a in range(first_b, current + 1, 6)]
+          print("baseline_jobs=" + json.dumps(jobs))
           EOF
       - name: Make sure the release exists
         env:
@@ -98,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        league: ["NFL", "College football"]
+        include: ${{ fromJson(needs.plan.outputs.baseline_jobs) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,8 +111,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python tools/build_season_store.py baselines ${{ needs.plan.outputs.current }} out "${{ matrix.league }}"
+      - run: python tools/build_season_store.py baselines ${{ matrix.first }} ${{ matrix.last }} out "${{ matrix.league }}"
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*_baselines.zip
+        run: |
+          ls out/*_baselines.zip >/dev/null 2>&1 || exit 0
+          gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*_baselines.zip
