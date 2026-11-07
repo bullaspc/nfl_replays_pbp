@@ -336,7 +336,9 @@ def _preview_result() -> None:
         st.error(err["text"])
     preview = st.session_state.get("_mu_previews", {}).get(preview_key)
     if preview:
-        with st.container(border=True):
+        # Open when written; the viewer can fold it away, and it stays folded
+        # (keyed) through reruns and later previews.
+        with st.expander("🧠 Preview", expanded=True, key="_mu_exp_ai_preview"):
             st.markdown(preview["text"])
             note = f"{preview['model']} · {preview['selection']}"
             if preview["selection"] != sel_note:

@@ -736,7 +736,9 @@ def _pregame_result() -> None:
         st.info(err["text"])
     preview = st.session_state.get("_pv_previews", {}).get(_pv_key)
     if preview:
-        with st.container(border=True):
+        # Open when written; the viewer can fold it away, and it stays folded
+        # (keyed) through reruns and later previews.
+        with st.expander("🔮 Preview", expanded=True, key="_exp_ai_preview"):
             st.markdown(preview["text"])
             st.caption(f"{preview['model']} · {preview['selection']}")
         with st.expander("The numbers behind it"):
@@ -882,7 +884,7 @@ def _summary_result() -> None:
     # Show a summary only for this game and only up to the unlocked edge. Moving the
     # clock inputs back lowers that edge and hides it until you get there again.
     if summary and summary["game_id"] == game_id and summary["anchor"] <= cursor_anchor(timeline, cursor_max):
-        with st.container(border=True):
+        with st.expander("🧠 Summary", expanded=True, key="_exp_ai_summary"):
             st.markdown(summary["text"])
             note = f"As of {summary['as_of']} · {summary['model']}"
             if summary["anchor"] != cursor_anchor(timeline, cursor_idx):
@@ -1630,8 +1632,10 @@ def _booth_result() -> None:
     if job and job["game_id"] == game_id:
         p = job["progress"]
         # Lines written so far, behind the same gate as a finished talk.
-        if _talk_edge is not None and job["anchor"] <= _talk_edge:
-            _booth_lines(list(p.lines))
+        if _talk_edge is not None and job["anchor"] <= _talk_edge and p.lines:
+            with st.expander(f"🎙️ Conversation ({len(p.lines)} lines)", expanded=True,
+                             key="_exp_ai_booth"):
+                _booth_lines(list(p.lines))
         with st.status(f"🎙️ {p.status}… ({time.time() - job['started']:.0f}s)", state="running"):
             for step in p.steps:
                 st.markdown(f"✓ {step}")
@@ -1641,12 +1645,14 @@ def _booth_result() -> None:
             st.error(err["text"])
         if _talk_base is not None:
             talk = _talks[_talk_base]
-            _booth_lines(talk["lines"])
-            note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
-            if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
-                note += " · you've moved since: jump in or start a new conversation to catch them up"
-            st.caption(note)
-            _talk_download(talk, _talk_base)
+            with st.expander(f"🎙️ Conversation ({len(talk['lines'])} lines)", expanded=True,
+                             key="_exp_ai_booth"):
+                _booth_lines(talk["lines"])
+                note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
+                if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
+                    note += " · you've moved since: jump in or start a new conversation to catch them up"
+                st.caption(note)
+                _talk_download(talk, _talk_base)
     earlier = [i for i in range(len(_talks)) if i != _talk_base and _visible_talk(i)]
     if earlier:
         with st.expander(f"Earlier conversations ({len(earlier)})", key="_exp_talks"):
