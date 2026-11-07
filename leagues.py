@@ -853,10 +853,21 @@ def _cfb_baseline_build(prior: int) -> pd.DataFrame:
     if fbs:
         raw = raw[raw["game_id"].astype(str).isin(fbs)]
     ids = np.sort(raw["game_id"].unique())
+    def mapped(rows: pd.DataFrame) -> pd.DataFrame:
+        return with_xrush(cfb_feed.to_pbp(rows, core.PBP_COLS), "CFB")[core.BASELINE_COLS]
+
     parts = []
     for start in range(0, len(ids), _BASELINE_CHUNK_GAMES):
-        chunk = raw[raw["game_id"].isin(ids[start:start + _BASELINE_CHUNK_GAMES])]
-        parts.append(with_xrush(cfb_feed.to_pbp(chunk, core.PBP_COLS), "CFB")[core.BASELINE_COLS])
+        chunk_ids = ids[start:start + _BASELINE_CHUNK_GAMES]
+        chunk = raw[raw["game_id"].isin(chunk_ids)]
+        try:
+            parts.append(mapped(chunk))
+        except Exception:  # one malformed game (older feeds): map them one by one, skip it
+            for gid in chunk_ids:
+                try:
+                    parts.append(mapped(chunk[chunk["game_id"] == gid]))
+                except Exception:
+                    continue
     del raw
     if not parts:
         return pd.DataFrame(columns=core.BASELINE_COLS)
@@ -972,7 +983,11 @@ def load_scoreboard(league_key: str) -> list[scoreboard.TickerGame]:
 # of loading a season or three of play-by-play (over a gigabyte at its peak
 # for college, which crashed the app on Streamlit Community Cloud).
 BASELINE_KINDS = ("stat", "situational", "series", "line", "player", "tendency", "chart")
-BASELINE_STORE_LEAGUES = ("NFL", "College football")
+# The seasons the season store has baselines for, from these on: the NFL's
+# use the three seasons before (data from 1999), college's the one before
+# (its release's files before 2014 lack columns the app reads). Keep in step
+# with .github/workflows/season_store.yml.
+BASELINE_STORE_FIRST = {"NFL": 2000, "College football": 2015}
 
 
 def compute_baselines(league_name: str, season: int) -> dict:
@@ -1007,7 +1022,7 @@ def compute_baselines(league_name: str, season: int) -> dict:
 
 def _stored_baselines(league_name: str, season: int) -> dict | None:
     """The season store's bundle for `season`, if it has one built by this code."""
-    if league_name not in BASELINE_STORE_LEAGUES:
+    if season < BASELINE_STORE_FIRST.get(league_name, 10_000):
         return None
     data = _store_get(season_store.asset_name(league_name, season, "baselines"))
     try:
