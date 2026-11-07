@@ -722,7 +722,43 @@ def _text_offense_names(raw: pd.DataFrame) -> pd.DataFrame:
                                ("receiver_player_name", _RECEIVER, is_pass)):
         named = found(pattern).where(role)
         raw[col] = named.where(named.notna(), raw[col].map(crew_spelling))
+    _text_kicks(raw, body, crew)
     return raw
+
+
+_FG_TRY = re.compile(rf"{_PLAYER} field goal attempt from (\d+) yards?\b")
+_PUNTED = re.compile(rf"{_PLAYER} punt (-?\d+) yards?\b")
+_PUNT_RETURN = re.compile(r"\breturn (-?\d+) yards?\b")
+
+
+def _text_kicks(raw: pd.DataFrame, body: pd.Series, crew: pd.Series) -> None:
+    """Field goal and punt columns of a live game, from stat-crew text, in
+    place. sportsdataverse's own parsing reads only the older text ('35 Yd
+    Field Goal', 'punt for 42 yds'), so on stat-crew rows ('#38 K.McLaughlin
+    field goal attempt from 42 yards NO GOOD', '#34 P.Stainton punt 51 yards
+    to the BUFF29 #6 M.Greer return 4 yards') it leaves the kicker, the
+    distance and the punt's yards blank and reads the return as 0 or none.
+    The release, built later, has them; this fills them its way: a blocked
+    punt 0 yards, a touchback's return 20, a fair catch's 0 (no return in the
+    text keeps sportsdataverse's). The older rows'
+    kickers and punters take crew_spelling(), as the passers do."""
+    fg, punt = _b(raw["fg_attempt"]), _b(raw["punt"])
+    for col in ("fg_kicker_player_name", "punter_player_name"):
+        raw[col] = raw[col].map(crew_spelling)
+    kick = body.str.extract(_FG_TRY).where(crew & fg)
+    has = kick[1].notna()
+    raw.loc[has, "fg_kicker_player_name"] = kick.loc[has, 0].map(_crew_name)
+    raw.loc[has, "yds_fg"] = kick.loc[has, 1].astype(float)
+    punted = body.str.extract(_PUNTED).where(crew & punt)
+    has = punted[1].notna()
+    raw.loc[has, "punter_player_name"] = punted.loc[has, 0].map(_crew_name)
+    raw.loc[has, "yds_punted"] = punted.loc[has, 1].astype(float).where(
+        ~_b(raw.loc[has, "punt_blocked"]), 0.0)
+    ret = body.str.extract(_PUNT_RETURN, expand=False).where(has).astype(float)
+    tb = _b(raw["punt_tb"])
+    fair = body.str.contains(r"fair catch", case=False)
+    raw.loc[has, "yds_punt_return"] = ret.where(ret.notna(), pd.Series(np.where(
+        tb, 20.0, np.where(fair, 0.0, _num(raw["yds_punt_return"]))), index=raw.index))[has]
 
 
 def _crew_columns(out: pd.DataFrame, text: pd.Series, scrimmage: pd.Series) -> None:

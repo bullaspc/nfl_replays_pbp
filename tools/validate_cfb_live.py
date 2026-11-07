@@ -9,7 +9,9 @@ is, and compares with the published game mapped by to_pbp:
 
 - whole games: row counts and final scores, then, on plays matched by
   quarter, clock and text, play type, down/distance/spot, possession and
-  score, and how far EPA and win probability are apart. They come from the
+  score, field goal and punt yards (kick_distance, return_yards, touchback;
+  sportsdataverse reads none of them from stat-crew text, cfb_feed._text_kicks
+  does), and how far EPA and win probability are apart. They come from the
   same models but aren't identical: the release may be built with another
   sportsdataverse version, and the rebuilt JSON starts from the release's
   processed spots rather than ESPN's own;
@@ -142,7 +144,8 @@ def main(season: int, path: str | None = None, n_games: int = 40) -> None:
     rng = np.random.default_rng(1)
     row_diff = []
     agree = {k: [] for k in ("play_type", "down", "ydstogo", "yardline_100", "posteam",
-                             "total_home_score", "total_away_score")}
+                             "total_home_score", "total_away_score",
+                             "kick_distance", "return_yards", "touchback")}
     gaps = {"epa": [], "home_wp": []}
     finals = []
     cut_ok, cut_fail = 0, []
