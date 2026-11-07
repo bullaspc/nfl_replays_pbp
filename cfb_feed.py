@@ -490,9 +490,8 @@ _SUMMARY_LISTS = ("leaders", "broadcasts", "pickcenter", "againstTheSpread", "od
 
 def fetch_summary(event_id, timeout: float = 15) -> dict:
     """ESPN's public college summary for one game: header, drives and plays."""
-    r = requests.get(SUMMARY_URL, params={"event": str(event_id)}, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    from live_feed import espn_get
+    return espn_get(SUMMARY_URL, {"event": str(event_id)}, timeout)
 
 
 def game_state(summary: dict) -> str:

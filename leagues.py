@@ -403,15 +403,35 @@ def load_nflfastr_models():
         return None, None, str(e)
 
 
+# The last summary each live game's feed returned, so one failed refresh (an
+# ESPN 403 that outlasts espn_get's retries) keeps the page on the plays it
+# had instead of an error. Shared by every session, like the caches.
+_LAST_SUMMARY: dict[tuple[str, str], tuple[dict, str]] = {}
+
+
+def _summary_or_last(league: str, game_id, fetch) -> tuple[dict, str]:
+    """(summary, fetched-at clock): a fresh fetch, else the last good one
+    for the game (its own, earlier clock), else the fetch's error."""
+    key = (league, str(game_id))
+    try:
+        got = fetch(game_id), datetime.now().strftime("%H:%M:%S")
+    except Exception:
+        if key in _LAST_SUMMARY:
+            return _LAST_SUMMARY[key]
+        raise
+    _LAST_SUMMARY[key] = got
+    return got
+
+
 @st.cache_data(ttl=20)
 def load_live_game(sched_row: dict) -> tuple[pd.DataFrame, str, str, str | None]:
     """A not-yet-published game from ESPN's play feed, in nflfastR's layout,
     with EP/EPA/WP from nflfastR's models. Returns (pbp, espn state,
     fetched-at clock, model error). Cached 20s, so reruns don't hammer ESPN."""
-    summary = live_feed.fetch_summary(int(sched_row["espn"]))
+    summary, fetched_at = _summary_or_last("NFL", int(sched_row["espn"]), live_feed.fetch_summary)
     models, fg_table, model_err = load_nflfastr_models()
     df = with_xrush(live_feed.build_live_pbp(summary, sched_row, models, fg_table, core.PBP_COLS), "NFL")
-    return df, live_feed.game_state(summary), datetime.now().strftime("%H:%M:%S"), model_err
+    return df, live_feed.game_state(summary), fetched_at, model_err
 
 
 @st.cache_data(max_entries=4)
@@ -711,9 +731,9 @@ def load_cfb_live_game(game_id: str) -> tuple[pd.DataFrame, str, str]:
     """A not-yet-published college game from ESPN's feed, through
     sportsdataverse's processing, in the app's layout. Returns (pbp, ESPN
     state, fetched-at clock). Cached 20s, so reruns don't hammer ESPN."""
-    summary = cfb_feed.fetch_summary(game_id)
+    summary, fetched_at = _summary_or_last("CFB", game_id, cfb_feed.fetch_summary)
     pbp = with_xrush(cfb_feed.to_pbp(cfb_feed.live_raw(summary, game_id), core.PBP_COLS), "CFB")
-    return pbp, cfb_feed.game_state(summary), datetime.now().strftime("%H:%M:%S")
+    return pbp, cfb_feed.game_state(summary), fetched_at
 
 
 @st.cache_data(ttl=3600)

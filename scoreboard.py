@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import pandas as pd
 import requests
 
-from live_feed import ESPN_TEAM_FIX
+from live_feed import ESPN_HEADERS, ESPN_TEAM_FIX
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports/football"
 # League key → (scoreboard URL, query). College asks for every FBS game
@@ -71,7 +71,7 @@ def fetch(league: str, timeout: float = 5) -> dict:
     """ESPN's scoreboard JSON for a league key ("NFL" / "CFB"). A short
     timeout: the page waits on it before drawing the score."""
     url, params = SCOREBOARDS[league]
-    r = requests.get(url, params=params, timeout=timeout)
+    r = requests.get(url, params=params, headers=ESPN_HEADERS, timeout=timeout)
     r.raise_for_status()
     return r.json()
 

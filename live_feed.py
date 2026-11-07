@@ -17,6 +17,7 @@ tools/validate_text_parser.py.
 from __future__ import annotations
 
 import re
+import time
 
 import numpy as np
 import pandas as pd
@@ -442,11 +443,47 @@ def add_derived_columns(base: pd.DataFrame, season_type: str = "REG") -> pd.Data
 
 
 # ---------- ESPN feed ----------
+# ESPN's CDN now and then answers 403 (or 429) to a burst of requests,
+# more often from cloud hosts and to clients without a browser User-Agent.
+# It passes within seconds, and the same API is served from a second host.
+ESPN_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+ESPN_HOSTS = ("site.api.espn.com", "site.web.api.espn.com")
+ESPN_RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+ESPN_BACKOFF_SECS = (0.5, 1.5)
+
+
+def espn_get(url: str, params: dict | None = None, timeout: float = 15) -> dict:
+    """GET one of ESPN's site API endpoints as JSON. A 403/429/5xx or a
+    network error is retried after a short pause, alternating between
+    `ESPN_HOSTS`; the last error is raised once every try has failed."""
+    urls = [url] + [url.replace(ESPN_HOSTS[0], h, 1) for h in ESPN_HOSTS[1:]
+                    if ESPN_HOSTS[0] in url]
+    err: Exception | None = None
+    for i in range(len(ESPN_BACKOFF_SECS) + 1):
+        if i:
+            time.sleep(ESPN_BACKOFF_SECS[i - 1])
+        try:
+            r = requests.get(urls[i % len(urls)], params=params, headers=ESPN_HEADERS,
+                             timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            err = e
+            continue
+        if r.status_code in ESPN_RETRY_STATUS:
+            err = requests.HTTPError(f"{r.status_code} from {r.url}", response=r)
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise err
+
+
 def fetch_summary(event_id, timeout: float = 15) -> dict:
     """ESPN's game summary JSON (drives, plays, header)."""
-    r = requests.get(SUMMARY_URL, params={"event": str(event_id)}, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    return espn_get(SUMMARY_URL, {"event": str(event_id)}, timeout)
 
 
 def game_state(summary: dict) -> str:
