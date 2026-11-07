@@ -655,8 +655,8 @@ st.divider()
 # One row of links to the sections, sticky under Streamlit's header
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
-             ("Kicking", "kicking"), ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
+             ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
+             ("Kicking", "kicking"), ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
@@ -665,13 +665,6 @@ st.subheader("Boxscore", anchor="boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
-# Kicking and punting so far, per team: field goals made/attempted overall and
-# by distance, the longest, extra points; punts with gross and net average.
-st.caption("Kicking and punting")
-stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
-st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
-           "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
-           "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks")
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -743,7 +736,9 @@ def _pregame_result() -> None:
         st.info(err["text"])
     preview = st.session_state.get("_pv_previews", {}).get(_pv_key)
     if preview:
-        with st.container(border=True):
+        # Open when written; the viewer can fold it away, and it stays folded
+        # (keyed) through reruns and later previews.
+        with st.expander("🔮 Preview", expanded=True, key="_exp_ai_preview"):
             st.markdown(preview["text"])
             st.caption(f"{preview['model']} · {preview['selection']}")
         with st.expander("The numbers behind it"):
@@ -889,7 +884,7 @@ def _summary_result() -> None:
     # Show a summary only for this game and only up to the unlocked edge. Moving the
     # clock inputs back lowers that edge and hides it until you get there again.
     if summary and summary["game_id"] == game_id and summary["anchor"] <= cursor_anchor(timeline, cursor_max):
-        with st.container(border=True):
+        with st.expander("🧠 Summary", expanded=True, key="_exp_ai_summary"):
             st.markdown(summary["text"])
             note = f"As of {summary['as_of']} · {summary['model']}"
             if summary["anchor"] != cursor_anchor(timeline, cursor_idx):
@@ -1220,36 +1215,6 @@ if _snap is not None:
 elif not revealed.empty:
     st.caption("Nothing to estimate: the half is over, or the last play hasn't been scored yet.")
 
-# ---------- Kicking ----------
-# Each team's kickers and punters so far, then every field goal try and punt.
-st.subheader("Kicking", anchor="kicking")
-if hide_leaders:
-    st.caption("Kickers and punters are hidden with the player leaders (Spoiler shield).")
-else:
-    col_a, col_h = st.columns(2)
-    for col, team in [(col_a, away), (col_h, home)]:
-        with col:
-            st.markdown(f"**{team}**")
-            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
-                                   ("Punting", top_punters(revealed, team))]:
-                st.caption(_label)
-                if not _st_df.empty:
-                    stat_table(style_kicking_table(with_draft(with_class_year(
-                        _st_df, class_years, team), draft_board, team)), hide_index=True)
-                else:
-                    st.caption("None yet")
-    _kicks_df = kick_log(revealed)
-    with st.expander(f"Field goal tries and punts ({len(_kicks_df)})", expanded=False,
-                     key="_exp_kicks"):
-        if _kicks_df.empty:
-            st.caption("No kicks yet.")
-        else:
-            stat_table(style_kick_log(_kicks_df), hide_index=True)
-    st.caption("FG and its distance bands: made/attempted · Long: longest made (yds) · FG EPA / "
-               "Punt EPA: expected points his tries or punts added · Avg / Net: gross and net yards "
-               "per punt (net takes off the return and 20 a touchback) · In20: punts that left the "
-               "receiver inside his 20 · TB: touchbacks.")
-
 # ---------- Explosive plays ----------
 if not revealed.empty:
     _exp_df = explosive_plays(revealed)
@@ -1325,6 +1290,43 @@ st.caption("EPA/play and SR (EPA > 0) count snaps a penalty wiped out, as above;
            "share of real plays that earned a first down. Early downs = 1st–2nd, late = 3rd–4th; "
            "no kneels or spikes. Colors show percentile vs team games in the "
            f"{league.baseline_label}.")
+
+# ---------- Kicking ----------
+# Each team's kicking and punting totals so far (field goals made/attempted
+# overall and by distance, the longest, extra points; punts with gross and net
+# average), then its kickers and punters, then every field goal try and punt.
+st.subheader("Kicking", anchor="kicking")
+st.caption("Kicking and punting")
+stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
+if hide_leaders:
+    st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
+               "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
+               "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks. "
+               "Kickers and punters are hidden with the player leaders (Spoiler shield).")
+else:
+    col_a, col_h = st.columns(2)
+    for col, team in [(col_a, away), (col_h, home)]:
+        with col:
+            st.markdown(f"**{team}**")
+            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
+                                   ("Punting", top_punters(revealed, team))]:
+                st.caption(_label)
+                if not _st_df.empty:
+                    stat_table(style_kicking_table(with_draft(with_class_year(
+                        _st_df, class_years, team), draft_board, team)), hide_index=True)
+                else:
+                    st.caption("None yet")
+    _kicks_df = kick_log(revealed)
+    with st.expander(f"Field goal tries and punts ({len(_kicks_df)})", expanded=False,
+                     key="_exp_kicks"):
+        if _kicks_df.empty:
+            st.caption("No kicks yet.")
+        else:
+            stat_table(style_kick_log(_kicks_df), hide_index=True)
+    st.caption("FG and its distance bands: made/attempted · Long: longest made (yds) · FG EPA / "
+               "Punt EPA: expected points his tries or punts added · Avg / Net: gross and net yards "
+               "per punt (net takes off the return and 20 a touchback) · In20: punts that left the "
+               "receiver inside his 20 · TB: touchbacks.")
 
 # ---------- Line play ----------
 st.subheader("Line play", anchor="line-play")
@@ -1630,8 +1632,10 @@ def _booth_result() -> None:
     if job and job["game_id"] == game_id:
         p = job["progress"]
         # Lines written so far, behind the same gate as a finished talk.
-        if _talk_edge is not None and job["anchor"] <= _talk_edge:
-            _booth_lines(list(p.lines))
+        if _talk_edge is not None and job["anchor"] <= _talk_edge and p.lines:
+            with st.expander(f"🎙️ Conversation ({len(p.lines)} lines)", expanded=True,
+                             key="_exp_ai_booth"):
+                _booth_lines(list(p.lines))
         with st.status(f"🎙️ {p.status}… ({time.time() - job['started']:.0f}s)", state="running"):
             for step in p.steps:
                 st.markdown(f"✓ {step}")
@@ -1641,12 +1645,14 @@ def _booth_result() -> None:
             st.error(err["text"])
         if _talk_base is not None:
             talk = _talks[_talk_base]
-            _booth_lines(talk["lines"])
-            note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
-            if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
-                note += " · you've moved since: jump in or start a new conversation to catch them up"
-            st.caption(note)
-            _talk_download(talk, _talk_base)
+            with st.expander(f"🎙️ Conversation ({len(talk['lines'])} lines)", expanded=True,
+                             key="_exp_ai_booth"):
+                _booth_lines(talk["lines"])
+                note = f"As of {talk['as_of']} · {' & '.join(talk['models'])}"
+                if talk["anchor"] != cursor_anchor(timeline, cursor_idx):
+                    note += " · you've moved since: jump in or start a new conversation to catch them up"
+                st.caption(note)
+                _talk_download(talk, _talk_base)
     earlier = [i for i in range(len(_talks)) if i != _talk_base and _visible_talk(i)]
     if earlier:
         with st.expander(f"Earlier conversations ({len(earlier)})", key="_exp_talks"):
