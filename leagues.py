@@ -18,6 +18,7 @@ The loaders here are cached with Streamlit; the modules they call aren't.
 """
 
 import hashlib
+import json
 import os
 import pickle
 import time
@@ -38,6 +39,7 @@ import game_summary
 import live_feed
 import nflfastr_models
 import replay_core as core
+import season_store
 import scoreboard
 
 
@@ -1026,7 +1028,7 @@ SEASON_CACHE_MAX_BYTES = int(float(os.environ.get("SEASON_CACHE_MAX_GB", "2")) *
 # Bump to drop every saved season (e.g. after nflverse republishes old seasons).
 SEASON_CACHE_EPOCH = 1
 _CODE_FILES = ("replay_core.py", "leagues.py", "cfb_feed.py", "live_feed.py",
-               "nflfastr_models.py")
+               "nflfastr_models.py", "season_store.py")
 
 
 def _code_version() -> str:
@@ -1095,6 +1097,56 @@ def _prune_disk_cache() -> None:
         total -= size
 
 
+# ---------- Season store (precomputed finished seasons) ----------
+# A fresh deploy has an empty disk, so finished seasons' common selections are
+# also published precomputed (season_store.py; tools/build_season_store.py and
+# .github/workflows/season_store.yml build them) as release assets of this
+# public repo. A file built by other code than the app's is ignored.
+SEASON_STORE_URL = os.environ.get(
+    "SEASON_STORE_URL",
+    "https://github.com/bullaspc/nfl_replays_pbp/releases/download/season-store")
+# The leagues and first seasons the workflow publishes.
+SEASON_STORE_FIRST = {"NFL": 2016}
+
+
+def _store_get(name: str) -> bytes | None:
+    try:
+        r = requests.get(f"{SEASON_STORE_URL}/{name}", timeout=20)
+        return r.content if r.status_code == 200 else None
+    except requests.RequestException:
+        return None
+
+
+@st.cache_data(ttl=3600, max_entries=40, show_spinner=False)
+def _store_manifest(league_name: str, season: int) -> dict | None:
+    """The season's store manifest (reg_weeks, code), if it was built by
+    this code; checked again hourly, so files the workflow publishes after
+    a deploy are picked up."""
+    if season < SEASON_STORE_FIRST.get(league_name, 10_000):
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, "manifest"))
+    try:
+        manifest = json.loads(data) if data else None
+    except ValueError:
+        return None
+    return manifest if manifest and manifest.get("code") == _CODE_VERSION else None
+
+
+def _stored_tables(league_name: str, season: int, weeks: tuple[int, int], part: str,
+                   play_filter: core.PlayFilter, venue: str | None, adjusted: bool) -> dict | None:
+    """The selection's tables from the season store, or None if it doesn't
+    keep this selection (or can't be reached)."""
+    manifest = _store_manifest(league_name, season)
+    name = manifest and season_store.lookup(manifest, weeks, part, play_filter, venue, adjusted)
+    if not name:
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, name))
+    try:
+        return season_store.unpack_tables(data, _CODE_VERSION) if data else None
+    except Exception:
+        return None
+
+
 @st.cache_data(max_entries=4, show_spinner=False)
 def _final_season_pbp(league_name: str, season: int) -> pd.DataFrame:
     """A finished season's `League.season_pbp`, from the disk cache."""
@@ -1147,13 +1199,20 @@ def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, 
 def _final_season_tables(league_name: str, season: int, weeks: tuple[int, int], part: str,
                          play_filter: core.PlayFilter, venue: str | None,
                          adjusted: bool) -> dict:
-    """`_season_tables` for a finished season, from the disk cache (computed
-    and saved the first time); no stamps, since the data won't change."""
+    """`_season_tables` for a finished season, from the disk cache, else the
+    season store, else computed (and saved to disk); no stamps, since the
+    data won't change."""
     league = LEAGUES[league_name]
+
+    def build() -> dict:
+        stored = _stored_tables(league_name, season, weeks, part, play_filter, venue, adjusted)
+        if stored is not None:
+            return stored
+        return _build_season_tables(league_name, season, league.stamp(), weeks, part,
+                                    play_filter, venue, adjusted)
+
     return disk_cached(
-        "tables", (league_name, season, weeks, part, tuple(play_filter), venue, adjusted),
-        lambda: _build_season_tables(league_name, season, league.stamp(), weeks, part,
-                                     play_filter, venue, adjusted))
+        "tables", (league_name, season, weeks, part, tuple(play_filter), venue, adjusted), build)
 
 
 def _build_season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
@@ -1312,10 +1371,29 @@ def _season_player_ids(league_name: str, season: int, stamp: str) -> pd.DataFram
     return core.player_ids(LEAGUES[league_name].season_pbp(season, stamp))
 
 
+@st.cache_data(max_entries=6, show_spinner=False)
+def _final_season_player_ids(league_name: str, season: int) -> pd.DataFrame:
+    def build() -> pd.DataFrame:
+        if _store_manifest(league_name, season):
+            data = _store_get(season_store.asset_name(league_name, season, "ids"))
+            try:
+                ids = season_store.unpack_frame(data, _CODE_VERSION) if data else None
+            except Exception:
+                ids = None
+            if ids is not None:
+                return ids
+        league = LEAGUES[league_name]
+        return core.player_ids(league.season_pbp(season, league.stamp()))
+    return disk_cached("ids", (league_name, season), build)
+
+
 def season_player_ids(league: League, season: int, stamp: str) -> pd.DataFrame:
     """(team, name, gsis_id) for the season's passers, rushers and receivers
     (`core.player_ids`), to find a season table's players on an injury
-    report. Empty without ids (college)."""
+    report. Empty without ids (college). A finished season's comes from the
+    disk cache or the season store, without its play-by-play."""
+    if league.season_final(season):
+        return _final_season_player_ids(league.name, season)
     return _season_player_ids(league.name, season, stamp)
 
 
