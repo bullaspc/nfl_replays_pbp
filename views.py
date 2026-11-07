@@ -501,6 +501,33 @@ def style_team_compare(df: pd.DataFrame, lower: set, mode: str):
                                                             ("font-weight", "bold")]}]))
 
 
+def style_teams_compare(df: pd.DataFrame, stats: list[str], mode: str, lower: set):
+    """A `replay_core.teams_season_compare` table: values formatted as the
+    season tables are, each change green for the better and red for the
+    worse by its `compare_strength` (`lower` = the side's lower-is-better
+    stats), volumes (`SEASON_VOLUME`) plain."""
+    shown = df[[c for c in df.columns if not c.startswith("_")]]
+    fmt, colors = {}, {}
+    for stat in stats:
+        for c in shown.columns:
+            if c != stat and not c.startswith(stat + " "):
+                continue
+            rest = c[len(stat):].strip()
+            if not rest.startswith("Δ"):  # this season's or an earlier one's value
+                fmt[c] = _season_format(stat)
+                continue
+            fmt[c] = _team_delta_format(stat, mode)
+            pct = df.get(f"_pct {stat} {rest.split(' ', 1)[1]}")
+            if pct is not None and stat not in SEASON_VOLUME:
+                colors[c] = [_change_color(p, stat in lower) for p in pct]
+    styled = shown.style.format(fmt)
+    for c, cc in colors.items():
+        styled = styled.apply(lambda _col, cc=cc: cc, subset=[c])
+    return (styled.set_properties(**{"text-align": "center"})
+            .set_table_styles([{"selector": "th", "props": [("text-align", "center"),
+                                                            ("font-weight", "bold")]}]))
+
+
 def _player_format(stat: str):
     f = {**_KICK_FORMATS, **_PLAYER_FORMATS}.get(stat)
     if f is not None:

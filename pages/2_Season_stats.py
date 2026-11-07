@@ -26,7 +26,7 @@ from replay_core import (
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
     situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note,
-    with_nextgen, compare_team, player_season_compare, team_season_compare,
+    with_nextgen, compare_team, player_season_compare, team_season_compare, teams_season_compare,
 )
 from views import (
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
@@ -35,6 +35,7 @@ from views import (
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
     style_team_chart, style_team_season,
     style_team_schedule, style_weekly_snaps, style_player_compare, style_team_compare,
+    style_teams_compare,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -244,6 +245,29 @@ def _compare_note(mode: str) -> str:
             "A dash: no row that season.")
 
 
+def _teams_compare(table, side: str, side_label: str, options: list[str], sort_by: str,
+                   view: str) -> None:
+    """The Teams tab's teams (`table`, as shown) against their own earlier
+    seasons: the picked stats of the view, each season's value and the change."""
+    st.markdown("**Compare with earlier seasons**")
+    years, mode = _compare_controls("teams")
+    defaults = list(dict.fromkeys(c for c in [sort_by, "EPA/play"] if c in options))
+    stats = st.multiselect("Stats to compare", options, default=defaults,
+                           max_selections=COMPARE_STATS_MAX, key=f"_ss_cmp_stats_teams_{view}")
+    if not years or not stats:
+        st.caption(f"Pick up to {COMPARE_MAX} earlier seasons and up to {COMPARE_STATS_MAX} of "
+                   "this view's stats to set every team above against its own earlier seasons.")
+        return
+    which = "offense" if side == "posteam" else "defense"
+    prev = _earlier_tables(years)
+    earlier = {y: season_qualified(t[which], min_team_plays) for y, t in prev.items()}
+    cmp = teams_season_compare(table, earlier, stats, season, mode)
+    stat_table(style_teams_compare(cmp, stats, mode, season_lower_is_better(side)))
+    st.caption(f"{side_label}, in the table's order. " + _compare_note(mode)
+               + " Counts are per game. Moved franchises are matched (OAK → LV, SD → LAC, "
+                 "STL → LA)." + (" For a defense, less allowed is better." if side == "defteam" else ""))
+
+
 tab_teams, tab_team, tab_players = st.tabs(["Teams", "Team", "Players"])
 
 # ---------- Teams ----------
@@ -292,6 +316,8 @@ with tab_teams:
                if adjusted else ""))
         if charting and view in ("Charting", "All"):
             st.caption(_charting_note(side, ftn, n_charted, n_games))
+        if CAN_COMPARE:
+            _teams_compare(table, side, side_label, sortable, sort_by, view)
 
 # ---------- Team ----------
 with tab_team:
