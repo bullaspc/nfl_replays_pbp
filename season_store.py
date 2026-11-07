@@ -131,3 +131,69 @@ def unpack_frame(data: bytes, code: str) -> pd.DataFrame | None:
         if meta.get("format") != FORMAT or meta.get("code") != code:
             return None
         return pd.read_parquet(io.BytesIO(z.read("data.parquet")))
+
+
+# ---------- Percentile baselines ----------
+# The replay's percentile colors come from a league's earlier seasons
+# (`leagues.compute_baselines`): nested dicts of arrays and a few small
+# DataFrames. Building them means loading those seasons' play-by-play, which
+# for college peaked over a gigabyte, so they're published here too.
+import numpy as np  # noqa: E402
+
+
+def pack_tree(tree, code: str) -> bytes:
+    """Nested dicts (string keys) of numpy arrays, DataFrames and plain
+    values as a zip: tree.json for the shape, a .npy or .parquet per leaf.
+    Raises TypeError on anything else (object arrays included), so a build
+    fails rather than publishing something the app can't read back."""
+    files = {}
+
+    def enc(o):
+        if isinstance(o, dict):
+            if not all(isinstance(k, str) for k in o):
+                raise TypeError("only string keys can be stored")
+            return {"t": "dict", "v": {k: enc(v) for k, v in o.items()}}
+        if isinstance(o, np.ndarray):
+            name = f"{len(files)}.npy"
+            buf = io.BytesIO()
+            np.save(buf, o, allow_pickle=False)
+            files[name] = buf.getvalue()
+            return {"t": "array", "f": name}
+        if isinstance(o, pd.DataFrame):
+            name = f"{len(files)}.parquet"
+            files[name] = _parquet(o)
+            return {"t": "frame", "f": name}
+        if isinstance(o, (np.integer, np.floating, np.bool_)):
+            return {"t": "value", "v": o.item()}
+        if o is None or isinstance(o, (bool, int, float, str)):
+            return {"t": "value", "v": o}
+        raise TypeError(f"can't store a {type(o).__name__}")
+
+    shape = enc(tree)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+        z.writestr("tree.json", json.dumps({"format": FORMAT, "code": code, "tree": shape}))
+    return buf.getvalue()
+
+
+def unpack_tree(data: bytes, code: str):
+    """`pack_tree()`'s zip back as the nested dicts, or None if it was built
+    by other code (or another format)."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        meta = json.loads(z.read("tree.json"))
+        if meta.get("format") != FORMAT or meta.get("code") != code:
+            return None
+
+        def dec(node):
+            t = node["t"]
+            if t == "dict":
+                return {k: dec(v) for k, v in node["v"].items()}
+            if t == "array":
+                return np.load(io.BytesIO(z.read(node["f"])), allow_pickle=False)
+            if t == "frame":
+                return pd.read_parquet(io.BytesIO(z.read(node["f"])))
+            return node["v"]
+
+        return dec(meta["tree"])

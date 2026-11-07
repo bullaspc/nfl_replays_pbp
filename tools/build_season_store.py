@@ -5,10 +5,15 @@ a folder that .github/workflows/season_store.yml uploads to the
 `season-store` release.
 
     python tools/build_season_store.py 2016 2025 [out_dir] [league]
+    python tools/build_season_store.py baselines 2026 [out_dir] [league]
 
 League defaults to NFL, out_dir to ./season_store_out. A season that isn't over
 yet (`League.season_final`) is skipped. About 40 selections a season, each
 built from scratch like the app builds it (~5–10 s each).
+
+`baselines` builds the replay's percentile baselines for one season instead
+(`leagues.compute_baselines`, from the seasons before it; ~40 s, ~0.5 MB):
+the replay page then never loads those seasons' play-by-play.
 """
 import json
 import sys
@@ -48,7 +53,24 @@ def build(league: leagues.League, season: int, out: Path) -> None:
          "selections": built}))
 
 
+def build_baselines(league: leagues.League, season: int, out: Path) -> None:
+    t = time.time()
+    tree = leagues.compute_baselines(league.name, season)
+    if not any(tree.values()):
+        raise SystemExit(f"{league.name} {season}: no baseline data")
+    (out / season_store.asset_name(league.name, season, "baselines")).write_bytes(
+        season_store.pack_tree(tree, leagues._CODE_VERSION))
+    print(f"{league.name} {season} baselines: {time.time() - t:.1f}s", flush=True)
+
+
 def main() -> None:
+    if sys.argv[1] == "baselines":
+        season = int(sys.argv[2])
+        out = Path(sys.argv[3] if len(sys.argv) > 3 else "season_store_out")
+        league = leagues.LEAGUES[sys.argv[4] if len(sys.argv) > 4 else "NFL"]
+        out.mkdir(parents=True, exist_ok=True)
+        build_baselines(league, season, out)
+        return
     first, last = int(sys.argv[1]), int(sys.argv[2])
     out = Path(sys.argv[3] if len(sys.argv) > 3 else "season_store_out")
     league = leagues.LEAGUES[sys.argv[4] if len(sys.argv) > 4 else "NFL"]
