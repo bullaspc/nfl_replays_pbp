@@ -655,8 +655,8 @@ st.divider()
 # One row of links to the sections, sticky under Streamlit's header
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
-             ("Kicking", "kicking"), ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
+             ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
+             ("Kicking", "kicking"), ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
@@ -665,13 +665,6 @@ st.subheader("Boxscore", anchor="boxscore")
 # Team names: the boxscore is narrow enough for them on a phone.
 stat_table(boxscore(revealed, home, away).assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
-# Kicking and punting so far, per team: field goals made/attempted overall and
-# by distance, the longest, extra points; punts with gross and net average.
-st.caption("Kicking and punting")
-stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
-st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
-           "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
-           "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks")
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -1220,36 +1213,6 @@ if _snap is not None:
 elif not revealed.empty:
     st.caption("Nothing to estimate: the half is over, or the last play hasn't been scored yet.")
 
-# ---------- Kicking ----------
-# Each team's kickers and punters so far, then every field goal try and punt.
-st.subheader("Kicking", anchor="kicking")
-if hide_leaders:
-    st.caption("Kickers and punters are hidden with the player leaders (Spoiler shield).")
-else:
-    col_a, col_h = st.columns(2)
-    for col, team in [(col_a, away), (col_h, home)]:
-        with col:
-            st.markdown(f"**{team}**")
-            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
-                                   ("Punting", top_punters(revealed, team))]:
-                st.caption(_label)
-                if not _st_df.empty:
-                    stat_table(style_kicking_table(with_draft(with_class_year(
-                        _st_df, class_years, team), draft_board, team)), hide_index=True)
-                else:
-                    st.caption("None yet")
-    _kicks_df = kick_log(revealed)
-    with st.expander(f"Field goal tries and punts ({len(_kicks_df)})", expanded=False,
-                     key="_exp_kicks"):
-        if _kicks_df.empty:
-            st.caption("No kicks yet.")
-        else:
-            stat_table(style_kick_log(_kicks_df), hide_index=True)
-    st.caption("FG and its distance bands: made/attempted · Long: longest made (yds) · FG EPA / "
-               "Punt EPA: expected points his tries or punts added · Avg / Net: gross and net yards "
-               "per punt (net takes off the return and 20 a touchback) · In20: punts that left the "
-               "receiver inside his 20 · TB: touchbacks.")
-
 # ---------- Explosive plays ----------
 if not revealed.empty:
     _exp_df = explosive_plays(revealed)
@@ -1325,6 +1288,43 @@ st.caption("EPA/play and SR (EPA > 0) count snaps a penalty wiped out, as above;
            "share of real plays that earned a first down. Early downs = 1st–2nd, late = 3rd–4th; "
            "no kneels or spikes. Colors show percentile vs team games in the "
            f"{league.baseline_label}.")
+
+# ---------- Kicking ----------
+# Each team's kicking and punting totals so far (field goals made/attempted
+# overall and by distance, the longest, extra points; punts with gross and net
+# average), then its kickers and punters, then every field goal try and punt.
+st.subheader("Kicking", anchor="kicking")
+st.caption("Kicking and punting")
+stat_table(style_kicking_table(special_teams_box(revealed, home, away)), hide_index=True)
+if hide_leaders:
+    st.caption("FG and its distance bands: made/attempted · Long: longest field goal made · "
+               "Avg / Net: gross and net yards per punt (net takes off the return and 20 a "
+               "touchback) · In20: punts that left the receiver inside his 20 · TB: touchbacks. "
+               "Kickers and punters are hidden with the player leaders (Spoiler shield).")
+else:
+    col_a, col_h = st.columns(2)
+    for col, team in [(col_a, away), (col_h, home)]:
+        with col:
+            st.markdown(f"**{team}**")
+            for _label, _st_df in [("Kicking", top_kickers(revealed, team)),
+                                   ("Punting", top_punters(revealed, team))]:
+                st.caption(_label)
+                if not _st_df.empty:
+                    stat_table(style_kicking_table(with_draft(with_class_year(
+                        _st_df, class_years, team), draft_board, team)), hide_index=True)
+                else:
+                    st.caption("None yet")
+    _kicks_df = kick_log(revealed)
+    with st.expander(f"Field goal tries and punts ({len(_kicks_df)})", expanded=False,
+                     key="_exp_kicks"):
+        if _kicks_df.empty:
+            st.caption("No kicks yet.")
+        else:
+            stat_table(style_kick_log(_kicks_df), hide_index=True)
+    st.caption("FG and its distance bands: made/attempted · Long: longest made (yds) · FG EPA / "
+               "Punt EPA: expected points his tries or punts added · Avg / Net: gross and net yards "
+               "per punt (net takes off the return and 20 a touchback) · In20: punts that left the "
+               "receiver inside his 20 · TB: touchbacks.")
 
 # ---------- Line play ----------
 st.subheader("Line play", anchor="line-play")
