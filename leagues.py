@@ -122,6 +122,11 @@ class League:
         `season` are built from; None if unavailable."""
         raise NotImplementedError
 
+    def _baseline_pbp_uncached(self, season: int) -> pd.DataFrame | None:
+        """`baseline_pbp` without keeping it in a memory cache: the
+        baselines built from it are what's kept (`compute_baselines`)."""
+        return self.baseline_pbp(season)
+
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         """Player-leader columns (top_players/top_defenders `drop=`) the data
         behind `pbp` doesn't have."""
@@ -476,6 +481,11 @@ def _nfl_season_pbp(season: int, stamp: str) -> pd.DataFrame:
 @st.cache_data(ttl=86400, max_entries=1)
 def _nfl_baseline_pbp(season: int) -> pd.DataFrame | None:
     """The 3 NFL seasons before `season`."""
+    return _read_nfl_baseline(season)
+
+
+def _read_nfl_baseline(season: int) -> pd.DataFrame | None:
+    """`_nfl_baseline_pbp` without its cache."""
     prior = [s for s in [season - 3, season - 2, season - 1] if s >= 1999]
     if not prior:
         return None
@@ -620,6 +630,9 @@ class NFLLeague(League):
 
     def baseline_pbp(self, season: int) -> pd.DataFrame | None:
         return _nfl_baseline_pbp(season)
+
+    def _baseline_pbp_uncached(self, season: int) -> pd.DataFrame | None:
+        return _read_nfl_baseline(season)
 
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return frozenset({"Hurries"})  # nflfastR has QB hits instead
@@ -889,6 +902,12 @@ class CollegeLeague(League):
         df = _cfb_baseline_pbp(season)
         return None if df.empty else df
 
+    def _baseline_pbp_uncached(self, season: int) -> pd.DataFrame | None:
+        if season - 1 < cfb_feed.FIRST_SEASON:
+            return None
+        df = _cfb_baseline_build(season - 1)
+        return None if df.empty else df
+
     def missing_stats(self, pbp: pd.DataFrame) -> frozenset:
         return cfb_feed.missing_leader_stats(pbp)
 
@@ -945,61 +964,95 @@ def load_scoreboard(league_key: str) -> list[scoreboard.TickerGame]:
 
 
 # ---------- Percentile baselines ----------
-# Failures are cached too (as {}), so a missing season or a dropped network
-# doesn't make every auto-refresh rerun retry the download.
-@st.cache_data(ttl=86400)
-def _stat_baselines(league: str, season: int) -> dict[str, np.ndarray]:
+# The replay's percentile colors, from the league's earlier seasons
+# (`League.baseline_pbp`). All seven are built from one load of those seasons
+# (`compute_baselines`) and kept together (`_baseline_bundle`); the
+# play-by-play itself isn't kept. The season store publishes the bundle for
+# each league's current season, so a fresh deploy downloads ~1.5 MB instead
+# of loading a season or three of play-by-play (over a gigabyte at its peak
+# for college, which crashed the app on Streamlit Community Cloud).
+BASELINE_KINDS = ("stat", "situational", "series", "line", "player", "tendency", "chart")
+BASELINE_STORE_LEAGUES = ("NFL", "College football")
+
+
+def compute_baselines(league_name: str, season: int) -> dict:
+    """Every percentile baseline for `season`, by `BASELINE_KINDS`, from one
+    load of the baseline play-by-play. A kind that can't be built (no
+    data, a network error) is {}."""
+    lg = LEAGUES[league_name]
     try:
-        raw = LEAGUES[league].baseline_pbp(season)
+        raw = lg._baseline_pbp_uncached(season)
     except Exception:  # network error, missing season data, etc.
-        return {}
-    return {} if raw is None else core.stat_distributions(raw)
+        raw = None
+    if raw is None or raw.empty:
+        return {k: {} for k in BASELINE_KINDS}
+    out = {
+        "stat": core.stat_distributions(raw),
+        "situational": core.situational_distributions(raw),
+        "series": {"series": core.series_distributions(raw),
+                   "splits": core.play_split_distributions(raw)},
+        "line": core.line_play_distributions(raw),
+        "player": core.player_distributions(raw),
+        "tendency": core.tendency_baselines(raw, lg.run_gaps),
+        "chart": {},
+    }
+    if "play_id" in raw.columns:
+        # FTN's charting of the baseline seasons it has (2022 on), from game ids' seasons.
+        seasons = sorted({int(g[:4]) for g in raw["game_id"].astype(str).unique() if g[:4].isdigit()})
+        ftn = [c for c in (lg.charting(s) for s in seasons) if not c.empty]
+        charted = core.with_charting(raw, pd.concat(ftn, ignore_index=True)) if ftn else raw
+        out["chart"] = core.chart_distributions(charted)
+    return out
 
 
-@st.cache_data(ttl=86400)
+def _stored_baselines(league_name: str, season: int) -> dict | None:
+    """The season store's bundle for `season`, if it has one built by this code."""
+    if league_name not in BASELINE_STORE_LEAGUES:
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, "baselines"))
+    try:
+        return season_store.unpack_tree(data, _CODE_VERSION) if data else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def _baseline_bundle(league_name: str, season: int) -> dict:
+    """`compute_baselines`, from the season store, else the disk cache (its
+    seasons are over), else computed. Failures are cached too (as {}), so a
+    missing season or a dropped network doesn't make every auto-refresh
+    rerun retry the download."""
+    stored = _stored_baselines(league_name, season)
+    if stored is not None:
+        return stored
+    if LEAGUES[league_name].season_final(season - 1):
+        return disk_cached("baselines", (league_name, season),
+                           lambda: compute_baselines(league_name, season))
+    return compute_baselines(league_name, season)
+
+
+def _stat_baselines(league: str, season: int) -> dict[str, np.ndarray]:
+    return _baseline_bundle(league, season).get("stat", {})
+
+
 def _situational_baselines(league: str, season: int) -> dict[str, dict[str, np.ndarray]]:
-    try:
-        raw = LEAGUES[league].baseline_pbp(season)
-    except Exception:
-        return {}
-    return {} if raw is None else core.situational_distributions(raw)
+    return _baseline_bundle(league, season).get("situational", {})
 
 
-@st.cache_data(ttl=86400)
 def _series_baselines(league: str, season: int) -> dict[str, dict]:
-    try:
-        raw = LEAGUES[league].baseline_pbp(season)
-    except Exception:
-        return {}
-    return {} if raw is None else {"series": core.series_distributions(raw),
-                                   "splits": core.play_split_distributions(raw)}
+    return _baseline_bundle(league, season).get("series", {})
 
 
-@st.cache_data(ttl=86400)
 def _line_baselines(league: str, season: int) -> dict[str, np.ndarray]:
-    try:
-        raw = LEAGUES[league].baseline_pbp(season)
-    except Exception:
-        return {}
-    return {} if raw is None else core.line_play_distributions(raw)
+    return _baseline_bundle(league, season).get("line", {})
 
 
-@st.cache_data(ttl=86400)
 def _player_baselines(league: str, season: int) -> dict[str, dict[str, np.ndarray]]:
-    try:
-        raw = LEAGUES[league].baseline_pbp(season)
-    except Exception:
-        return {}
-    return {} if raw is None else core.player_distributions(raw)
+    return _baseline_bundle(league, season).get("player", {})
 
 
-@st.cache_data(ttl=86400)
 def _tendency_baselines(league: str, season: int) -> dict[str, dict[str, pd.DataFrame]]:
-    try:
-        raw = LEAGUES[league].baseline_pbp(season)
-    except Exception:
-        return {}
-    return {} if raw is None else core.tendency_baselines(raw, LEAGUES[league].run_gaps)
+    return _baseline_bundle(league, season).get("tendency", {})
 
 
 def tendency_baselines(league: League, season: int) -> dict[str, dict[str, pd.DataFrame]]:
@@ -1013,20 +1066,8 @@ def player_baselines(league: League, season: int) -> dict[str, dict[str, np.ndar
     return _player_baselines(league.name, season)
 
 
-@st.cache_data(ttl=86400)
 def _chart_baselines(league: str, season: int) -> dict[str, np.ndarray]:
-    lg = LEAGUES[league]
-    try:
-        raw = lg.baseline_pbp(season)
-    except Exception:
-        return {}
-    if raw is None or raw.empty or "play_id" not in raw.columns:
-        return {}
-    # FTN's charting of the baseline seasons it has (2022 on), from game ids' seasons.
-    seasons = sorted({int(g[:4]) for g in raw["game_id"].astype(str).unique() if g[:4].isdigit()})
-    ftn = [c for c in (lg.charting(s) for s in seasons) if not c.empty]
-    raw = core.with_charting(raw, pd.concat(ftn, ignore_index=True)) if ftn else raw
-    return core.chart_distributions(raw)
+    return _baseline_bundle(league, season).get("chart", {})
 
 
 def chart_baselines(league: League, season: int) -> dict[str, np.ndarray]:
