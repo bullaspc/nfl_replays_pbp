@@ -821,11 +821,33 @@ def _cfb_baseline_pbp(season: int) -> pd.DataFrame:
     prior = season - 1
     if prior < cfb_feed.FIRST_SEASON:
         return pd.DataFrame(columns=core.BASELINE_COLS)
-    pbp = with_xrush(cfb_feed.to_pbp(cfb_feed.read_season(prior), core.PBP_COLS), "CFB")
+    return _cfb_baseline_build(prior)
+
+
+# Games mapped at a time for the college baseline: a whole season through
+# `to_pbp` with every column peaked near 1.6 GB, more than Streamlit Community
+# Cloud gives the app (a live college game's page crashed while loading it).
+_BASELINE_CHUNK_GAMES = 100
+
+
+def _cfb_baseline_build(prior: int) -> pd.DataFrame:
+    """`_cfb_baseline_pbp`'s table, built a chunk of games at a time: the
+    FBS-vs-FBS games are picked from the raw rows first, and each chunk keeps
+    only `BASELINE_COLS`, so the whole season is never in `PBP_COLS` at once.
+    `to_pbp` works game by game, so the result is the same."""
+    raw = cfb_feed.read_season(prior)
     fbs = cfb_feed.fbs_games(cfb_feed.read_schedule(prior))
     if fbs:
-        pbp = pbp[pbp["game_id"].isin(fbs)]
-    return pbp[core.BASELINE_COLS].reset_index(drop=True)
+        raw = raw[raw["game_id"].astype(str).isin(fbs)]
+    ids = np.sort(raw["game_id"].unique())
+    parts = []
+    for start in range(0, len(ids), _BASELINE_CHUNK_GAMES):
+        chunk = raw[raw["game_id"].isin(ids[start:start + _BASELINE_CHUNK_GAMES])]
+        parts.append(with_xrush(cfb_feed.to_pbp(chunk, core.PBP_COLS), "CFB")[core.BASELINE_COLS])
+    del raw
+    if not parts:
+        return pd.DataFrame(columns=core.BASELINE_COLS)
+    return pd.concat(parts, ignore_index=True)
 
 
 class CollegeLeague(League):
