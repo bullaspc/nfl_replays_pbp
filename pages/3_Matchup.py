@@ -72,7 +72,8 @@ try:
         ranked_teams = league.season_teams(season, stamp)
 except leagues.GameLoadError as e:
     st.title(f"🆚 {league.name} Matchup")
-    st.warning(f"{e} A matchup needs games played this season.")
+    st.warning(str(e) if getattr(e, "transient", False)
+               else f"{e} A matchup needs games played this season.")
     st.stop()
 # Names outside the tables ("Bears", "Texas Tech"); tables keep abbreviations,
 # which fit a phone's width.

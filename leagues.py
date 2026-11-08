@@ -44,7 +44,22 @@ import scoreboard
 
 
 class GameLoadError(Exception):
-    """Nothing could be loaded; the message says why, for the sidebar."""
+    """Nothing could be loaded; the message says why, for the sidebar.
+    `transient`: the data exists but couldn't be downloaded just now (an
+    outage), so trying again later can work."""
+
+    def __init__(self, message: str, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
+
+
+class SeasonNotPublished(ValueError):
+    """nflverse has no play-by-play file for the season (yet)."""
+
+
+class DownloadFailed(ValueError):
+    """The season's file is there, but downloading it failed (GitHub timing
+    out, a network error): not a reason to say the season has no games."""
 
 
 @dataclass
@@ -321,30 +336,137 @@ def nflverse_stamp(release: str = "pbp") -> str:
         return f"unknown-{int(time.time() // 600)}"
 
 
-@st.cache_data(max_entries=4)
-def load_pbp(season: int, stamp: str) -> pd.DataFrame:
-    """Load nflverse play-by-play for a season. `stamp` is only a cache key:
-    the file is downloaded again when nflverse republishes it."""
+# A download that fails is tried again this many times, waiting
+# NFLVERSE_BACKOFF_SECS × the try: GitHub's release downloads now and then
+# answer 504 for a while, most often for files rebuilt in the last day.
+NFLVERSE_TRIES = 3
+NFLVERSE_BACKOFF_SECS = 2.0
+# After a season's download fails it isn't tried again for this long (each
+# try can wait ~10s for GitHub's 504), so pages rerunning every 10-30s stay
+# quick. Shared by every session, like the caches.
+NFLVERSE_RETRY_AFTER_SECS = 300
+_PBP_FAILED: dict[tuple[int, str], tuple[float, str]] = {}
+# The last season of pbp that downloaded is kept on disk (SEASON_CACHE_DIR's
+# last_pbp/), so an outage serves it, a day or so old, instead of no games at
+# all. Recent seasons only: finished ones have the disk cache and the store.
+
+
+def _http_status(e: BaseException) -> int | None:
+    """The HTTP status behind nflreadpy's ConnectionError, if there was one."""
+    while e is not None:
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", None):
+            return int(resp.status_code)
+        e = e.__cause__
+    return None
+
+
+def _last_pbp_path(season: int) -> Path:
+    return SEASON_CACHE_DIR / "last_pbp" / f"nfl_pbp_{season}.parquet"
+
+
+def _save_last_pbp(season: int, df: pd.DataFrame) -> None:
+    if season < date.today().year - 1:
+        return
+    path = _last_pbp_path(season)
     try:
-        df = nflverse_pbp([season], core.PBP_COLS)
-    except Exception as e:
-        raise ValueError(
-            f"No play-by-play data is available for the {season} season yet. "
-            "nflverse publishes it once games have been played."
-        ) from e
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+    except Exception:  # unwritable folder, no pyarrow: just no fallback
+        pass
+
+
+def _read_last_pbp(season: int) -> pd.DataFrame | None:
+    try:
+        return pd.read_parquet(_last_pbp_path(season))
+    except Exception:
+        return None
+
+
+def nflverse_pbp_retry(season: int, columns: list[str]) -> pd.DataFrame:
+    """`nflverse_pbp([season], columns)`, tried `NFLVERSE_TRIES` times.
+    Raises SeasonNotPublished on a 404 and DownloadFailed otherwise."""
+    for attempt in range(1, NFLVERSE_TRIES + 1):
+        try:
+            return nflverse_pbp([season], columns)
+        except Exception as e:
+            status = _http_status(e)
+            if status == 404:
+                raise SeasonNotPublished(str(e)) from e
+            if attempt == NFLVERSE_TRIES:
+                raise DownloadFailed(f"{e}") from e
+            time.sleep(NFLVERSE_BACKOFF_SECS * attempt)
+
+
+def _unpublished_message(season: int) -> str:
+    return (f"No play-by-play data is available for the {season} season yet. "
+            "nflverse publishes it once games have been played.")
+
+
+def _download_message(season: int) -> str:
+    return (f"The {season} play-by-play couldn't be downloaded from nflverse right now "
+            "(GitHub didn't answer). It's published, so this is usually a passing "
+            "outage: try again in a few minutes.")
+
+
+@st.cache_data(max_entries=4)
+def _load_pbp(season: int, stamp: str) -> pd.DataFrame:
+    """A fresh download, saved as the season's last good copy. Raises, so a
+    failed download isn't cached and the next run tries again."""
+    df = nflverse_pbp_retry(season, core.PBP_COLS)
     if df.empty:
-        raise ValueError(f"No play-by-play data is available for the {season} season yet.")
+        raise SeasonNotPublished(_unpublished_message(season))
+    _save_last_pbp(season, df)
     return df
 
 
+def load_pbp(season: int, stamp: str) -> pd.DataFrame:
+    """Load nflverse play-by-play for a season. `stamp` is only a cache key:
+    the file is downloaded again when nflverse republishes it. If the
+    download fails, the last copy that downloaded is served (it may lack the
+    newest games); without one, DownloadFailed. SeasonNotPublished when
+    nflverse has no file for the season."""
+    failed = _PBP_FAILED.get((season, stamp))
+    if failed is None or time.time() - failed[0] > NFLVERSE_RETRY_AFTER_SECS:
+        try:
+            df = _load_pbp(season, stamp)
+            _PBP_FAILED.pop((season, stamp), None)
+            return df
+        except SeasonNotPublished as e:
+            raise SeasonNotPublished(_unpublished_message(season)) from e
+        except DownloadFailed as e:
+            _PBP_FAILED[(season, stamp)] = (time.time(), str(e))
+    # Caches keyed by `stamp` keep what's served here until nflverse's next
+    # rebuild (about daily in season): a day-old copy beats no games at all.
+    last = _read_last_pbp(season)
+    if last is not None and not last.empty:
+        return last
+    raise DownloadFailed(_download_message(season))
+
+
 @st.cache_data(ttl=3600)
+def _load_schedule(season: int) -> pd.DataFrame:
+    """Raises on a failed read, so it isn't cached for the hour."""
+    for attempt in range(1, NFLVERSE_TRIES + 1):
+        try:
+            sched = nflreadpy.load_schedules([season]).to_pandas()
+            break
+        except Exception:
+            if attempt == NFLVERSE_TRIES:
+                raise
+            time.sleep(NFLVERSE_BACKOFF_SECS * attempt)
+    return sched[sched["season"] == season].reset_index(drop=True)
+
+
 def load_schedule(season: int) -> pd.DataFrame:
-    """nflverse's schedule: ESPN event id, spread line, roof, kickoff time."""
+    """nflverse's schedule: ESPN event id, spread line, roof, kickoff time;
+    empty if it can't be read (tried again on the next run)."""
     try:
-        sched = nflreadpy.load_schedules([season]).to_pandas()
+        return _load_schedule(season)
     except Exception:
         return pd.DataFrame()
-    return sched[sched["season"] == season].reset_index(drop=True)
 
 
 def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
@@ -439,16 +561,29 @@ def load_live_game(sched_row: dict) -> tuple[pd.DataFrame, str, str, str | None]
     return df, live_feed.game_state(summary), fetched_at, model_err
 
 
-@st.cache_data(max_entries=4)
-def _nfl_games(season: int, stamp: str, today: str) -> tuple[pd.DataFrame, str | None]:
-    """The game list and, if the season's pbp didn't load, why. `today` is a
-    cache key: live games are listed from their kickoff date."""
+def _nfl_games(season: int, stamp: str, today: str) -> tuple[pd.DataFrame, tuple | None]:
+    """The game list and, if the season's pbp didn't load, (transient, why).
+    Live games can still load without it. A failed download isn't cached:
+    the next run tries again."""
     try:
-        pbp, err = load_pbp(season, stamp), None
+        pbp = load_pbp(season, stamp)
+    except DownloadFailed as e:
+        return list_games(pd.DataFrame(columns=core.PBP_COLS), load_schedule(season)), (True, str(e))
     except Exception as e:
-        # Nothing published for this season yet: live games can still load.
-        pbp, err = pd.DataFrame(columns=core.PBP_COLS), str(e)
-    return list_games(pbp, load_schedule(season)), err
+        return _nfl_games_unpublished(season, stamp, today, str(e))
+    return _nfl_games_cached(season, stamp, today), None
+
+
+@st.cache_data(max_entries=4)
+def _nfl_games_cached(season: int, stamp: str, today: str) -> pd.DataFrame:
+    """`today` is a cache key: live games are listed from their kickoff date."""
+    return list_games(load_pbp(season, stamp), load_schedule(season))
+
+
+@st.cache_data(max_entries=4)
+def _nfl_games_unpublished(season: int, stamp: str, today: str, err: str):
+    """Nothing published for this season yet: live games can still load."""
+    return list_games(pd.DataFrame(columns=core.PBP_COLS), load_schedule(season)), (False, err)
 
 
 @st.cache_data(max_entries=8)
@@ -592,7 +727,7 @@ class NFLLeague(League):
     def games(self, season: int, stamp: str) -> pd.DataFrame:
         g, err = _nfl_games(season, stamp, date.today().isoformat())
         if g.empty and err:
-            raise GameLoadError(f"Could not load pbp: {err}")
+            raise GameLoadError(f"Could not load pbp: {err[1]}", transient=err[0])
         return g
 
     def load_game(self, row: pd.Series, season: int, stamp: str) -> LoadedGame:
@@ -640,6 +775,8 @@ class NFLLeague(League):
     def _season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         try:
             return _nfl_season_pbp(season, stamp)
+        except DownloadFailed as e:
+            raise GameLoadError(str(e), transient=True) from e
         except ValueError as e:
             raise GameLoadError(str(e)) from e
 
@@ -651,7 +788,7 @@ class NFLLeague(League):
     def upcoming(self, season: int, stamp: str) -> pd.DataFrame:
         try:
             published = set(load_pbp(season, stamp)["game_id"])
-        except ValueError:  # nothing published yet: every game is still to come
+        except ValueError:  # nothing published yet (or no download): games without a result
             published = set()
         return upcoming_games(load_schedule(season), published)
 
