@@ -237,6 +237,10 @@ def nflverse_teams() -> pd.DataFrame:
     return nflreadpy.load_teams().to_pandas()
 
 
+# Columns the app reads that a season's published pbp didn't have, by seasons.
+MISSING_PBP_COLS: dict[tuple, list[str]] = {}
+
+
 def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
     """nflverse play-by-play for `seasons`, `columns` only, with float64 columns
     stored as float32 to save memory, as nfl_data_py did, and the players of
@@ -244,7 +248,17 @@ def nflverse_pbp(seasons: list[int], columns: list[str]) -> pd.DataFrame:
     if a season isn't published."""
     extra = list(core.NFLVERSE_NAME_COLS)
     read = [c for c in columns if c != "xrush_yards"]  # the app's own, added below
-    df = nflreadpy.load_pbp(seasons).select(read + extra).to_pandas()
+    frame = nflreadpy.load_pbp(seasons)
+    # A column nflverse renamed or dropped (nflfastR 6.0 came with 2026) is
+    # added empty instead of failing the whole season, and named for the logs.
+    want = list(dict.fromkeys(read + extra))
+    missing = [c for c in want if c not in frame.columns]
+    if missing:
+        print(f"nflverse pbp {seasons}: missing columns {missing}", flush=True)
+        MISSING_PBP_COLS[tuple(seasons)] = missing
+    df = frame.select([c for c in want if c in frame.columns]).to_pandas()
+    for c in missing:
+        df[c] = np.nan
     df = core.name_nullified(df).drop(columns=extra)
     floats = df.select_dtypes("float64").columns
     df[floats] = df[floats].astype("float32")
@@ -339,12 +353,12 @@ def nflverse_stamp(release: str = "pbp") -> str:
 # A download that fails is tried again this many times, waiting
 # NFLVERSE_BACKOFF_SECS × the try: GitHub's release downloads now and then
 # answer 504 for a while, most often for files rebuilt in the last day.
-NFLVERSE_TRIES = 3
+NFLVERSE_TRIES = 4
 NFLVERSE_BACKOFF_SECS = 2.0
 # After a season's download fails it isn't tried again for this long (each
 # try can wait ~10s for GitHub's 504), so pages rerunning every 10-30s stay
 # quick. Shared by every session, like the caches.
-NFLVERSE_RETRY_AFTER_SECS = 300
+NFLVERSE_RETRY_AFTER_SECS = 120
 _PBP_FAILED: dict[tuple[int, str], tuple[float, str]] = {}
 # The last season of pbp that downloaded is kept on disk (SEASON_CACHE_DIR's
 # last_pbp/), so an outage serves it, a day or so old, instead of no games at
@@ -405,10 +419,15 @@ def _unpublished_message(season: int) -> str:
             "nflverse publishes it once games have been played.")
 
 
-def _download_message(season: int) -> str:
-    return (f"The {season} play-by-play couldn't be downloaded from nflverse right now "
-            "(GitHub didn't answer). It's published, so this is usually a passing "
-            "outage: try again in a few minutes.")
+def _download_message(season: int, why: str) -> str:
+    return (f"The {season} play-by-play couldn't be loaded from nflverse right now. "
+            f"It's tried again every few minutes. ({why})")
+
+
+def _reason(e: BaseException) -> str:
+    """The error behind a failed load, short enough for the page."""
+    text = f"{type(e).__name__}: {e}"
+    return text if len(text) <= 300 else text[:297] + "…"
 
 
 @st.cache_data(max_entries=4)
@@ -437,13 +456,13 @@ def load_pbp(season: int, stamp: str) -> pd.DataFrame:
         except SeasonNotPublished as e:
             raise SeasonNotPublished(_unpublished_message(season)) from e
         except DownloadFailed as e:
-            _PBP_FAILED[(season, stamp)] = (time.time(), str(e))
+            _PBP_FAILED[(season, stamp)] = (time.time(), _reason(e.__cause__ or e))
     # Caches keyed by `stamp` keep what's served here until nflverse's next
     # rebuild (about daily in season): a day-old copy beats no games at all.
     last = _read_last_pbp(season)
     if last is not None and not last.empty:
         return last
-    raise DownloadFailed(_download_message(season))
+    raise DownloadFailed(_download_message(season, _PBP_FAILED[(season, stamp)][1]))
 
 
 @st.cache_data(ttl=3600)
