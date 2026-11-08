@@ -58,7 +58,9 @@ Python 3.11. The app covers the NFL and college football. A sidebar **League** r
 
 **Data sources:** nflverse pbp isn't live; it's rebuilt about once a day after games end.
 - `nflverse_stamp()` reads `pbp/timestamp.json` every 60s. `load_pbp(season, stamp)` downloads again only when that stamp changes.
+- `load_pbp()` tells an unpublished season (a 404: `SeasonNotPublished`, "no play-by-play … yet") from a failed download (`DownloadFailed`: GitHub's 504s, network errors), which is tried `NFLVERSE_TRIES` times and then not again for `NFLVERSE_RETRY_AFTER_SECS`; recent seasons keep their last good download in `SEASON_CACHE_DIR/last_pbp/`, served during an outage. `GameLoadError.transient` marks the latter for the pages.
 - `load_schedule()` reads the nflverse schedule, which has the ESPN event id, spread and roof.
+  A failed read isn't cached (`_load_schedule()` raises), so the next run tries again.
 - `list_games()` gives each game a `source`:
   - `"nflfastR"`: the game is in the published pbp.
   - `"live"`: kickoff has passed, it isn't published yet, and it has an ESPN id. These show 🔴 in the label.
