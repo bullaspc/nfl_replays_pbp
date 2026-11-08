@@ -647,84 +647,144 @@ def _read_nfl_baseline(season: int) -> pd.DataFrame | None:
     return None if df.empty else df
 
 
-# Injury reports, snap counts and depth charts (replay_core's Availability).
-# Each nflverse release has its own timestamp.json, so each file is downloaded
-# again only when it's rebuilt; one that can't be read is empty (and cached as
-# such until its stamp changes), and the pages say there's no report.
+# Injury reports, snap counts, depth charts, rosters, Next Gen Stats and FTN
+# charting. Each nflverse release has its own timestamp.json, so each file is
+# downloaded again only when it's rebuilt. The cached readers (`_read_*`)
+# raise when a download fails, so a failure is never cached: before, one
+# GitHub 504 left a release empty until its next rebuild (a day for snap
+# counts, and 24 hours of players without gsis ids, so no snap shares at
+# all). `_side_load()` serves them: a failed read is empty for the run and
+# tried again after `NFLVERSE_RETRY_AFTER_SECS`. A file nflverse doesn't
+# have (a 404: a season not out yet) is a cached empty frame.
+_SIDE_FAILED: dict[tuple, tuple[float, str]] = {}
+SIDE_TRIES = 2  # each failed try waits NFLVERSE_BACKOFF_SECS × the try
+
+
+class _NotPublished(Exception):
+    """nflverse has no such file (404)."""
+
+
+def _nflverse_read(read):
+    """`read()`, tried `SIDE_TRIES` times; _NotPublished on a 404."""
+    for attempt in range(1, SIDE_TRIES + 1):
+        try:
+            return read()
+        except Exception as e:
+            if _http_status(e) == 404:
+                raise _NotPublished(str(e)) from e
+            if attempt == SIDE_TRIES:
+                raise
+            time.sleep(NFLVERSE_BACKOFF_SECS * attempt)
+
+
+def _side_load(loader, *args, empty):
+    """`loader(*args)` (a `_read_*`), or `empty()` while it fails: logged,
+    and not tried again for `NFLVERSE_RETRY_AFTER_SECS`."""
+    key = (loader.__name__, *args)
+    failed = _SIDE_FAILED.get(key)
+    if failed is not None and time.time() - failed[0] <= NFLVERSE_RETRY_AFTER_SECS:
+        return empty()
+    try:
+        out = loader(*args)
+    except _NotPublished:
+        return empty()
+    except Exception as e:
+        _SIDE_FAILED[key] = (time.time(), _reason(e))
+        print(f"nflverse {loader.__name__}{args}: {_reason(e)}", flush=True)
+        return empty()
+    _SIDE_FAILED.pop(key, None)
+    return out
+
+
+_PLAYER_COLS = ["gsis_id", "pfr_id", "short_name"]
+
+
 @st.cache_data(ttl=86400)
+def _read_players() -> pd.DataFrame:
+    return _nflverse_read(lambda: nflreadpy.load_players().select(_PLAYER_COLS).to_pandas())
+
+
 def _players() -> pd.DataFrame:
     """nflverse's players: gsis id, PFR id and short name ("D.Maye")."""
-    try:
-        return nflreadpy.load_players().select(["gsis_id", "pfr_id", "short_name"]).to_pandas()
-    except Exception:
-        return pd.DataFrame(columns=["gsis_id", "pfr_id", "short_name"])
+    return _side_load(_read_players, empty=lambda: pd.DataFrame(columns=_PLAYER_COLS))
 
 
 @st.cache_data(max_entries=2)
+def _read_injuries(season: int, stamp: str) -> pd.DataFrame:
+    return _nflverse_read(lambda: nflreadpy.load_injuries([season]).to_pandas())
+
+
 def load_injuries(season: int, stamp: str) -> pd.DataFrame:
     """The NFL's weekly injury reports for `season`, as nflverse publishes them."""
-    try:
-        return nflreadpy.load_injuries([season]).to_pandas()
-    except Exception:
-        return pd.DataFrame()
+    return _side_load(_read_injuries, season, stamp, empty=pd.DataFrame)
 
 
 @st.cache_data(max_entries=2)
-def load_snap_counts(season: int, stamp: str) -> pd.DataFrame:
-    """PFR's snap counts per player and game, with gsis_id (through nflverse's
-    players table; NaN for a player it doesn't link)."""
-    try:
-        snaps = nflreadpy.load_snap_counts([season]).to_pandas()
-    except Exception:
-        return pd.DataFrame()
-    p = _players().dropna(subset=["pfr_id", "gsis_id"]).drop_duplicates("pfr_id")
+def _read_snap_counts(season: int, stamp: str) -> pd.DataFrame:
+    snaps = _nflverse_read(lambda: nflreadpy.load_snap_counts([season]).to_pandas())
+    # Raises when the players can't be read, so snaps without gsis ids
+    # (which no injury report or roster could be matched to) aren't cached.
+    p = _read_players().dropna(subset=["pfr_id", "gsis_id"]).drop_duplicates("pfr_id")
     return snaps.assign(gsis_id=snaps["pfr_player_id"].map(p.set_index("pfr_id")["gsis_id"]))
 
 
+def load_snap_counts(season: int, stamp: str) -> pd.DataFrame:
+    """PFR's snap counts per player and game, with gsis_id (through nflverse's
+    players table; NaN for a player it doesn't link)."""
+    return _side_load(_read_snap_counts, season, stamp, empty=pd.DataFrame)
+
+
 @st.cache_data(max_entries=4)
+def _read_nextgen(season: int, kind: str, stamp: str) -> pd.DataFrame:
+    return _nflverse_read(lambda: nflreadpy.load_nextgen_stats([season], kind).to_pandas())
+
+
 def load_nextgen(season: int, kind: str, stamp: str) -> pd.DataFrame:
     """NGS's `kind` stats ("passing", "rushing", "receiving") for `season`,
     one row per player and week, from 2016; empty if nflverse has none."""
-    try:
-        return nflreadpy.load_nextgen_stats([season], kind).to_pandas()
-    except Exception:
-        return pd.DataFrame()
+    return _side_load(_read_nextgen, season, kind, stamp, empty=pd.DataFrame)
 
 
 CHART_FIRST_SEASON = 2022  # FTN's charting starts in 2022
 
 
 @st.cache_data(max_entries=5)  # the season shown plus the replay baseline's three
+def _read_charting(season: int, stamp: str) -> pd.DataFrame:
+    return _nflverse_read(lambda: nflreadpy.load_ftn_charting([season]).to_pandas())
+
+
 def load_charting(season: int, stamp: str) -> pd.DataFrame:
     """FTN's charting of `season` (nflverse's ftn_charting release, weekly
     during the season), one row per play; empty if nflverse has none."""
-    try:
-        return nflreadpy.load_ftn_charting([season]).to_pandas()
-    except Exception:
-        return pd.DataFrame()
+    return _side_load(_read_charting, season, stamp, empty=pd.DataFrame)
+
+
+_ROSTER_COLS = ["team", "week", "gsis_id", "status"]
 
 
 @st.cache_data(max_entries=2)
+def _read_roster_status(season: int, stamp: str) -> pd.DataFrame:
+    return _nflverse_read(lambda: nflreadpy.load_rosters_weekly([season]).select(_ROSTER_COLS).to_pandas())
+
+
 def load_roster_status(season: int, stamp: str) -> pd.DataFrame:
     """Each team's weekly roster: team, week, gsis_id and status (ACT,
     RES for a reserve list, CUT, …), for who's gone that the injury report
     doesn't list (replay_core.lineup_change)."""
-    try:
-        return nflreadpy.load_rosters_weekly([season]).select(["team", "week", "gsis_id", "status"]).to_pandas()
-    except Exception:
-        return pd.DataFrame(columns=["team", "week", "gsis_id", "status"])
+    return _side_load(_read_roster_status, season, stamp,
+                      empty=lambda: pd.DataFrame(columns=_ROSTER_COLS))
 
 
 @st.cache_data(max_entries=2)
-def load_starters(season: int, stamp: str) -> pd.Series:
-    """gsis id → slot ("LT", "MLB", "RCB") for each team's first-team players
-    on its latest depth chart. Since 2025 nflverse keeps ESPN's daily charts
-    (dt, pos_abb, pos_rank); before, one per week (week, depth_team,
-    depth_position)."""
-    try:
-        dc = nflreadpy.load_depth_charts([season]).to_pandas()
-    except Exception:
-        return pd.Series(dtype=object)
+def _read_starters(season: int, stamp: str) -> pd.Series:
+    def read():
+        dc = nflreadpy.load_depth_charts([season])
+        # Only the columns read below: since 2025 the file holds every daily
+        # chart (760k rows in November), too big to convert whole.
+        keep = [c for c in ("dt", "pos_rank", "pos_abb", "week", "depth_team", "depth_position",
+                            "club_code", "team", "gsis_id") if c in dc.columns]
+        return dc.select(keep).to_pandas()
+    dc = _nflverse_read(read)
     if {"dt", "pos_rank", "pos_abb"} <= set(dc.columns):
         first = dc[(dc["dt"] == dc.groupby("team")["dt"].transform("max")) & (dc["pos_rank"] == 1)]
         slot = first["pos_abb"]
@@ -737,6 +797,14 @@ def load_starters(season: int, stamp: str) -> pd.Series:
         return pd.Series(dtype=object)
     return pd.Series(slot.to_numpy(), index=first["gsis_id"].to_numpy(), dtype=object).loc[
         lambda s: ~s.index.duplicated() & pd.notna(s.index)]
+
+
+def load_starters(season: int, stamp: str) -> pd.Series:
+    """gsis id → slot ("LT", "MLB", "RCB") for each team's first-team players
+    on its latest depth chart. Since 2025 nflverse keeps ESPN's daily charts
+    (dt, pos_abb, pos_rank); before, one per week (week, depth_team,
+    depth_position)."""
+    return _side_load(_read_starters, season, stamp, empty=lambda: pd.Series(dtype=object))
 
 
 class NFLLeague(League):
