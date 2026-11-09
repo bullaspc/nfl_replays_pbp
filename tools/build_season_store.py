@@ -26,6 +26,13 @@ import leagues  # noqa: E402
 import replay_core as core  # noqa: E402
 import season_store  # noqa: E402
 
+# GitHub's release downloads now and then answer 504 for minutes, and the
+# workflow starts every season's job at once. The app retries briefly so a
+# page stays quick; a build can afford to wait: 8 tries, 15 s × the try
+# between them (about 7 minutes in all) before a season's job fails.
+leagues.NFLVERSE_TRIES = 8
+leagues.NFLVERSE_BACKOFF_SECS = 15.0
+
 
 def build(league: leagues.League, season: int, out: Path) -> None:
     stamp = league.stamp()
