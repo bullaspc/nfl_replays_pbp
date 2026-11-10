@@ -658,24 +658,48 @@ st.divider()
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Kicking", "kicking"), ("Line", "line-play"), ("Charting", "charting"), ("Tendencies", "tendencies")]
+             ("Kicking", "kicking"), ("Line", "line-play")]
+            + ([] if full_game else [("Charting", "charting")]) + [("Tendencies", "tendencies")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore", anchor="boxscore")
+def _charting_block():
+    """The Charting table and its notes (here under the Boxscore in Full game,
+    else in the Charting section)."""
+    _chart = chart_table(revealed, home, away)
+    if _chart.empty:
+        st.caption("No snaps yet.")
+    else:
+        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)))
+        st.caption(
+            "Each offense over the snaps shown so far, downs only; the other column is its "
+            "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
+            "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
+            "text."
+            + (" The rest is FTN Data's charting via nflverse (CC-BY-SA 4.0): Motion % and RPO % "
+               "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with a "
+               "blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
+               f"{HEAVY_BOX}+ in the box; PA EPA/play per play-action dropback, Blitz EPA/play per "
+               "dropback against a blitz; Catchable % of the throws aimed at a receiver, Drop % per "
+               "catchable ball, INT-worthy % per throw. Results are colored against single games of "
+               f"the {league.baseline_label}; the calls stay plain."
+               if loaded.charted else
+               " FTN Data's charting (motion, play action, blitzes, catchable throws …) covers NFL "
+               "games from 2022 on, a day or two after they're played; it shows up here once FTN "
+               "has charted this one."))
+
+
 # Team names: the boxscore is narrow enough for them on a phone.
 _box = boxscore(revealed, home, away)
 stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
-# Full game only: every play is unlocked then, so the game's advanced (Charting)
-# numbers sit with the score. The same table as the Charting section below.
+# Full game only: every play is unlocked then, so the game's Charting sits with
+# the score and the Charting section below is left out.
 if full_game:
-    _box_chart = chart_table(revealed, home, away)
-    if not _box_chart.empty:
-        stat_table(style_chart_table(_box_chart, leagues.chart_baselines(league, season)))
-        st.caption("Full-game charting: Blitz %, Under C %, No-huddle % and the rest; "
-                   "definitions in Charting below.")
+    st.markdown("**Charting**")
+    _charting_block()
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -1355,28 +1379,9 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
 # (FTN's rows by play id, the text's formation), so it grows snap by snap and
 # nothing past the cursor is read. Whether FTN has charted the game at all is
 # a fact about the data (loaded.charted), not about what happened in it.
-st.subheader("Charting", anchor="charting")
-_chart = chart_table(revealed, home, away)
-if _chart.empty:
-    st.caption("No snaps yet.")
-else:
-    stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)))
-    st.caption(
-        "Each offense over the snaps shown so far, downs only; the other column is its "
-        "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
-        "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
-        "text."
-        + (" The rest is FTN Data's charting via nflverse (CC-BY-SA 4.0): Motion % and RPO % "
-           "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with a "
-           "blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
-           f"{HEAVY_BOX}+ in the box; PA EPA/play per play-action dropback, Blitz EPA/play per "
-           "dropback against a blitz; Catchable % of the throws aimed at a receiver, Drop % per "
-           "catchable ball, INT-worthy % per throw. Results are colored against single games of "
-           f"the {league.baseline_label}; the calls stay plain."
-           if loaded.charted else
-           " FTN Data's charting (motion, play action, blitzes, catchable throws …) covers NFL "
-           "games from 2022 on, a day or two after they're played; it shows up here once FTN "
-           "has charted this one."))
+if not full_game:
+    st.subheader("Charting", anchor="charting")
+    _charting_block()
 
 # ---------- Tendencies ----------
 st.subheader("Tendencies", anchor="tendencies")
