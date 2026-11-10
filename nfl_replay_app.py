@@ -38,7 +38,7 @@ from replay_core import (
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
 )
 from views import (
-    MATCHUP_TINTS, boxscore_figure, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
+    MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
     stat_table, style_chart_table, style_defense_table, style_kick_log, style_kicking_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
@@ -205,8 +205,8 @@ with st.sidebar:
                                      "already watched.")
         if qtr_pick == FULL_GAME:
             st.caption("**Full game** unlocks every play and the final score, for a game "
-                       "you've already watched. It also adds a scoring-by-period chart "
-                       "to the Boxscore. Pick a quarter to replay it spoiler-free.")
+                       "you've already watched. It also adds the game's charting stats "
+                       "(Blitz %, Under C %, …) to the Boxscore. Pick a quarter to replay it spoiler-free.")
             clock_str = "0:00"
         elif league.untimed_ot and qtr_pick == "OT":
             st.caption("Overtime has no clock here: you start at the end of "
@@ -668,14 +668,14 @@ st.subheader("Boxscore", anchor="boxscore")
 _box = boxscore(revealed, home, away)
 stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
-# Full game only: every play is unlocked then, so a chart of points per period
-# gives nothing away. In a quarter-by-quarter replay the table stays as is.
+# Full game only: every play is unlocked then, so the game's advanced (Charting)
+# numbers sit with the score. The same table as the Charting section below.
 if full_game:
-    st.plotly_chart(
-        _touch_safe(boxscore_figure(
-            _box, {home: hex_or_none(team_colors.get(home)), away: hex_or_none(team_colors.get(away))},
-            _names)),
-        width='stretch', config=_STATIC_CHART)
+    _box_chart = chart_table(revealed, home, away)
+    if not _box_chart.empty:
+        stat_table(style_chart_table(_box_chart, leagues.chart_baselines(league, season)))
+        st.caption("Full-game charting: Blitz %, Under C %, No-huddle % and the rest; "
+                   "definitions in Charting below.")
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
