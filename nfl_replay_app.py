@@ -687,7 +687,8 @@ def _charting_block(ranks: bool = False):
             st.caption("Rank: this game among the team's own games this season, in the "
                        "published data (1 = best; for the calls, 1 = highest).")
         st.caption(
-            "Each offense over the snaps shown so far, downs only; the other column is its "
+            ("Each offense over the whole game" if ranks else "Each offense over the snaps shown so far")
+            + ", downs only; the other column is its "
             "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
             "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
             "text."
