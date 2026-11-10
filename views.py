@@ -936,6 +936,29 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
     return fig
 
 
+def boxscore_figure(box: pd.DataFrame, colors: dict[str, str], names: dict[str, str]) -> go.Figure:
+    """Points per period, one bar per team (`box` from replay_core.boxscore():
+    Team, Q1…OT, Total; the OT column is drawn only when someone scored in it),
+    with the final total in the legend entry's name. Fixed axes, no toolbar."""
+    periods = [c for c in box.columns if c not in ("Team", "Total")]
+    if "OT" in periods and not box["OT"].any():
+        periods.remove("OT")
+    fallback = ["#ff7f0e", "#1f77b4"]
+    fig = go.Figure()
+    for i, row in box.reset_index(drop=True).iterrows():
+        team = row["Team"]
+        fig.add_bar(x=periods, y=[int(row[p]) for p in periods],
+                    name=f"{names.get(team, team)} {int(row['Total'])}",
+                    marker_color=colors.get(team) or fallback[i % 2],
+                    text=[int(row[p]) for p in periods], textposition="outside",
+                    hovertemplate="%{x}: %{y} pts<extra>" + escape(names.get(team, team)) + "</extra>")
+    fig.update_layout(barmode="group", height=260, margin=dict(l=10, r=10, t=30, b=10),
+                      legend_title_text="", dragmode=False,
+                      yaxis=dict(title="Points", fixedrange=True, rangemode="tozero"),
+                      xaxis=dict(fixedrange=True))
+    return fig
+
+
 # Momentum line: a trailing average over this many snaps, each capped at
 # ±MOMENTUM_EPA_CAP EPA (the bars keep the real value).
 MOMENTUM_WINDOW = 5
