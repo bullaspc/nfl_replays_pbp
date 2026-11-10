@@ -665,14 +665,17 @@ section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-manageme
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore", anchor="boxscore")
-def _charting_block():
+def _charting_block(ranks: bool = False):
     """The Charting table and its notes (here under the Boxscore in Full game,
     else in the Charting section)."""
     _chart = chart_table(revealed, home, away)
     if _chart.empty:
         st.caption("No snaps yet.")
     else:
-        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season)))
+        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season), ranks=ranks))
+        if ranks:
+            st.caption(f"Rank: this game among single games of the {league.baseline_label} "
+                       "(1 = best; for the calls, 1 = highest).")
         st.caption(
             "Each offense over the snaps shown so far, downs only; the other column is its "
             "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
@@ -699,7 +702,7 @@ stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t)))
 # the score and the Charting section below is left out.
 if full_game:
     st.markdown("**Charting**")
-    _charting_block()
+    _charting_block(ranks=True)
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
