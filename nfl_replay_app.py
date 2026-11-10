@@ -31,7 +31,7 @@ import scoreboard
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    HEAVY_BOX, PLAY_KINDS, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
+    HEAVY_BOX, PLAY_KINDS, chart_rates, game_ranks, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, special_teams_box, kick_log, top_kickers, top_punters, with_class_year, with_draft, draft_note, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
@@ -672,10 +672,20 @@ def _charting_block(ranks: bool = False):
     if _chart.empty:
         st.caption("No snaps yet.")
     else:
-        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season), ranks=ranks))
+        _own = None
         if ranks:
-            st.caption(f"Rank: this game among single games of the {league.baseline_label} "
-                       "(1 = best; for the calls, 1 = highest).")
+            # Each team's rank among its own games this season (finished games
+            # published so far); blank for a game that isn't one of them yet.
+            try:
+                _rates = chart_rates(leagues.season_chart_games(
+                    league, season, stamp, (1, 99), "Both")["posteam"])
+                _own = {t: game_ranks(_rates, game_id, t) for t in (away, home)}
+            except Exception:  # season not published yet: no ranks
+                _own = {}
+        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season), ranks=_own))
+        if ranks:
+            st.caption("Rank: this game among the team's own games this season, in the "
+                       "published data (1 = best; for the calls, 1 = highest).")
         st.caption(
             "Each offense over the snaps shown so far, downs only; the other column is its "
             "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "

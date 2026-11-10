@@ -15,7 +15,7 @@ import streamlit as st
 from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
-                         field_pos_label, fmt_top, _ordinal, percentile_of, period_label, play_type_label,
+                         field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
                          SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER, success_emoji, yl_label)
 from scoreboard import TickerGame, TickerTeam
 
@@ -390,25 +390,14 @@ def style_chart_games(df: pd.DataFrame, shades: pd.DataFrame):
     return _centered(styled)
 
 
-def _game_rank(stat: str, v, arr) -> str:
-    """Where one team-game's `v` places among the baseline team-games `arr`:
-    "37th", 1 = best (ties share the better place; lower is better for
-    `CHART_LOWER_IS_BETTER`); for the calls (`CHART_STYLE`) 1 = highest.
-    "" where there is no value or baseline."""
-    if arr is None or not len(arr) or pd.isna(v):
-        return ""
-    lower_first = stat in CHART_LOWER_IS_BETTER
-    ahead = int((arr < v).sum() if lower_first else (arr > v).sum())
-    return _ordinal(ahead + 1)
-
-
-def style_chart_table(df: pd.DataFrame, baselines: dict | None = None, ranks: bool = False):
+def style_chart_table(df: pd.DataFrame, baselines: dict | None = None,
+                      ranks: dict[str, pd.Series] | None = None):
     """The replay's Charting table (`replay_core.chart_table`: stats as rows,
     a column per team): each value formatted as the season tables' are, the
     results colored by percentile against single games of the baseline
     seasons (flipped where lower is better), the calls (`CHART_STYLE`) plain.
-    With `ranks`, a "<team> rank" column follows each team's: its place among
-    those baseline team-games (`_game_rank`)."""
+    `ranks` (team → stat → "3rd of 17", `replay_core.game_ranks`) adds a
+    "<team> rank" column after each team's: the game among that team's own."""
     baselines = baselines or {}
     shown = pd.DataFrame([[_season_format(stat)(v) for v in df.loc[stat]] for stat in df.index],
                          index=df.index, columns=df.columns)
@@ -422,12 +411,12 @@ def style_chart_table(df: pd.DataFrame, baselines: dict | None = None, ranks: bo
 
     colors = pd.DataFrame([[_color(stat, v) for v in df.loc[stat]] for stat in df.index],
                           index=df.index, columns=df.columns)
-    if ranks:
+    if ranks is not None:
         order = []
         for team in df.columns:
             rank_col = f"{team} rank"
-            shown[rank_col] = [_game_rank(stat, v, baselines.get(stat))
-                               for stat, v in df[team].items()]
+            shown[rank_col] = [ranks.get(team, pd.Series(dtype=object)).get(stat, "")
+                               for stat in df.index]
             colors[rank_col] = colors[team]
             order += [team, rank_col]
         shown, colors = shown[order], colors[order]

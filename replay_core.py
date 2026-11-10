@@ -1573,6 +1573,25 @@ def chart_table(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return out
 
 
+def game_ranks(rates: pd.DataFrame, game_id: str, team: str) -> pd.Series:
+    """Where `team`'s numbers in one game place among its own games: `rates`
+    is `chart_rates()` of `chart_by_game()` (index (game_id, team)). "3rd of
+    17", 1 = best (ties share the better place; lower is better for
+    `CHART_LOWER_IS_BETTER`; for the calls, `CHART_STYLE`, 1 = highest); ""
+    where the game isn't among its games or the stat has no value."""
+    mine = rates.xs(team, level=1) if team in rates.index.get_level_values(1) else rates.iloc[:0]
+    out = {}
+    for stat in rates.columns:
+        col = mine[stat].dropna()
+        if game_id not in col.index:
+            out[stat] = ""
+            continue
+        v = col[game_id]
+        ahead = int((col < v).sum() if stat in CHART_LOWER_IS_BETTER else (col > v).sum())
+        out[stat] = f"{_ordinal(ahead + 1)} of {len(col)}"
+    return pd.Series(out, dtype=object)
+
+
 def chart_distributions(raw: pd.DataFrame) -> dict[str, np.ndarray]:
     """Each charting number over every team-game in `raw` (baseline plays,
     with FTN's charting where it has it), sorted: what the replay's Charting
