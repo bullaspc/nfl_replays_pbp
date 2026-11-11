@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, chart_label, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
@@ -391,13 +391,16 @@ def style_chart_games(df: pd.DataFrame, shades: pd.DataFrame):
 
 
 def style_chart_table(df: pd.DataFrame, baselines: dict | None = None,
-                      ranks: dict[str, pd.Series] | None = None):
-    """The replay's Charting table (`replay_core.chart_table`: stats as rows,
-    a column per team): each value formatted as the season tables' are, the
-    results colored by percentile against single games of the baseline
-    seasons (flipped where lower is better), the calls (`CHART_STYLE`) plain.
-    `ranks` (team → stat → "3rd of 17", `replay_core.game_ranks`) adds a
-    "<team> rank" column after each team's: the game among that team's own."""
+                      ranks: dict[str, pd.Series] | None = None, side: str = "Offense"):
+    """The replay's Charting table (`replay_core.chart_view`: stats as rows,
+    a column per team's offense or, with `side` "Defense", per team's
+    defense): each value formatted as the season tables' are, the results
+    colored by percentile against single games of the baseline seasons
+    (flipped where lower is better, and again for a defense: what it
+    allowed), the calls (`CHART_STYLE`) plain; rows labelled by
+    `chart_label()`. `ranks` (team → stat → "3rd of 17",
+    `replay_core.game_ranks`) adds a "<team> rank" column after each team's:
+    the game among that team's own."""
     baselines = baselines or {}
     shown = pd.DataFrame([[_season_format(stat)(v) for v in df.loc[stat]] for stat in df.index],
                          index=df.index, columns=df.columns)
@@ -407,7 +410,8 @@ def style_chart_table(df: pd.DataFrame, baselines: dict | None = None,
         if stat in CHART_STYLE or arr is None or not len(arr) or pd.isna(v):
             return ""
         pct = percentile_of(float(v), arr)
-        return percentile_color(100.0 - pct if stat in CHART_LOWER_IS_BETTER else pct)
+        flip = (stat in CHART_LOWER_IS_BETTER) != (side == "Defense")
+        return percentile_color(100.0 - pct if flip else pct)
 
     colors = pd.DataFrame([[_color(stat, v) for v in df.loc[stat]] for stat in df.index],
                           index=df.index, columns=df.columns)
@@ -420,6 +424,8 @@ def style_chart_table(df: pd.DataFrame, baselines: dict | None = None,
             colors[rank_col] = colors[team]
             order += [team, rank_col]
         shown, colors = shown[order], colors[order]
+    labels = [chart_label(stat, side) for stat in df.index]
+    shown.index = colors.index = pd.Index(labels, name=df.index.name)
     return _centered(shown.style.apply(lambda _: colors, axis=None))
 
 

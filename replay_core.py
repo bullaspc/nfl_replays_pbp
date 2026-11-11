@@ -1573,12 +1573,55 @@ def chart_table(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
     return out
 
 
-def game_ranks(rates: pd.DataFrame, game_id: str, team: str) -> pd.Series:
+# The replay's Charting table seen from one side (`chart_view`): an offense's
+# own calls, then the defense's calls it faced, then its results; a defense's
+# own calls (`CHART_DEFENSE_CALLS`), then the offense's calls it faced, then
+# what it allowed.
+CHART_SIDES = ("Offense", "Defense")
+CHART_DEFENSE_CALLS = ["Blitz %", "Rushers", "8+ Box %"]
+_CHART_DEFENSE_RESULTS = {"PA EPA/play": "PA EPA/play allowed",
+                          "Blitz EPA/play": "EPA/play when blitzing"}
+
+
+def chart_label(stat: str, side: str) -> str:
+    """How `stat` reads in `side`'s view: "Blitz % faced" for an offense,
+    "Motion % faced" or "PA EPA/play allowed" for a defense; its own calls
+    as they are."""
+    if side == "Defense":
+        if stat in CHART_DEFENSE_CALLS:
+            return stat
+        if stat in CHART_STYLE:
+            return f"{stat} faced"
+        return _CHART_DEFENSE_RESULTS.get(stat, f"Opp. {stat}")
+    return f"{stat} faced" if stat in CHART_DEFENSE_CALLS else stat
+
+
+def chart_view(table: pd.DataFrame, home: str, away: str, side: str) -> pd.DataFrame:
+    """`chart_table()` from one side: rows in `side`'s order (its own calls,
+    the other side's calls it faced, the results), columns [away, home] for
+    each team's offense, or with "Defense" each team's defense (the other
+    team's offensive plays). The index keeps the stat names (`chart_label`
+    gives what to show)."""
+    if table.empty:
+        return table
+    stats = list(table.index)
+    defense_calls = [s for s in stats if s in CHART_DEFENSE_CALLS]
+    offense_calls = [s for s in stats if s in CHART_STYLE and s not in CHART_DEFENSE_CALLS]
+    results = [s for s in stats if s not in CHART_STYLE]
+    if side == "Defense":
+        return table.loc[defense_calls + offense_calls + results, [home, away]].set_axis(
+            [away, home], axis=1)
+    return table.loc[offense_calls + defense_calls + results, [away, home]]
+
+
+def game_ranks(rates: pd.DataFrame, game_id: str, team: str, defense: bool = False) -> pd.Series:
     """Where `team`'s numbers in one game place among its own games: `rates`
     is `chart_rates()` of `chart_by_game()` (index (game_id, team)). "3rd of
     17", 1 = best (ties share the better place; lower is better for
-    `CHART_LOWER_IS_BETTER`; for the calls, `CHART_STYLE`, 1 = highest); ""
-    where the game isn't among its games or the stat has no value."""
+    `CHART_LOWER_IS_BETTER`, and with `defense` (`rates` from "defteam":
+    what the defense allowed) the other way round; for the calls,
+    `CHART_STYLE`, 1 = highest); "" where the game isn't among its games or
+    the stat has no value."""
     mine = rates.xs(team, level=1) if team in rates.index.get_level_values(1) else rates.iloc[:0]
     out = {}
     for stat in rates.columns:
@@ -1587,7 +1630,10 @@ def game_ranks(rates: pd.DataFrame, game_id: str, team: str) -> pd.Series:
             out[stat] = ""
             continue
         v = col[game_id]
-        ahead = int((col < v).sum() if stat in CHART_LOWER_IS_BETTER else (col > v).sum())
+        lower = stat in CHART_LOWER_IS_BETTER
+        if defense and stat not in CHART_STYLE:
+            lower = not lower
+        ahead = int((col < v).sum() if lower else (col > v).sum())
         out[stat] = f"{_ordinal(ahead + 1)} of {len(col)}"
     return pd.Series(out, dtype=object)
 

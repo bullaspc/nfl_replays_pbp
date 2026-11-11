@@ -31,7 +31,7 @@ import scoreboard
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
-    HEAVY_BOX, PLAY_KINDS, chart_rates, game_ranks, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
+    HEAVY_BOX, PLAY_KINDS, CHART_SIDES, chart_rates, chart_view, game_ranks, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
     run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, special_teams_box, kick_log, top_kickers, top_punters, with_class_year, with_draft, draft_note, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
@@ -667,38 +667,49 @@ section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-manageme
 st.subheader("Boxscore", anchor="boxscore")
 def _charting_block(ranks: bool = False):
     """The Charting table and its notes (here under the Boxscore in Full game,
-    else in the Charting section)."""
+    else in the Charting section), from the side the Offense / Defense control
+    picks: an offense's calls, the blitzes and boxes it faced and its results,
+    or a defense's calls, what it faced and what it allowed."""
     _chart = chart_table(revealed, home, away)
     if _chart.empty:
         st.caption("No snaps yet.")
-    else:
-        _own = None
-        if ranks:
-            # Each team's rank among its own games this season (finished games
-            # published so far); blank for a game that isn't one of them yet.
-            try:
-                _rates = chart_rates(leagues.season_chart_games(
-                    league, season, stamp, (1, 99), "Both")["posteam"])
-                _own = {t: game_ranks(_rates, game_id, t) for t in (away, home)}
-            except Exception:  # season not published yet: no ranks
-                _own = {}
-        stat_table(style_chart_table(_chart, leagues.chart_baselines(league, season), ranks=_own))
-        if ranks:
-            st.caption("Rank: this game among the team's own games this season, in the "
-                       "published data (1 = best; for the calls, 1 = highest).")
+        return
+    _side = st.segmented_control("Side", list(CHART_SIDES), default="Offense", key="_chart_side",
+                                 label_visibility="collapsed") or "Offense"
+    _defense = _side == "Defense"
+    _own = None
+    if ranks:
+        # Each team's rank among its own games this season (finished games
+        # published so far); blank for a game that isn't one of them yet.
+        try:
+            _rates = chart_rates(leagues.season_chart_games(
+                league, season, stamp, (1, 99), "Both")["defteam" if _defense else "posteam"])
+            _own = {t: game_ranks(_rates, game_id, t, defense=_defense) for t in (away, home)}
+        except Exception:  # season not published yet: no ranks
+            _own = {}
+    stat_table(style_chart_table(chart_view(_chart, home, away, _side),
+                                 leagues.chart_baselines(league, season), ranks=_own, side=_side))
+    _over = "the whole game" if ranks else "the snaps shown so far"
+    st.caption(
+        (f"Each team's defense over {_over}, downs only: its own calls first (Blitz %, Rushers, "
+         "8+ Box %), then the offense's calls it faced, then what it allowed (green = good for "
+         "the defense)." if _defense else
+         f"Each team's offense over {_over}, downs only: its own calls first, then the defense's "
+         "calls it faced (Blitz %, Rushers, 8+ Box %), then its results.")
+        + (" Rank: this game among the team's own games this season, in the published data "
+           "(1 = best; for the calls, 1 = highest)." if ranks else ""))
+    with st.expander("How to read charting", expanded=False):
         st.caption(
-            ("Each offense over the whole game" if ranks else "Each offense over the snaps shown so far")
-            + ", downs only; the other column is its "
-            "defense's side (Blitz %, Rushers and 8+ Box % are the defense's own calls). Under C % "
-            "(snaps under center, not in the shotgun or pistol) and No-huddle % come from the play "
-            "text."
+            "Under C % (snaps under center, not in the shotgun or pistol) and No-huddle % come "
+            "from the play text."
             + (" The rest is FTN Data's charting via nflverse (CC-BY-SA 4.0): Motion % and RPO % "
                "per snap; PA % (play action) and Screen % per dropback; Blitz % is dropbacks with a "
                "blitzer, Rushers the pass rushers per dropback, 8+ Box % designed runs against "
                f"{HEAVY_BOX}+ in the box; PA EPA/play per play-action dropback, Blitz EPA/play per "
-               "dropback against a blitz; Catchable % of the throws aimed at a receiver, Drop % per "
-               "catchable ball, INT-worthy % per throw. Results are colored against single games of "
-               f"the {league.baseline_label}; the calls stay plain."
+               "dropback against a blitz (for a defense: EPA/play when blitzing); Catchable % of "
+               "the throws aimed at a receiver, Drop % per catchable ball, INT-worthy % per throw "
+               "(Opp. = the offense it faced). Results are colored against single games of the "
+               f"{league.baseline_label}; the calls stay plain."
                if loaded.charted else
                " FTN Data's charting (motion, play action, blitzes, catchable throws …) covers NFL "
                "games from 2022 on, a day or two after they're played; it shows up here once FTN "
