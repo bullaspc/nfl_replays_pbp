@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import pickle
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -430,10 +431,33 @@ def _reason(e: BaseException) -> str:
     return text if len(text) <= 300 else text[:297] + "…"
 
 
+# The season caches are keyed by the data's stamp, which changes with each
+# rebuild (several times on a college game day). Without this, the replaced
+# copy stayed in memory next to the new one until max_entries pushed it out:
+# 380 MB for a college season's raw and mapped frames.
+_SEASON_STAMPS: dict[tuple[str, int], str] = {}
+_SEASON_STAMPS_LOCK = threading.Lock()
+
+
+def _forget_older_stamp(cached, season: int, stamp: str) -> None:
+    """Called while `cached(season, stamp)` is being built: drops the entry
+    for the stamp it replaces (`cached` takes (season, stamp))."""
+    key = (getattr(cached, "__qualname__", None) or str(id(cached)), season)
+    with _SEASON_STAMPS_LOCK:
+        old = _SEASON_STAMPS.get(key)
+        _SEASON_STAMPS[key] = stamp
+    if old is not None and old != stamp:
+        try:
+            cached.clear(season, old)
+        except Exception:  # an older Streamlit without per-argument clear
+            pass
+
+
 @st.cache_data(max_entries=4)
 def _load_pbp(season: int, stamp: str) -> pd.DataFrame:
     """A fresh download, saved as the season's last good copy. Raises, so a
     failed download isn't cached and the next run tries again."""
+    _forget_older_stamp(_load_pbp, season, stamp)
     df = nflverse_pbp_retry(season, core.PBP_COLS)
     if df.empty:
         raise SeasonNotPublished(_unpublished_message(season))
@@ -624,6 +648,7 @@ def load_team_divisions() -> dict[str, str]:
 # Shared, not copied, like _final_season_pbp: callers must not modify it.
 @st.cache_resource(max_entries=2)
 def _nfl_season_pbp(season: int, stamp: str) -> pd.DataFrame:
+    _forget_older_stamp(_nfl_season_pbp, season, stamp)
     pbp = load_pbp(season, stamp)
     sched = load_schedule(season)
     if not sched.empty and "game_type" in sched.columns:
@@ -925,6 +950,7 @@ def cfb_stamp() -> str:
 def load_cfb_season(season: int, stamp: str) -> pd.DataFrame:
     """A season of college pbp, raw release columns. Shared, not copied, so
     callers must not modify it. `stamp` is only a cache key."""
+    _forget_older_stamp(load_cfb_season, season, stamp)
     return cfb_feed.read_season(season)
 
 
@@ -1021,6 +1047,7 @@ def load_cfb_draft_board(season: int, stamp: str) -> dict[tuple[str, str], str]:
 def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
     app's layout, with `postseason`."""
+    _forget_older_stamp(_cfb_season_pbp, season, stamp)
     raw = load_cfb_season(season, stamp)
     done = raw.groupby("game_id")["status_type_completed"].transform(lambda s: s.eq(True).all())
     raw = raw[done]
