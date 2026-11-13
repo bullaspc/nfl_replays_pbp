@@ -21,7 +21,7 @@ from replay_core import (
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL, FG_BANDS, KICK_GLOSSARY, KICK_MIN_PER_GAME, KICK_RATE_COLS,
     KICK_VOLUME_COL, PUNT_GLOSSARY, PUNT_TOUCHBACK_YDS,
-    OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, PlayFilter,
+    OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, NO_FILTER, PlayFilter,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
@@ -322,7 +322,11 @@ with tab_teams:
 # ---------- Team ----------
 with tab_team:
     team = st.selectbox("Team", shown_teams, key=f"_ss_team_{league.name}")
-    sit_plays = leagues.season_plays(league, season, stamp, weeks, part, play_filter)
+    # Whole games, for the final score and the snap counts; with no situation
+    # filter they're also the situation's plays (one copy of the season, not two).
+    all_plays = leagues.season_plays(league, season, stamp, weeks, part)
+    sit_plays = (all_plays if play_filter == NO_FILTER else
+                 leagues.season_plays(league, season, stamp, weeks, part, play_filter))
     pbp = venue_plays(sit_plays, VENUES[venue])
     # The tab runs about fifteen phone screens: one sticky row of links to its sections.
     team_charting = any(c in team_tables["offense"].columns for c in CHART_ROWS)
@@ -384,7 +388,7 @@ with tab_team:
     # Whole games, for the final score (and the snap counts below); the EPA
     # follows the situation filters, over both offenses (not `pbp`, which
     # keeps only the offense at the venue).
-    sel_games = leagues.season_plays(league, season, stamp, weeks, part)
+    sel_games = all_plays
     if VENUES[venue]:
         sel_games = sel_games[sel_games[VENUES[venue]] == team]
     st.markdown("<span id='ss-schedule'></span>**Schedule**", unsafe_allow_html=True)

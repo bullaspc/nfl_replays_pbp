@@ -621,7 +621,8 @@ def load_team_divisions() -> dict[str, str]:
     return {a: d for a, d in zip(df["team_abbr"], df["team_division"]) if isinstance(d, str)}
 
 
-@st.cache_data(max_entries=2)
+# Shared, not copied, like _final_season_pbp: callers must not modify it.
+@st.cache_resource(max_entries=2)
 def _nfl_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     pbp = load_pbp(season, stamp)
     sched = load_schedule(season)
@@ -1015,7 +1016,8 @@ def load_cfb_draft_board(season: int, stamp: str) -> dict[tuple[str, str], str]:
     return core.draft_keys(board, load_cfb_class_years(season, stamp))
 
 
-@st.cache_data(max_entries=2)
+# Shared, not copied, like _final_season_pbp: callers must not modify it.
+@st.cache_resource(max_entries=2)
 def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
     app's layout, with `postseason`."""
@@ -1469,7 +1471,11 @@ def _stored_tables(league_name: str, season: int, weeks: tuple[int, int], part: 
         return None
 
 
-@st.cache_data(max_entries=4, show_spinner=False)
+# A season's play-by-play (a college one is ~250 MB in memory) is shared,
+# not copied: st.cache_data unpickles a fresh copy on every call, and a
+# Season stats run makes several, which crashed Community Cloud. Callers
+# must not modify it (`season_plays` slices into a new frame).
+@st.cache_resource(max_entries=4, show_spinner=False)
 def _final_season_pbp(league_name: str, season: int) -> pd.DataFrame:
     """A finished season's `League.season_pbp`, from the disk cache."""
     league = LEAGUES[league_name]
