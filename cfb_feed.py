@@ -850,6 +850,68 @@ def _num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").astype(float)
 
 
+TIMEOUTS_PER_HALF = 3
+TIMEOUTS_PER_OT = 1  # each team gets one per overtime period
+
+
+def _timeout_segment(qtr: pd.Series) -> pd.Series:
+    """What a team's timeouts are counted over: 1 = first half, 2 = second,
+    then each overtime period on its own (5, 6, ...)."""
+    return pd.Series(np.where(qtr <= 2, 1, np.where(qtr <= 4, 2, qtr)), index=qtr.index)
+
+
+def _timeouts_left(df: pd.DataFrame, gid: pd.Series, qtr: pd.Series,
+                   timeout: pd.Series) -> pd.DataFrame:
+    """Each team's timeouts left after each row (before the next snap).
+
+    sportsdataverse counts down on every "Timeout <team>" row, but ESPN's
+    college feed logs TV timeouts that way too (and now and then misses a
+    real one), so a team can show five or six in a half and the count goes
+    below zero (USC @ Indiana 2026: USC's six first-half "timeouts" took it
+    to -3). Recounted here: the team is the timeout row's pos_team_id, each
+    half starts at 3 (each overtime period at 1) and no team goes below 0.
+    Nothing on the rows tells a TV timeout from a team's (skipping the ones
+    next to a kickoff matched ESPN's scoreboard less often), so a live game
+    takes the scoreboard's count too (cap_live_timeouts)."""
+    seg = _timeout_segment(qtr)
+    allowance = np.where(seg <= 2, TIMEOUTS_PER_HALF, TIMEOUTS_PER_OT)
+    left = {}
+    for side in ("home", "away"):
+        mine = (timeout & df["pos_team_id"].eq(df[f"{side}TeamId"])).astype(int)
+        used = mine.groupby([gid, seg]).cumsum()
+        left[side] = np.clip(allowance - used, 0, None).astype(float)
+    return pd.DataFrame(left, index=df.index)
+
+
+def cap_live_timeouts(pbp: pd.DataFrame, period: int | None,
+                      left: dict[str, int | None]) -> pd.DataFrame:
+    """Reconcile a live game's recount with ESPN's own scoreboard count
+    (`left`: home/away timeouts left now, at `period`), which the feed's rows
+    can't match: they list TV timeouts as a team's and now and then miss a
+    real one. Timeouts left only go down within a half, so no row of the
+    half the scoreboard is in shows fewer than it does now, and the feed's
+    newest row shows exactly its count. Only when the feed's newest row is
+    in that half (or overtime period)."""
+    if pbp.empty or not period:
+        return pbp
+    seg = _timeout_segment(pbp["qtr"].astype(float))
+    now = int(_timeout_segment(pd.Series([float(period)])).iloc[0])
+    if seg.iloc[-1] != now:
+        return pbp
+    rows = seg.eq(now)
+    allowance = TIMEOUTS_PER_HALF if now <= 2 else TIMEOUTS_PER_OT
+    pbp = pbp.copy()
+    for side in ("home", "away"):
+        n = left.get(side)
+        if n is None:
+            continue
+        n = float(min(max(n, 0), allowance))
+        col = f"{side}_timeouts_remaining"
+        pbp.loc[rows, col] = pbp.loc[rows, col].clip(lower=n)
+        pbp.iloc[-1, pbp.columns.get_loc(col)] = n
+    return pbp
+
+
 def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Raw release rows (one or many games) → the app's pbp layout. Every name
     in `columns` is present (NaN if the college feed doesn't have it)."""
@@ -1008,10 +1070,9 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     out["return_yards"] = _num(df["yds_punt_return"]).fillna(0.0).where(punt)
 
     # Timeouts left before the play, and on a timeout's own row after it, as
-    # nflfastR has them.
-    for side in ("home", "away"):
-        out[f"{side}_timeouts_remaining"] = _num(df[f"start.{side}TeamTimeouts"]).where(
-            ~timeout, _num(df[f"end.{side}TeamTimeouts"]))
+    # nflfastR has them: recounted (_timeouts_left), not the feed's.
+    left = _timeouts_left(df, gid, qtr, timeout)
+    out["home_timeouts_remaining"], out["away_timeouts_remaining"] = left["home"], left["away"]
 
     out["total_home_score"], out["total_away_score"] = _clean_scores(df)
     out["home_wp"] = _num(df["home_wp_before"])
