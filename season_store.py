@@ -16,6 +16,14 @@ season with the postseason, and the postseason alone. Anything else is
 computed as before. Every file carries the hash of the code that built it
 (`leagues._CODE_VERSION`), and the app only uses files from its own code.
 
+The current season of a league in `leagues.CURRENT_STORE_LEAGUES` (college
+football) is stored too, as "current_*" files: its mapped play-by-play, its
+teams (in the manifest) and the regular-season selections, which take ~40 s
+each to compute for a college season. That data changes with every rebuild of
+the league's release, so these files also carry the data stamp they were
+built from, and the app uses them only while it matches the live stamp.
+.github/workflows/current_season_store.yml rebuilds them when it changes.
+
 Plain data only: parquet tables and JSON, no pickles from the network.
 No Streamlit calls.
 """
@@ -70,14 +78,33 @@ def lookup(manifest: dict, weeks: tuple[int, int], part: str, play_filter, venue
     if lo > reg[0] or hi < lo:  # starts later than week 1: not stored
         return None
     if part == "Both":
-        return selection_name(part, None, adjusted) if hi == reg[-1] else None
+        if hi != reg[-1]:
+            return None
+        if manifest.get("has_post", True):
+            return selection_name(part, None, adjusted)
+        part = "Regular season"  # no postseason games yet: the same plays
     hi = max(w for w in reg if w <= hi) if any(w <= hi for w in reg) else None
     return selection_name(part, (reg[0], hi), adjusted) if hi is not None else None
 
 
+def current_selections(reg_weeks: list[int], has_post: bool) -> list[tuple[str, tuple[int, int], bool]]:
+    """(part, weeks, adjusted) the current season's store keeps: regular-season
+    weeks 1–k for every k, Raw and Opponent-adjusted (the Season stats page's
+    defaults, the Matchup page's and the replay preview's weeks before a
+    game), plus Both and Postseason once there are postseason games (before,
+    `lookup` answers Both with the whole regular season)."""
+    return [sel for sel in stored_selections(reg_weeks) if has_post or sel[0] == "Regular season"]
+
+
+def current(name: str) -> str:
+    """The current season's file for a selection or "manifest" / "pbp"."""
+    return f"current_{name}"
+
+
 def asset_name(league: str, season: int, what: str) -> str:
-    """"NFL_2023_reg_1-9_adj.zip", "NFL_2023_ids.zip", "NFL_2023_manifest.json"."""
-    ext = "json" if what == "manifest" else "zip"
+    """"NFL_2023_reg_1-9_adj.zip", "NFL_2023_ids.zip", "NFL_2023_manifest.json",
+    "College_football_2026_current_manifest.json"."""
+    ext = "json" if what.endswith("manifest") else "zip"
     return f"{league.replace(' ', '_')}_{season}_{what}.{ext}"
 
 
@@ -87,26 +114,35 @@ def _parquet(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-def pack_tables(tables: dict, code: str) -> bytes:
+def pack_tables(tables: dict, code: str, stamp: str | None = None) -> bytes:
     """A `_season_tables()` dict as a zip: one parquet per table plus
-    meta.json (the scalars and the code hash)."""
+    meta.json (the scalars, the code hash and, for the current season, the
+    data stamp)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # parquet is compressed already
         for key in TABLE_KEYS:
             z.writestr(f"{key}.parquet", _parquet(tables[key]))
         z.writestr("meta.json", json.dumps({
-            "format": FORMAT, "code": code, "missing": sorted(tables["missing"]),
+            "format": FORMAT, "code": code, "stamp": stamp, "missing": sorted(tables["missing"]),
             "play_share": float(tables["play_share"]),
             "charted": [int(x) for x in tables["charted"]]}))
     return buf.getvalue()
 
 
-def unpack_tables(data: bytes, code: str) -> dict | None:
+def _current(meta: dict, code: str, stamp: str | None) -> bool:
+    """Whether a file's meta.json says it was built by `code` (and, when a
+    stamp is asked for, from that data)."""
+    return (meta.get("format") == FORMAT and meta.get("code") == code
+            and (stamp is None or meta.get("stamp") == stamp))
+
+
+def unpack_tables(data: bytes, code: str, stamp: str | None = None) -> dict | None:
     """`pack_tables()`'s zip back as the `_season_tables()` dict, or None if
-    it was built by other code (or another format)."""
+    it was built by other code (or another format, or from other data than
+    `stamp`)."""
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         meta = json.loads(z.read("meta.json"))
-        if meta.get("format") != FORMAT or meta.get("code") != code:
+        if not _current(meta, code, stamp):
             return None
         tables = {key: pd.read_parquet(io.BytesIO(z.read(f"{key}.parquet"))) for key in TABLE_KEYS}
     tables["situational"] = core.situational_distributions_from(tables["situational_team"])
@@ -116,19 +152,20 @@ def unpack_tables(data: bytes, code: str) -> dict | None:
     return tables
 
 
-def pack_frame(df: pd.DataFrame, code: str) -> bytes:
-    """One DataFrame (the season's player ids) with the code hash."""
+def pack_frame(df: pd.DataFrame, code: str, stamp: str | None = None) -> bytes:
+    """One DataFrame (the season's player ids, the current season's
+    play-by-play) with the code hash and the data stamp."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         z.writestr("data.parquet", _parquet(df))
-        z.writestr("meta.json", json.dumps({"format": FORMAT, "code": code}))
+        z.writestr("meta.json", json.dumps({"format": FORMAT, "code": code, "stamp": stamp}))
     return buf.getvalue()
 
 
-def unpack_frame(data: bytes, code: str) -> pd.DataFrame | None:
+def unpack_frame(data: bytes, code: str, stamp: str | None = None) -> pd.DataFrame | None:
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         meta = json.loads(z.read("meta.json"))
-        if meta.get("format") != FORMAT or meta.get("code") != code:
+        if not _current(meta, code, stamp):
             return None
         return pd.read_parquet(io.BytesIO(z.read("data.parquet")))
 

@@ -1,0 +1,119 @@
+# Precomputed Season stats for the college season under way (season_store.py's
+# "current_*" files), published to the `season-store` release next to the
+# finished NFL seasons. A college season's play-by-play takes ~12 s to build
+# and each selection's tables ~40 s, so the app reads these instead whenever
+# they were built from the data it sees: every file carries the release's data
+# stamp and the code hash, and the app ignores files that don't match both.
+# Checked every hour during the season: it rebuilds only when sportsdataverse
+# has republished the season (several times on a game day) or the code changed.
+name: Current season store
+
+on:
+  schedule:
+    - cron: "17 * * 1,8-12 *"  # hourly, August through January
+  push:
+    branches: [main]
+    paths:
+      - replay_core.py
+      - leagues.py
+      - cfb_feed.py
+      - live_feed.py
+      - nflfastr_models.py
+      - season_store.py
+      - tools/build_season_store.py
+      - .github/workflows/current_season_store.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if the store is up to date
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: current-season-store
+  cancel-in-progress: true  # a newer run builds from newer data or code
+
+env:
+  RELEASE: season-store
+  LEAGUE: College football
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      chunks: ${{ steps.plan.outputs.chunks }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - id: plan
+        run: python tools/build_season_store.py current plan out "$LEAGUE" ${{ inputs.force && '--force' || '' }}
+      - name: Make sure the release exists
+        if: steps.plan.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --latest=false \
+              --title "Season store" \
+              --notes "Precomputed Season stats, read by the app (season_store.py)."
+      - name: Upload the play-by-play
+        if: steps.plan.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*_current_pbp.zip
+      - name: Keep the manifest for the build jobs and the last step
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: out/*_current_manifest.json
+          retention-days: 1
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true  # one chunk short means no manifest: no point finishing the rest
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest
+          path: manifest
+      - run: python tools/build_season_store.py current build ${{ matrix.chunk }} ${{ strategy.job-total }} manifest/*_current_manifest.json out "$LEAGUE"
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber out/*.zip
+
+  publish:
+    # The manifest goes up last, once every selection it names is there: the
+    # app only uses a stamp's files once it sees that stamp's manifest.
+    needs: [plan, build]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest
+          path: manifest
+      - name: Upload the manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber manifest/*_current_manifest.json

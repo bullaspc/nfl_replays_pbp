@@ -27,7 +27,9 @@ published keeps the same layout. No Streamlit calls here.
 import html
 import io
 import json
+import os
 import re
+import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -102,11 +104,43 @@ def stamp() -> str:
         return ""
 
 
+def _season_url(season: int) -> str:
+    return f"{RELEASE}/espn_cfb_pbp/play_by_play_{int(season)}.parquet"
+
+
 def read_season(season: int) -> pd.DataFrame:
     """One season of published college pbp, `RAW_COLS` only. Raises if the
     season isn't published (yet)."""
-    blob = _get(f"{RELEASE}/espn_cfb_pbp/play_by_play_{int(season)}.parquet", timeout=120)
-    return pd.read_parquet(io.BytesIO(blob), columns=RAW_COLS)
+    return pd.read_parquet(io.BytesIO(_get(_season_url(season), timeout=120)), columns=RAW_COLS)
+
+
+def download_season(season: int, path: Path) -> None:
+    """The season's release file (~45 MB), saved to `path` as published, for
+    `read_season_file`. Written whole (a temporary file, then renamed), so a
+    reader never sees half a file. Raises if the season isn't published."""
+    blob = _get(_season_url(season), timeout=120)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(blob)
+    os.replace(tmp, path)
+
+
+def read_season_file(path: Path | str, game_id: str | None = None) -> pd.DataFrame:
+    """`RAW_COLS` of a season file `download_season` saved: all of it, or only
+    the rows of `game_id`, which DuckDB reads without loading the season (~40
+    ms; the same frame `read_season` filtered by game_id gives, numbered from
+    0)."""
+    if game_id is None:
+        return pd.read_parquet(path, columns=RAW_COLS)
+    import duckdb  # only needed here
+
+    cols = ", ".join(f'"{c}"' for c in RAW_COLS)
+    gid = int(game_id) if str(game_id).isdigit() else str(game_id)
+    with duckdb.connect() as con:
+        rel = con.sql(f"SELECT {cols} FROM read_parquet($path) WHERE game_id = $gid",
+                      params={"path": str(path), "gid": gid})
+        # DuckDB 2 names it to_arrow_table; 1.x has arrow().
+        table = rel.to_arrow_table() if hasattr(rel, "to_arrow_table") else rel.arrow()
+    return table.to_pandas()
 
 
 def read_schedule(season: int) -> pd.DataFrame:

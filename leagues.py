@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import pickle
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -946,12 +947,47 @@ def cfb_stamp() -> str:
     return cfb_feed.stamp() or f"unknown-{int(time.time() // 600)}"
 
 
+# The raw college release (~230 MB in memory as a frame) is kept on disk,
+# not in memory: one game is read with DuckDB (cfb_feed.read_season_file),
+# and the few things built from the whole season are cached once per stamp.
+def _cfb_raw_dir() -> Path:
+    for d in (SEASON_CACHE_DIR / "cfb_raw", Path(tempfile.gettempdir()) / "nfl_replays_pbp_cfb_raw"):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError:
+            continue
+    raise OSError("no writable folder for the college season file")
+
+
 @st.cache_resource(max_entries=2)
+def _cfb_raw_path(season: int, stamp: str) -> str:
+    """The season's release file on disk, downloaded once per `stamp` (the
+    previous stamp's file is deleted). Raises if it isn't published."""
+    _forget_older_stamp(_cfb_raw_path, season, stamp)
+    folder = _cfb_raw_dir()
+    path = folder / f"play_by_play_{season}_{hashlib.sha256(stamp.encode()).hexdigest()[:12]}.parquet"
+    if not path.exists():
+        cfb_feed.download_season(season, path)
+    for old in folder.glob(f"play_by_play_{season}_*.parquet"):
+        if old != path:
+            old.unlink(missing_ok=True)
+    return str(path)
+
+
+def _cfb_raw_file(season: int, stamp: str) -> str:
+    path = _cfb_raw_path(season, stamp)
+    if not os.path.exists(path):  # deleted under us: download it again
+        _cfb_raw_path.clear(season, stamp)
+        path = _cfb_raw_path(season, stamp)
+    return path
+
+
 def load_cfb_season(season: int, stamp: str) -> pd.DataFrame:
-    """A season of college pbp, raw release columns. Shared, not copied, so
-    callers must not modify it. `stamp` is only a cache key."""
-    _forget_older_stamp(load_cfb_season, season, stamp)
-    return cfb_feed.read_season(season)
+    """A season of college pbp, raw release columns: a new frame read from
+    disk on each call (~0.3 s, ~230 MB), so only call it from functions
+    cached by `stamp`. Raises if the season isn't published."""
+    return cfb_feed.read_season_file(_cfb_raw_file(season, stamp))
 
 
 @st.cache_data(ttl=3600)
@@ -986,8 +1022,8 @@ def list_cfb_upcoming(season: int, stamp: str, today: str) -> pd.DataFrame:
 
 @st.cache_data(max_entries=8)
 def load_cfb_game(season: int, stamp: str, game_id: str) -> pd.DataFrame:
-    raw = load_cfb_season(season, stamp)
-    return with_xrush(cfb_feed.to_pbp(raw[raw["game_id"].astype(str) == game_id], core.PBP_COLS), "CFB")
+    raw = cfb_feed.read_season_file(_cfb_raw_file(season, stamp), game_id)
+    return with_xrush(cfb_feed.to_pbp(raw, core.PBP_COLS), "CFB")
 
 
 @st.cache_data(ttl=20)
@@ -1048,6 +1084,9 @@ def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
     """The season's finished games with an FBS team in them, mapped to the
     app's layout, with `postseason`."""
     _forget_older_stamp(_cfb_season_pbp, season, stamp)
+    stored = _current_frame(COLLEGE.name, season, stamp, "pbp")
+    if stored is not None:
+        return stored
     raw = load_cfb_season(season, stamp)
     done = raw.groupby("game_id")["status_type_completed"].transform(lambda s: s.eq(True).all())
     raw = raw[done]
@@ -1061,6 +1100,9 @@ def _cfb_season_pbp(season: int, stamp: str) -> pd.DataFrame:
 @st.cache_data(max_entries=2)
 def _cfb_season_teams(season: int, stamp: str) -> pd.Series:
     """FBS teams that have played a published game, abbreviation → conference."""
+    manifest = _current_manifest(COLLEGE.name, season, stamp)
+    if manifest and isinstance(manifest.get("teams"), dict):
+        return pd.Series(manifest["teams"], dtype=object).sort_index()
     games, _ = list_cfb_games(season, stamp, "")
     sched = load_cfb_schedule(season)
     if games.empty:
@@ -1498,6 +1540,57 @@ def _stored_tables(league_name: str, season: int, weeks: tuple[int, int], part: 
         return None
 
 
+# ---------- Current season store ----------
+# The current season of these leagues is published too (season_store.py's
+# "current_*" files, .github/workflows/current_season_store.yml), each file
+# tagged with the data stamp it was built from: a college season's tables
+# take ~40 s a selection and its play-by-play ~12 s to compute.
+CURRENT_STORE_LEAGUES = {"College football"}
+
+
+@st.cache_data(ttl=300, max_entries=8, show_spinner=False)
+def _current_manifest(league_name: str, season: int, stamp: str) -> dict | None:
+    """The current season's store manifest if it was built by this code from
+    the data `stamp` (else None, checked again every 5 minutes, so files
+    published after the data changed are picked up)."""
+    if league_name not in CURRENT_STORE_LEAGUES or not stamp or stamp.startswith("unknown"):
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, season_store.current("manifest")))
+    try:
+        manifest = json.loads(data) if data else None
+    except ValueError:
+        return None
+    if manifest and manifest.get("code") == _CODE_VERSION and manifest.get("stamp") == stamp:
+        return manifest
+    return None
+
+
+def _current_frame(league_name: str, season: int, stamp: str, what: str) -> pd.DataFrame | None:
+    """A DataFrame from the current season's store ("pbp"), or None."""
+    if not _current_manifest(league_name, season, stamp):
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, season_store.current(what)))
+    try:
+        return season_store.unpack_frame(data, _CODE_VERSION, stamp) if data else None
+    except Exception:
+        return None
+
+
+def _current_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
+                    part: str, play_filter: core.PlayFilter, venue: str | None,
+                    adjusted: bool) -> dict | None:
+    """The selection's tables from the current season's store, or None."""
+    manifest = _current_manifest(league_name, season, stamp)
+    name = manifest and season_store.lookup(manifest, weeks, part, play_filter, venue, adjusted)
+    if not name:
+        return None
+    data = _store_get(season_store.asset_name(league_name, season, season_store.current(name)))
+    try:
+        return season_store.unpack_tables(data, _CODE_VERSION, stamp) if data else None
+    except Exception:
+        return None
+
+
 # A season's play-by-play (a college one is ~250 MB in memory) is shared,
 # not copied: st.cache_data unpickles a fresh copy on every call, and a
 # Season stats run makes several, which crashed Community Cloud. Callers
@@ -1546,6 +1639,9 @@ def _scrimmage(pbp: pd.DataFrame) -> int:
 def _season_tables(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
                    part: str, play_filter: core.PlayFilter, venue: str | None,
                    adjusted: bool, chart_stamp: str = "") -> dict:
+    stored = _current_tables(league_name, season, stamp, weeks, part, play_filter, venue, adjusted)
+    if stored is not None:
+        return stored
     return _build_season_tables(league_name, season, stamp, weeks, part, play_filter, venue,
                                 adjusted)
 

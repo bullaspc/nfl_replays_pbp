@@ -4,6 +4,7 @@ pandas>=2.2,<3
 nflreadpy>=0.1.5
 numpy
 pyarrow
+duckdb>=1.1
 plotly
 streamlit-autorefresh
 requests
