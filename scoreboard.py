@@ -65,6 +65,9 @@ class TickerGame:
     red_zone: bool = False
     last_play: str | None = None
     network: str | None = None
+    period: int | None = None         # the quarter on ESPN's clock (5 = 1st OT)
+    home_timeouts: int | None = None  # ESPN's own count, in progress only
+    away_timeouts: int | None = None
 
 
 def fetch(league: str, timeout: float = 5) -> dict:
@@ -160,8 +163,15 @@ def parse(data: dict, team_fix: dict | None = None) -> list[TickerGame]:
             away=away, home=home, down_distance=dd, spot=spot, to_goal=to_goal,
             red_zone=bool(sit.get("isRedZone")) or (to_goal is not None and to_goal <= 20),
             last_play=(sit.get("lastPlay") or {}).get("text") or None,
-            network=names[0] if names else comp.get("broadcast") or None))
+            network=names[0] if names else comp.get("broadcast") or None,
+            period=_int((comp.get("status") or ev.get("status") or {}).get("period")),
+            home_timeouts=_int(sit.get("homeTimeouts")),
+            away_timeouts=_int(sit.get("awayTimeouts"))))
     return sorted(out, key=lambda g: (_ORDER.get(g.state, 3), g.kickoff))
+
+
+def _int(v) -> int | None:
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
 def games(league: str) -> list[TickerGame]:

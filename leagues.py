@@ -1033,6 +1033,10 @@ def load_cfb_live_game(game_id: str) -> tuple[pd.DataFrame, str, str]:
     state, fetched-at clock). Cached 20s, so reruns don't hammer ESPN."""
     summary, fetched_at = _summary_or_last("CFB", game_id, cfb_feed.fetch_summary)
     pbp = with_xrush(cfb_feed.to_pbp(cfb_feed.live_raw(summary, game_id), core.PBP_COLS), "CFB")
+    board = next((g for g in load_scoreboard("CFB") if g.event_id == str(game_id)), None)
+    if board is not None and board.state == "in":
+        pbp = cfb_feed.cap_live_timeouts(pbp, board.period,
+                                         {"home": board.home_timeouts, "away": board.away_timeouts})
     return pbp, cfb_feed.game_state(summary), fetched_at
 
 
