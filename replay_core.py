@@ -262,6 +262,15 @@ def _early_down_sr(td: pd.DataFrame, snaps: pd.Series) -> float:
     return _rate((td.loc[early, "epa"].fillna(0) > 0).sum(), int(early.sum()))
 
 
+def _net_pass_yards(td: pd.DataFrame) -> int:
+    """A team's net passing yards, as the official box score has them:
+    passing yards (completions) plus its sacks' yards_gained, a loss. Every
+    source puts the sack's yardage in yards_gained. A sack a penalty wiped
+    out (no_play) doesn't count. The passer's own Yds stays gross."""
+    sacks = (td["sack"].fillna(0) == 1) & (td["play_type"] != "no_play")
+    return int(td["passing_yards"].fillna(0).sum() + td.loc[sacks, "yards_gained"].fillna(0).sum())
+
+
 def _ryoe(td: pd.DataFrame) -> float:
     """Rushing yards over expected per designed run: rushing yards less
     `xrush_yards` (add_expected_rush()), over the runs that have one."""
@@ -295,10 +304,10 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
     rush_plays = int(rush_mask.sum())
     total_plays = int(scrimmage_mask.sum())
 
-    pass_yds = int(td["passing_yards"].fillna(0).sum())
+    pass_yds = _net_pass_yards(td)
     rush_yds = int(td["rushing_yards"].fillna(0).sum())
 
-    cmp = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
+    cmp =td.loc[pass_mask, "complete_pass"].fillna(0).sum()
     adot = td.loc[pass_mask, "air_yards"].mean()  # nan if no pass plays
     cpoe, ryoe = _cpoe(td[pass_mask]), _ryoe(td)
 
@@ -434,9 +443,9 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         pp = int(pass_mask.sum())
         rp = int(rush_mask.sum())
         tp = int(sc_mask.sum())
-        pass_yds = int(td["passing_yards"].fillna(0).sum())
+        pass_yds = _net_pass_yards(td)
         rush_yds = int(td["rushing_yards"].fillna(0).sum())
-        cmp      = td.loc[pass_mask, "complete_pass"].fillna(0).sum()
+        cmp      =td.loc[pass_mask, "complete_pass"].fillna(0).sum()
         adot     = td.loc[pass_mask, "air_yards"].mean()
         cpoe, ryoe = _cpoe(td[pass_mask]), _ryoe(td)
         null_pass, null_rush = nullified_snaps(td)
