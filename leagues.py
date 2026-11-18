@@ -104,6 +104,7 @@ class League:
     group_label: str | None = None  # a sidebar filter on games["groups"], e.g. conference
     untimed_ot: bool = False    # OT has no clock: the sidebar seeds OT at its start
     run_gaps: bool = False      # the play text names a run's gap, not just its side
+    has_weather: bool = False   # published games carry roof/temp/wind/weather (core.game_weather)
     espn_id_col: str = "game_id"  # the games() column with ESPN's event id
     clock: core.ClockRules = core.NFL_CLOCK  # what Game management's clock estimates follow
     season_group_label: str = "Division"  # the Season stats page's team filter
@@ -541,12 +542,33 @@ def list_games(pbp: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame(columns=["game_id", "label", "source", "week_label"])
     g["week_label"] = "Week " + g["week"].astype(int).astype(str)
+    g = with_weather(g, pbp)
     g["label"] = g.apply(
         lambda r: f"{r['away_team']} @ {r['home_team']} ({r['game_date']})"
+                  + (f" {r['weather_icons']}" if r["weather_icons"] else "")
                   + (" 🔴 live" if r["source"] == "live" else ""),
         axis=1,
     )
     return g.reset_index(drop=True)
+
+
+def with_weather(g: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
+    """`g` (one row per game) with a bool column per `core.WEATHER`
+    condition and `weather_icons`: from the published pbp's roof, temp, wind
+    and gamebook text, else (a live game) the schedule's roof, temp and wind,
+    which have no rain or snow."""
+    src = g[["game_id"] + [c for c in ("roof", "temp", "wind") if c in g.columns]]
+    if not pbp.empty and "weather" in pbp.columns:
+        published = pbp[["game_id", "roof", "temp", "wind", "weather"]]
+        live = src[~src["game_id"].isin(published["game_id"])]
+        src = (pd.concat([published, live.dropna(axis=1, how="all")], ignore_index=True)
+               if not live.empty else published)
+    w = core.game_weather(src) if not src.empty else pd.DataFrame(columns=list(core.WEATHER))
+    flags = w.reindex(g["game_id"])[list(core.WEATHER)].fillna(False).astype(bool)
+    flags.index = g.index
+    g = g.drop(columns=[c for c in core.WEATHER if c in g.columns]).join(flags)
+    g["weather_icons"] = [core.weather_label(r) for _, r in flags.iterrows()]
+    return g
 
 
 def upcoming_games(sched: pd.DataFrame, published: set) -> pd.DataFrame:
@@ -1250,6 +1272,7 @@ NFL = NFLLeague(
     name="NFL", key="NFL", title="🏈 NFL Tape-Delay Replay", first_season=1999,
     # A real NFL broadcast runs ~3h10m for 60 minutes of game clock.
     broadcast_minutes=190.0, baseline_label="last 3 seasons", run_gaps=True,
+    has_weather=True,
     espn_id_col="espn")
 COLLEGE = CollegeLeague(
     name="College football", key="CFB", title="🏈 College Football Tape-Delay Replay",

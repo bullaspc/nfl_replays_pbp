@@ -64,6 +64,11 @@ PBP_COLS = [
     # and on punts the return yards, touchback and block flags
     "kicker_player_name", "punter_player_name", "kick_distance",
     "return_yards", "touchback", "punt_blocked",
+    # the game's weather, nflverse's from the schedule and the gamebook: roof
+    # (dome, closed, open, outdoors), kickoff temperature (°F) and wind (mph),
+    # NaN under a roof, and the gamebook's weather text ("Light Rain Temp:
+    # 45° F, Humidity: 89%, Wind: SSW 12 mph"); NaN for live NFL and college
+    "roof", "temp", "wind", "weather",
 ]
 
 GAME_SECONDS = 3600.0
@@ -1390,6 +1395,80 @@ class PlayFilter(NamedTuple):
     quarters: tuple[int, ...] = ()       # 1–4, 5 = every overtime period; () = all
     garbage_wp: float | None = None      # drop plays with offense WP < x or > 1 − x
     clutch: tuple[int, int] | None = None  # (minutes left in Q4, within points)
+    weather: tuple[str, ...] = ()        # games in any of these `WEATHER` conditions; () = all
+
+
+# ---------- Weather ----------
+# A game's conditions, from nflverse's roof, temp, wind and the gamebook's
+# weather text (NFL only: college and live games have none). Under a dome or
+# a closed roof a game is "Indoors" and nothing else; the text's precipitation
+# words are read only outdoors (or an open roof), and forecast phrasing
+# ("20% chance of rain", "no rain") doesn't count.
+FREEZING_F = 32      # kickoff temperature at or below
+HOT_F = 85           # at or above
+WINDY_MPH = 15       # wind at or above
+WEATHER = {
+    "Snow": "❄️ Snow",
+    "Rain": "🌧️ Rain",
+    "Freezing": f"🥶 Freezing (≤ {FREEZING_F}°F)",
+    "Hot": f"🥵 Hot (≥ {HOT_F}°F)",
+    "Windy": f"💨 Windy (≥ {WINDY_MPH} mph)",
+    "Indoors": "🏟️ Dome / closed roof",
+}
+WEATHER_ICONS = {k: v.split(" ", 1)[0] for k, v in WEATHER.items()}
+_SNOW = re.compile(r"snow|flurr|sleet|wintry|blizzard|freezing rain", re.I)
+_RAIN = re.compile(r"rain|shower|drizzle|thunder|t-storm|sprinkl", re.I)
+# Forecast or negated mentions: "Chance of Rain 30%", "30% chance of showers",
+# "no rain", "rain ending", "rain earlier".
+_NOT_NOW = re.compile(r"\b(chance|prob\w*|threat|risk|possib\w*|no|0\s?%)\s*(of\s*)?"
+                      r"(light |heavy |scattered |snow )*(rain|shower|snow|storm|drizzle|t-storm|thunder)\w*"
+                      r"|(rain|shower|snow|storm)\w*\s*(ending|ended|earlier|later|clearing|"
+                      r"chance|possible|likely|\d+\s?%)", re.I)
+INDOOR_ROOFS = {"dome", "closed"}
+
+
+def game_weather(pbp: pd.DataFrame) -> pd.DataFrame:
+    """One row per game of `pbp` (index game_id): roof, temp, wind, weather
+    and a bool column per `WEATHER` condition. Games without weather data
+    (college, live) are all False."""
+    cols = [c for c in ("roof", "temp", "wind", "weather") if c in pbp.columns]
+    g = (pbp.groupby("game_id", sort=False)[cols].first() if cols
+         else pd.DataFrame(index=pd.Index(pbp["game_id"].unique(), name="game_id")))
+    for c in ("roof", "temp", "wind", "weather"):
+        if c not in g.columns:
+            g[c] = np.nan
+    roof = g["roof"].astype("object").fillna("").astype(str).str.lower()
+    indoors = roof.isin(INDOOR_ROOFS)
+    text = g["weather"].astype("object").fillna("").astype(str)
+    # The conditions come before "Temp:"; what follows is numbers ("Wind chill").
+    now = text.str.split(r"Temp:", n=1, regex=True).str[0].str.replace(_NOT_NOW, " ", regex=True)
+    # nflverse leaves temp/wind blank for some outdoor games whose gamebook
+    # text has them ("Temp: 50° F", "Wind: WNW 7 mph").
+    temp = pd.to_numeric(g["temp"], errors="coerce").fillna(
+        pd.to_numeric(text.str.extract(r"Temp:\s*(-?\d+)", expand=False), errors="coerce"))
+    wind = pd.to_numeric(g["wind"], errors="coerce").fillna(
+        pd.to_numeric(text.str.extract(r"Wind:\s*[A-Za-z]*\s*(\d+)", expand=False), errors="coerce"))
+    out = g[["roof", "weather"]].assign(temp=temp, wind=wind)
+    out["Snow"] = ~indoors & now.str.contains(_SNOW)
+    out["Rain"] = ~indoors & now.str.contains(_RAIN) & ~now.str.contains(r"freezing rain", case=False)
+    out["Freezing"] = ~indoors & (temp <= FREEZING_F)
+    out["Hot"] = ~indoors & (temp >= HOT_F)
+    out["Windy"] = ~indoors & (wind >= WINDY_MPH)
+    out["Indoors"] = indoors
+    return out
+
+
+def weather_games(pbp: pd.DataFrame, conditions: tuple[str, ...]) -> pd.Index:
+    """The game ids of `pbp` played in any of `conditions` (`WEATHER` keys)."""
+    w = game_weather(pbp)
+    if not conditions:
+        return w.index
+    return w.index[w[list(conditions)].any(axis=1)]
+
+
+def weather_label(row) -> str:
+    """A game's conditions as icons ("❄️🥶"), from a `game_weather` row."""
+    return "".join(WEATHER_ICONS[k] for k in WEATHER if bool(row.get(k, False)))
 
 
 NO_FILTER = PlayFilter()
@@ -1426,6 +1505,8 @@ def filter_plays_by(pbp: pd.DataFrame, f: PlayFilter) -> pd.DataFrame:
         minutes, points = f.clutch
         late = ((pbp["qtr"] == 4) & (pbp["game_seconds_remaining"] <= minutes * 60)) | (pbp["qtr"] >= OT_QTR)
         keep &= late & (pbp["_margin"].abs() <= points)
+    if f.weather:
+        keep &= pbp["game_id"].isin(weather_games(pbp, f.weather))
     return pbp[keep]
 
 

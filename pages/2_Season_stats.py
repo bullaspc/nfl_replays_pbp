@@ -21,7 +21,7 @@ from replay_core import (
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
     PLAYER_MIN_PLAYS, PLAYER_VOLUME_COL, FG_BANDS, KICK_GLOSSARY, KICK_MIN_PER_GAME, KICK_RATE_COLS,
     KICK_VOLUME_COL, PUNT_GLOSSARY, PUNT_TOUCHBACK_YDS,
-    OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, NO_FILTER, PlayFilter,
+    OT_QTR, SEASON_MIN_PLAYS, SHRINK_GAMES, SR_SITUATIONS, STUFF_MAX_YDS, TENDENCY_DOWNS, VENUES, NO_FILTER, PlayFilter, WEATHER, weather_games, FREEZING_F, HOT_F, WINDY_MPH,
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
@@ -146,7 +146,15 @@ with st.sidebar:
                         "score within the margin before the snap."):
         clutch = (st.slider("Minutes left in the 4th quarter", 1, 15, 15, key="_ss_clutch_min"),
                   st.slider("Score within (points)", 0, 16, 8, key="_ss_clutch_pts"))
-    play_filter = PlayFilter(tuple(sorted(quarters)), garbage, clutch)
+    weather = []
+    if league.has_weather:
+        weather = st.multiselect(
+            "Weather", list(WEATHER), format_func=WEATHER.get, placeholder="Any", key="_ss_weather",
+            help="Only games played in any of the picked conditions: snow or rain in the "
+                 "gamebook's weather line, kickoff temperature, wind, or a dome / closed roof "
+                 "(outdoor conditions never count under a roof). Whole games, for both teams.")
+    play_filter = PlayFilter(tuple(sorted(quarters)), garbage, clutch,
+                             tuple(k for k in WEATHER if k in weather))
     min_team_plays = int(st.number_input(
         "Min plays per team", min_value=0, value=SEASON_MIN_PLAYS, step=5, key="_ss_min_team_plays",
         help="Teams with fewer plays (offense) or plays faced (defense) in the selection aren't "
@@ -158,7 +166,8 @@ shown_teams = sorted(ranked_teams.index[ranked_teams.isin(picked)] if picked els
 with st.spinner("Computing season stats…"):
     tables = leagues.season_tables(league, season, stamp, weeks, part, adjust, play_filter, venue)
 if tables["offense"].empty:
-    st.info("No plays in this selection.")
+    st.info("No games in that weather in this selection." if play_filter.weather
+            else "No plays in this selection.")
     st.stop()
 
 # Teams with too few plays in the selection are left out of the tables and the ranks.
@@ -178,6 +187,8 @@ filter_notes = [
     f"no garbage time (WP {garbage:.0%}–{1 - garbage:.0%})" if garbage is not None else "",
     f"clutch (last {clutch[0]} min of Q4 + OT, within {clutch[1]})" if clutch else "",
     f"{venue.lower()} games" if VENUES[venue] else "",
+    " or ".join(WEATHER[k].split(" ", 1)[1].lower() for k in play_filter.weather) + " games"
+    if play_filter.weather else "",
 ]
 sel_note = " · ".join(n for n in [sel_note, *filter_notes] if n)
 adjusted = leagues.SEASON_ADJUST[adjust]
@@ -391,11 +402,15 @@ with tab_team:
     sel_games = all_plays
     if VENUES[venue]:
         sel_games = sel_games[sel_games[VENUES[venue]] == team]
+    if play_filter.weather:  # a game's weather, so whole games
+        sel_games = sel_games[sel_games["game_id"].isin(weather_games(sel_games, play_filter.weather))]
     st.markdown("<span id='ss-schedule'></span>**Schedule**", unsafe_allow_html=True)
     try:
         upcoming = league.upcoming(season, stamp)
     except leagues.GameLoadError:
         upcoming = None
+    if play_filter.weather:
+        upcoming = None  # no weather before kickoff
     if upcoming is not None and VENUES[venue] and not upcoming.empty:
         upcoming = upcoming[upcoming[VENUES[venue]] == team]
     schedule = team_schedule(sel_games, sit_plays, team, upcoming)
@@ -936,7 +951,10 @@ are adjusted, by the opponents it met there. *Quarters* keeps plays in the picke
 every overtime period). *Exclude garbage time* drops plays where the offense's win probability
 before the snap is below the cutoff or above 100% minus it (default 10%–90%). *Clutch time* keeps
 the last minutes of the 4th quarter (default all 15) and overtime when the score before the snap is
-within the margin (default 8, one score). Filters act on plays, so Games counts the games with a
+within the margin (default 8, one score). *Weather* (NFL) keeps whole games played in any of the
+picked conditions: snow or rain named in the gamebook's weather line (forecasts such as "chance of
+rain" don't count), a kickoff temperature at or below {FREEZING_F}°F or at or above {HOT_F}°F, wind
+at or above {WINDY_MPH} mph, or a dome or closed roof; under a roof nothing else counts. Filters act on plays, so Games counts the games with a
 play left in, per-game numbers and time of possession cover only the plays kept, and the default
 player minimums shrink with the share of plays kept. *Min plays per team* (default {SEASON_MIN_PLAYS})
 leaves out, and doesn't rank, a team with fewer plays (or plays faced, for a defense) in the

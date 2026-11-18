@@ -27,6 +27,7 @@ from streamlit_autorefresh import st_autorefresh
 
 import game_summary
 import leagues
+import replay_core as core
 import scoreboard
 from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
@@ -130,6 +131,19 @@ with st.sidebar:
     if games.empty:
         st.warning(f"No games found for the {season} season yet.")
         st.stop()
+    if league.has_weather:
+        # Snow, rain, cold, heat, wind or a roof: narrows the Week and Game boxes.
+        weather = st.multiselect(
+            "Weather", list(core.WEATHER), format_func=core.WEATHER.get, placeholder="Any",
+            key="_weather_pick",
+            help="Games played in any of the picked conditions, from nflverse's roof, kickoff "
+                 "temperature and wind and the gamebook's weather line. Live games have no "
+                 "rain or snow yet.")
+        if weather:
+            games = games[games[list(weather)].any(axis=1)]
+            if games.empty:
+                st.warning("No games this season in that weather.")
+                st.stop()
     week_labels = list(dict.fromkeys(games["week_label"]))
     # Default to the week and game last on screen (from the URL on a new
     # session). A game's label changes when it goes from live to official,
