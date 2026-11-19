@@ -103,6 +103,31 @@ def _url_anchor(name: str) -> tuple[float, int]:
     return (float(e), int(rank))
 
 
+def _full_game_toggled() -> None:
+    """Checking Full game doesn't take effect yet: it's unchecked again and the
+    confirmation below opens. Unchecking goes back to the replay at once."""
+    if st.session_state["_v_full"]:
+        st.session_state["_v_full"] = False
+        st.session_state["_full_ask"] = True
+
+
+@st.dialog("📊 Show the full game?")
+def _confirm_full_game() -> None:
+    """Confirm Full game. Yes is recorded in `_full_confirmed`, which the next
+    run copies onto the checkbox's key before it's drawn."""
+    st.write("This unlocks **every play**: the final score, the win probability "
+             "curve and every stat. Use it for a game you've already watched, or "
+             "don't mind having spoiled.")
+    st.caption("Uncheck **Full game** in the sidebar any time to go back to the "
+               "spoiler-free replay.")
+    yes, no = st.columns(2)
+    if yes.button("Show full game", type="primary", use_container_width=True):
+        st.session_state["_full_confirmed"] = True
+        st.rerun()
+    if no.button("Keep it hidden", use_container_width=True):
+        st.rerun()
+
+
 # ---------- UI ----------
 with st.sidebar:
     st.header("Setup")
@@ -201,10 +226,30 @@ with st.sidebar:
     # phone, but the cursor needs them before that: they're read here from
     # their keys, with the URL's values until the popover has drawn them.
     live_open = source == "live" and live_state != "post"
-    follow_live = live_open and st.session_state.get("_v_follow", _url.get("follow") == "1")
+    # Full game: the whole game at once, for analysis of a game already seen.
+    # Its own checkbox at the top so it's easy to find; turning it on asks
+    # first (_confirm_full_game()), since it shows the final score. A session
+    # restored from a URL saved in Full game starts in it without asking.
+    if "_full_confirmed" in st.session_state:
+        st.session_state["_v_full"] = st.session_state.pop("_full_confirmed")
+    elif "_v_full" not in st.session_state:
+        st.session_state["_v_full"] = _url.get("q") == FULL_GAME
+    st.checkbox("📊 Full game (shows the final score)", key="_v_full",
+                on_change=_full_game_toggled,
+                help="Unlock every play at once, to look at the boxscore and stats of a "
+                     "game you've already watched. Uncheck to replay it spoiler-free.")
+    full_game = st.session_state["_v_full"]
+    if full_game:
+        st.caption("Every play is unlocked: the final score and all the stats, plus the "
+                   "game's charting (Blitz %, Under C %, …) under the Boxscore. Uncheck "
+                   "to replay the game spoiler-free.")
+    follow_live = (not full_game and live_open
+                   and st.session_state.get("_v_follow", _url.get("follow") == "1"))
     live_delay = st.session_state.get("_v_delay", _url_int("delay", 45, 0, 180)) if follow_live else 0
 
-    if follow_live:
+    if full_game:
+        qtr_pick, clock_str = FULL_GAME, "0:00"
+    elif follow_live:
         st.caption("Following the live feed. Scrub back any time — you'll stay "
                    "where you are until you catch up.")
         qtr_pick, clock_str = "Q1", "15:00"
@@ -212,7 +257,7 @@ with st.sidebar:
         st.caption("Set roughly where you are with the game clock, then sync exactly "
                    "with the time bar.")
         # The game clock counts DOWN within each quarter from 15:00 to 0:00.
-        _qtrs = ["Q1", "Q2", "Q3", "Q4", "OT", FULL_GAME]
+        _qtrs = ["Q1", "Q2", "Q3", "Q4", "OT"]
 
         def _quarter_changed():
             # A new quarter starts at 15:00: keeping the old clock (Q1 3:00 →
@@ -222,15 +267,8 @@ with st.sidebar:
 
         qtr_pick = st.selectbox("Quarter", _qtrs,
                                 index=_qtrs.index(_url["q"]) if _url.get("q") in _qtrs else 0,
-                                on_change=_quarter_changed,
-                                help=f"{FULL_GAME} unlocks every play: for a game you've "
-                                     "already watched.")
-        if qtr_pick == FULL_GAME:
-            st.caption("**Full game** unlocks every play and the final score, for a game "
-                       "you've already watched. It also adds the game's charting stats "
-                       "(Blitz %, Under C %, …) to the Boxscore. Pick a quarter to replay it spoiler-free.")
-            clock_str = "0:00"
-        elif league.untimed_ot and qtr_pick == "OT":
+                                on_change=_quarter_changed)
+        if league.untimed_ot and qtr_pick == "OT":
             st.caption("Overtime has no clock here: you start at the end of "
                        "regulation. Step through it with ▶ Next play.")
             clock_str = "15:00"
@@ -249,13 +287,12 @@ with st.sidebar:
         st.warning("Use MM:SS format, e.g. 7:32. Defaulting to 15:00.")
         remaining_in_qtr = 15 * 60
 
-    full_game = qtr_pick == FULL_GAME
     qtr_idx = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "OT": 5, FULL_GAME: 5}[qtr_pick]
     # Game seconds elapsed = full quarters completed * 900 + (900 - remaining)
     # OT in pbp is qtr=5; treat it as starting after Q4 ends.
     completed_qtrs = qtr_idx - 1
     baseline_elapsed = float(completed_qtrs * 900 + (900 - remaining_in_qtr))
-    auto = not follow_live and st.session_state.get("_v_auto", _url.get("auto") == "1")
+    auto = not follow_live and not full_game and st.session_state.get("_v_auto", _url.get("auto") == "1")
     _every = _url_int("every", 30, 30, 90)
     refresh_interval = st.session_state.get("_v_every", _every if _every in INTERVALS else 30)
     st.caption("Follow live and Auto-advance: **Playback**, under the time bar.")
@@ -300,6 +337,12 @@ with st.sidebar:
                               help="The ticker of the league's other live games above the "
                                    "score. The game you're watching is never in it.")
     blur_until_ready = st.checkbox("Blur everything until I click 'Reveal'", value=False)
+
+# Full game was just checked: confirm before revealing anything (the checkbox
+# stays off until then, so this run still shows the replay).
+_full_asking = st.session_state.pop("_full_ask", False)
+if _full_asking:
+    _confirm_full_game()
 
 # ---------- Play cursor ----------
 # The cursor is the single source of truth for viewing position. A play index is
@@ -655,12 +698,14 @@ def _ask_follow_live() -> None:
 # Asked once per game and session; not on a session restored from a URL that
 # already names this game (it was answered there), nor when it's already on.
 _asked = st.session_state.setdefault("_live_asked", set())
-if live_open and not follow_live and game_id not in _asked:
+if (live_open and not follow_live and not full_game and not _full_asking
+        and game_id not in _asked):
     _asked.add(game_id)
     if _url.get("game") != game_id:
         _ask_follow_live()
 
-_playback()
+if not full_game:
+    _playback()
 
 # ---------- Reveal gate ----------
 if blur_until_ready:
