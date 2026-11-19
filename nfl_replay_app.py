@@ -295,7 +295,8 @@ with st.sidebar:
     auto = not follow_live and not full_game and st.session_state.get("_v_auto", _url.get("auto") == "1")
     _every = _url_int("every", 30, 30, 90)
     refresh_interval = st.session_state.get("_v_every", _every if _every in INTERVALS else 30)
-    st.caption("Follow live and Auto-advance: **Playback**, under the time bar.")
+    if not full_game:
+        st.caption("Follow live and Auto-advance: **Playback**, under the time bar.")
     auto_tick = 0
     # debounce=False on every timer: debounced, the component restarts its
     # countdown each time the page redraws it, and the fragments below redraw
