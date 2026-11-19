@@ -213,8 +213,16 @@ with st.sidebar:
                    "with the time bar.")
         # The game clock counts DOWN within each quarter from 15:00 to 0:00.
         _qtrs = ["Q1", "Q2", "Q3", "Q4", "OT", FULL_GAME]
+
+        def _quarter_changed():
+            # A new quarter starts at 15:00: keeping the old clock (Q1 3:00 →
+            # Q2 3:00) would jump past most of the new quarter and spoil it.
+            st.session_state["_v_clock"] = "15:00"
+            _url["clock"] = "15:00"
+
         qtr_pick = st.selectbox("Quarter", _qtrs,
                                 index=_qtrs.index(_url["q"]) if _url.get("q") in _qtrs else 0,
+                                on_change=_quarter_changed,
                                 help=f"{FULL_GAME} unlocks every play: for a game you've "
                                      "already watched.")
         if qtr_pick == FULL_GAME:
@@ -227,8 +235,11 @@ with st.sidebar:
                        "regulation. Step through it with ▶ Next play.")
             clock_str = "15:00"
         else:
-            clock_str = st.text_input("Game clock remaining (MM:SS)",
-                                      value=_url.get("clock", "15:00"),
+            # Keyed so a quarter change can reset it; seeded from the URL (or
+            # 15:00) whenever it isn't in the session yet.
+            if "_v_clock" not in st.session_state:
+                st.session_state["_v_clock"] = _url.get("clock", "15:00")
+            clock_str = st.text_input("Game clock remaining (MM:SS)", key="_v_clock",
                                       help="Time left on the in-quarter clock, e.g. 7:32")
     try:
         mm, ss = clock_str.strip().split(":")
