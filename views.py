@@ -42,8 +42,13 @@ def percentile_color(pct: float) -> str:
         r = int(255 + t * (40  - 255))
         g = int(255 + t * (167 - 255))
         b = int(255 + t * (69  - 255))
-    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    text = "#ffffff" if lum < 0.45 else "#212529"
+    # Text: whichever of white / near-black has the higher WCAG contrast ratio
+    # against the cell (a fixed luminance cutoff left dark text on strong red).
+    def _lin(c: int) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    lum = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+    text = "#ffffff" if 1.05 / (lum + 0.05) >= (lum + 0.05) / 0.068 else "#212529"
     return f"background-color: #{r:02x}{g:02x}{b:02x}; color: {text}"
 
 def style_sr_table(df: pd.DataFrame,
