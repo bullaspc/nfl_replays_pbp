@@ -161,7 +161,25 @@ with st.sidebar:
              "shown or ranked: their rates would be mostly chance."))
     st.caption(f"Data as of {stamp}")
 
-shown_teams = sorted(ranked_teams.index[ranked_teams.isin(picked)] if picked else ranked_teams.index)
+# College abbreviations (TTU, USM, …) are hard to place: the team tabs show
+# school names there. The NFL's are familiar and keep the tables narrow.
+_school_names = (league.team_names(season, stamp)
+                 if isinstance(league, leagues.CollegeLeague) else {})
+
+
+def _nm(team: str) -> str:
+    """The team's school name in college, its abbreviation in the NFL."""
+    return _school_names.get(team, team)
+
+
+def _named_opp(opp: str) -> str:
+    """A Schedule Opp ("vs ALA", "@ ALA") with the school's name."""
+    where, _, abbr = opp.partition(" ")
+    return f"{where} {_nm(abbr)}" if abbr else opp
+
+
+shown_teams = sorted(ranked_teams.index[ranked_teams.isin(picked)] if picked else ranked_teams.index,
+                     key=lambda t: _nm(t).lower())
 
 with st.spinner("Computing season stats…"):
     tables = leagues.season_tables(league, season, stamp, weeks, part, adjust, play_filter, venue)
@@ -308,7 +326,7 @@ with tab_teams:
         # Best first: by rank, so "lower is better" stats sort the right way.
         order = ranks.loc[full.index, sort_by].sort_values(ascending=False, kind="stable").index
         table = full.loc[[t for t in order if t in shown_teams], cols]
-        stat_table(style_season_table(table, ranks))
+        stat_table(style_season_table(table.rename(index=_nm), ranks.rename(index=_nm)))
         n_charted, n_games = tables["charted"]
         st.caption(
             f"{side_label} · {sel_note} · counts and yards are per game. Colors rank each team "
@@ -332,7 +350,8 @@ with tab_teams:
 
 # ---------- Team ----------
 with tab_team:
-    team = st.selectbox("Team", shown_teams, key=f"_ss_team_{league.name}")
+    team = st.selectbox("Team", shown_teams, format_func=_nm, key=f"_ss_team_{league.name}")
+    team_name = _nm(team)
     # Whole games, for the final score and the snap counts; with no situation
     # filter they're also the situation's plays (one copy of the season, not two).
     all_plays = leagues.season_plays(league, season, stamp, weeks, part)
@@ -348,7 +367,7 @@ with tab_team:
                 + ([("Charting", "ss-charting")] if team_charting else [])
                 + [("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
                 + ([("Injuries", "ss-injuries")] if league.availability(season).source else []))
-    st.subheader(f"{team} · {ranked_teams.get(team, '')}".rstrip(" ·"), anchor="ss-season")
+    st.subheader(f"{team_name} · {ranked_teams.get(team, '')}".rstrip(" ·"), anchor="ss-season")
     col_o, col_d = st.columns(2)
     for col, side_label in [(col_o, "Offense"), (col_d, "Defense (allowed)")]:
         side = SIDES[side_label]
@@ -371,7 +390,7 @@ with tab_team:
                     unsafe_allow_html=True)
         cmp_years, cmp_mode = _compare_controls("team")
         if not cmp_years:
-            st.caption(f"Pick up to {COMPARE_MAX} earlier seasons to set {team}'s numbers against.")
+            st.caption(f"Pick up to {COMPARE_MAX} earlier seasons to set {team_name}'s numbers against.")
         else:
             prev_tables = _earlier_tables(cmp_years)
             col_o, col_d = st.columns(2)
@@ -417,6 +436,8 @@ with tab_team:
     if schedule.empty:
         st.caption("No games in this selection.")
     else:
+        if _school_names:
+            schedule = schedule.assign(Opp=schedule["Opp"].map(_named_opp))
         stat_table(style_team_schedule(schedule), hide_index=True, pin="Opp")
         st.caption("Each game's final score (games still to play: the kickoff date), the offense's EPA/play and what the defense allowed "
                    "(scrimmage plays, as played: not opponent-adjusted), and Net = offense − "
@@ -430,11 +451,14 @@ with tab_team:
         for (label, metric), v in own.items():
             if label in sr.index and f"{team} {metric}" in sr.columns:
                 sr.at[label, f"{team} {metric}"] = v
+    if _school_names:  # "ALA Pass SR%" → "Alabama Pass SR%", and the counts' keys with it
+        sr = sr.rename(columns=lambda c: f"{team_name}{c[len(team):]}" if c.startswith(f"{team} ") else c)
+        counts = {(sit, team_name if who == team else who): n for (sit, who), n in counts.items()}
     stat_table(style_sr_table(sr, sit_dists, counts))
     st.caption("Success rate and EPA/play by down and distance (pass plays include sacks; "
                "no spikes or kneels), plays in brackets. Colors rank the season against every "
                "team's season: green = top, red = bottom."
-               + (f" {team}'s numbers are adjusted for the defenses faced; the league's are as "
+               + (f" {team_name}'s numbers are adjusted for the defenses faced; the league's are as "
                   "played." if adjusted else ""))
 
     st.markdown("<span id='ss-tendencies'></span>**Tendencies**", unsafe_allow_html=True)
@@ -466,10 +490,10 @@ with tab_team:
         if chart_summary.empty:
             st.caption(f"Fewer than {min_team_plays} plays in this selection: not ranked.")
         else:
-            stat_table(style_team_chart(chart_summary, team))
+            stat_table(style_team_chart(chart_summary, team_name))
             n_charted, n_games = tables["charted"]
             st.caption(
-                f"{sel_note} · the season: {team}'s offense and its defense. The results are "
+                f"{sel_note} · the season: {team_name}'s offense and its defense. The results are "
                 "ranked among the teams and colored (green = best"
                 + ("; adjusted for the opponents faced" if adjusted else "") + "); the calls are "
                 "ranked by how high or low they run (\"4th highest\"), not best to worst, and "
@@ -486,6 +510,10 @@ with tab_team:
             if by_game.empty:
                 st.caption("No charted plays in this selection's games.")
             else:
+                if _school_names:  # "8 @ SEA" → "8 @ Alabama"
+                    _cols = {c: " ".join(c.split(" ")[:-1] + [_nm(c.split(" ")[-1])])
+                             for c in by_game.columns if c != "Season"}
+                    by_game, shades = by_game.rename(columns=_cols), shades.rename(columns=_cols)
                 stat_table(style_chart_games(by_game, shades))
                 n_charted, n_games = tables["charted"]
                 ftn_games = "Motion %" in by_game.index
@@ -541,7 +569,7 @@ with tab_team:
             for label, title in (("Off", "Offense"), ("Def", "Defense"), ("ST", "Special teams")):
                 st.markdown(f"*{title}*")
                 stat_table(style_snap_table(snaps, label), hide_index=True)
-            st.caption(f"Each player's snaps over the {counted} of {team}'s {len(game_ids)} selected "
+            st.caption(f"Each player's snaps over the {counted} of {team_name}'s {len(game_ids)} selected "
                        "games PFR has counted so far, and his share of the team's offensive, "
                        "defensive and special-teams snaps in them. Whole games: the quarter, "
                        "garbage-time and clutch filters don't apply.")
@@ -564,7 +592,7 @@ with tab_team:
         if avail.injuries.empty:
             st.caption("The injury reports couldn't be loaded.")
         elif team_reports.empty:
-            st.caption(f"No injury reports for {team} this season.")
+            st.caption(f"No injury reports for {team_name} this season.")
         else:
             report_week = int(team_reports["week"].max())
             report = injury_report(avail.injuries, team, report_week, team_snaps(avail.snaps, team),
@@ -573,7 +601,7 @@ with tab_team:
             if not units.empty:
                 stat_table(style_availability_summary(units), hide_index=True)
             stat_table(style_injury_report(report), hide_index=True)
-            st.caption(f"Week {report_week}, {team}'s latest report (as of "
+            st.caption(f"Week {report_week}, {team_name}'s latest report (as of "
                        f"{avail.as_of or 'the latest build'}).")
             # The column notes run about eight lines on a phone: collapsed, as on Matchup.
             with st.expander("How to read the report", expanded=False, key="_ss_exp_report_help"):
