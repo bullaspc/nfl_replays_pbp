@@ -733,7 +733,7 @@ def style_availability_summary(df: pd.DataFrame):
     return _centered(df.style.format({"Snaps out": "{:.1f}"}))
 
 
-_LOSS, _GAIN = (220, 53, 69), (40, 167, 69)
+_LOSS, _GAIN = (220, 53, 69), (25, 135, 60)
 
 
 def _change_tint(v: float) -> str:
@@ -795,7 +795,7 @@ _FIELD_GREEN_ALT = "#2a6f35"
 
 # ---------- Tendencies ----------
 # EPA/play on the percentile tables' red → white → green, white at 0.
-_EPA_SCALE = [[0.0, "#dc3545"], [0.5, "#ffffff"], [1.0, "#28a745"]]
+_EPA_SCALE = [[0.0, "#dc3545"], [0.5, "#ffffff"], [1.0, "#19873c"]]
 _EPA_RANGE = 0.8  # ± EPA/play at the scale's ends
 
 
