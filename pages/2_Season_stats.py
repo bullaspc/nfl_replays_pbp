@@ -161,19 +161,18 @@ with st.sidebar:
              "shown or ranked: their rates would be mostly chance."))
     st.caption(f"Data as of {stamp}")
 
-# College abbreviations (TTU, USM, …) are hard to place: the team tabs show
-# school names there. The NFL's are familiar and keep the tables narrow.
-_school_names = (league.team_names(season, stamp)
-                 if isinstance(league, leagues.CollegeLeague) else {})
+# Abbreviations (TTU, USM, JAX, …) are hard to place: the team tabs show
+# names, college schools ("Texas Tech") and NFL nicknames ("Jaguars").
+_school_names = league.team_names(season, stamp)
 
 
 def _nm(team: str) -> str:
-    """The team's school name in college, its abbreviation in the NFL."""
+    """The team's name (`league.team_names()`), else its abbreviation."""
     return _school_names.get(team, team)
 
 
 def _named_opp(opp: str) -> str:
-    """A Schedule Opp ("vs ALA", "@ ALA") with the school's name."""
+    """A Schedule Opp ("vs ALA", "@ ALA") with the team's name."""
     where, _, abbr = opp.partition(" ")
     return f"{where} {_nm(abbr)}" if abbr else opp
 
@@ -291,7 +290,7 @@ def _teams_compare(table, side: str, side_label: str, options: list[str], sort_b
     prev = _earlier_tables(years)
     earlier = {y: season_qualified(t[which], min_team_plays) for y, t in prev.items()}
     cmp = teams_season_compare(table, earlier, stats, season, mode)
-    stat_table(style_teams_compare(cmp, stats, mode, season_lower_is_better(side)))
+    stat_table(style_teams_compare(cmp.rename(index=_nm), stats, mode, season_lower_is_better(side)))
     st.caption(f"{side_label}, in the table's order. " + _compare_note(mode)
                + " Counts are per game. Moved franchises are matched (OAK → LV, SD → LAC, "
                  "STL → LA)." + (" For a defense, less allowed is better." if side == "defteam" else ""))
