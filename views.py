@@ -31,7 +31,7 @@ def percentile_color(pct: float) -> str:
     """CSS string for a red→white→green diverging color at the given percentile."""
     if pd.isna(pct):
         return ""
-    # Red(220,53,69) → White(255,255,255) → Green(40,167,69)
+    # Red(220,53,69) → White(255,255,255) → Green(25,135,60)
     if pct <= 50:
         t = pct / 50.0
         r = int(220 + t * (255 - 220))
@@ -39,9 +39,9 @@ def percentile_color(pct: float) -> str:
         b = int(69  + t * (255 - 69))
     else:
         t = (pct - 50) / 50.0
-        r = int(255 + t * (40  - 255))
-        g = int(255 + t * (167 - 255))
-        b = int(255 + t * (69  - 255))
+        r = int(255 + t * (25  - 255))
+        g = int(255 + t * (135 - 255))
+        b = int(255 + t * (60  - 255))
     # Text: whichever of white / near-black has the higher WCAG contrast ratio
     # against the cell (a fixed luminance cutoff left dark text on strong red).
     def _lin(c: int) -> float:
