@@ -31,12 +31,12 @@ def percentile_color(pct: float) -> str:
     """CSS string for a red→white→green diverging color at the given percentile."""
     if pd.isna(pct):
         return ""
-    # Red(220,53,69) → White(255,255,255) → Green(25,135,60)
+    # Red(190,35,55) → White(255,255,255) → Green(25,135,60)
     if pct <= 50:
         t = pct / 50.0
-        r = int(220 + t * (255 - 220))
-        g = int(53  + t * (255 - 53))
-        b = int(69  + t * (255 - 69))
+        r = int(190 + t * (255 - 190))
+        g = int(35  + t * (255 - 35))
+        b = int(55  + t * (255 - 55))
     else:
         t = (pct - 50) / 50.0
         r = int(255 + t * (25  - 255))
@@ -710,7 +710,7 @@ def style_situational_matchup(df: pd.DataFrame, offense: str, defense: str, tint
 # ---------- Availability ----------
 # Game statuses, most serious first, as translucent tints (the page's own text
 # color stays readable on both themes) and as badges for a player's name.
-STATUS_TINTS = {"Out": "rgba(220, 53, 69, 0.38)", "Doubtful": "rgba(253, 126, 20, 0.38)",
+STATUS_TINTS = {"Out": "rgba(190, 35, 55, 0.38)", "Doubtful": "rgba(253, 126, 20, 0.38)",
                 "Questionable": "rgba(255, 193, 7, 0.38)"}
 STATUS_BADGES = {"Out": "🔴 Out", "Doubtful": "🟠 Doubtful", "Questionable": "🟡 Questionable"}
 
@@ -733,7 +733,7 @@ def style_availability_summary(df: pd.DataFrame):
     return _centered(df.style.format({"Snaps out": "{:.1f}"}))
 
 
-_LOSS, _GAIN = (220, 53, 69), (25, 135, 60)
+_LOSS, _GAIN = (190, 35, 55), (25, 135, 60)
 
 
 def _change_tint(v: float) -> str:
@@ -795,7 +795,7 @@ _FIELD_GREEN_ALT = "#2a6f35"
 
 # ---------- Tendencies ----------
 # EPA/play on the percentile tables' red → white → green, white at 0.
-_EPA_SCALE = [[0.0, "#dc3545"], [0.5, "#ffffff"], [1.0, "#19873c"]]
+_EPA_SCALE = [[0.0, "#be2337"], [0.5, "#ffffff"], [1.0, "#19873c"]]
 _EPA_RANGE = 0.8  # ± EPA/play at the scale's ends
 
 
@@ -1287,7 +1287,7 @@ def style_plays(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
         index=df.index)
     if "Field" in styles.columns:
         styles.loc[flags["_rz"].astype(bool), "Field"] = (
-            "background-color: #dc3545; color: #ffffff")
+            "background-color: #be2337; color: #ffffff")
     return styles
 
 

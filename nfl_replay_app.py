@@ -1053,7 +1053,7 @@ with st.expander(f"Recent plays ({len(revealed)})", expanded=False, key="_exp_re
     st.markdown(
         '<span style="background:#ffeeba;padding:2px 8px;border-radius:3px;margin-right:6px">3rd down</span>'
         '<span style="background:#ffd0a6;padding:2px 8px;border-radius:3px;margin-right:6px">4th-down attempt</span>'
-        '<span style="background:#dc3545;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
+        '<span style="background:#be2337;color:#fff;padding:2px 8px;border-radius:3px;margin-right:6px">Red zone</span>'
         '<span style="margin-right:6px">🏈 Pass &nbsp; 🏃 Run</span>'
         '<span style="margin-right:6px">✅ Positive EPA</span>',
         unsafe_allow_html=True,
