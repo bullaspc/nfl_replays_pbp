@@ -731,7 +731,9 @@ def build_live_pbp(summary: dict, sched: dict, models: dict | None, fg_table: pd
     df = add_derived_columns(base, "REG" if game_type == "REG" else "POST")
     if models is not None:
         import nflfastr_models as nm
-        df = nm.add_ep_wp(df, models, fg_table)
+        # Until the game is over the feed goes on past its last row, so a
+        # score there isn't the game's last play.
+        df = nm.add_ep_wp(df, models, fg_table, in_progress=game_state(summary) != "post")
     df["play_id"] = np.arange(1, len(df) + 1, dtype=float)
     # The formation, as nflfastR reads it from the same text: "(Shotgun)",
     # "(No Huddle, Shotgun)".

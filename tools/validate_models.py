@@ -24,6 +24,8 @@ def main(season: int, path: str | None = None) -> None:
     inputs = pbp.drop(columns=["ep", "epa", "wp", "home_wp", "away_wp", "def_wp",
                                "td_prob", "fg_prob", "safety_prob", "no_score_prob",
                                "opp_td_prob", "opp_fg_prob", "opp_safety_prob"])
+    # nflfastR's internal safety_team (not published): the team without the ball.
+    inputs["safety_team"] = inputs["defteam"].where(inputs["safety"] == 1)
     out = nm.add_ep_wp(inputs, nm.load_models(), nm.load_fg_table())
     out = out.loc[pbp.index]
     print(f"{season}: {pbp['game_id'].nunique()} games, {len(pbp)} rows")

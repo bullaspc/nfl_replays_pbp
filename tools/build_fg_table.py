@@ -1,21 +1,26 @@
 """
-Rebuild models/fg_make_prob.csv: nflfastR's field-goal make probability by
-yard line and roof type.
+Rebuild models/fg_prob_table.csv from nflfastR's own data, and check the
+kickoff starts in nflfastr_models.py.
 
-nflfastR's FG model is an mgcv GAM (`fastrmodels::fg_model`) that Python can't
-evaluate. Its inputs are only yardline_100, era and roof, and nflfastR folds its
-output into the published EP class probabilities of every FG attempt:
+nflfastR's field goal model (R/helper_fg_model.R) is a lookup table,
+`fg_prob_table` in the package's R/sysdata.rda: the make probability for
+yardline_100 1-99 (a kick of yardline_100 + 18 yards), one column per kicking
+era (`fg_era()`) and roof (outdoors or indoors). The same file holds
+`wp_vegas_model$kick_start`, the receiving team's typical first snap after a
+kickoff in each kickoff-rule regime, which the EP and WP models use; this
+fails if it no longer matches nflfastr_models.KICK_START.
 
-    no_score_prob = (1 - p_make) * P_missed(No_Score)
+R's .rda is a bzip2/gzip/xz-compressed XDR serialization; `read_rda()` below
+reads the object types sysdata.rda uses (vectors, lists, symbols, raw).
 
-where P_missed is the EP model evaluated at the post-miss situation (see
-`add_ep` in nflfastr_models.py). With the EP booster we recompute P_missed and
-solve for p_make exactly. Seasons from 2018 on share one era (era4, which the
-GAM groups with era3).
-
-    python tools/build_fg_table.py 2018 2025
+    python tools/build_fg_table.py [path/to/sysdata.rda]
 """
+import bz2
+import gzip
+import lzma
+import struct
 import sys
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -24,44 +29,139 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import nflfastr_models as nm  # noqa: E402
 
-PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
-COLS = ["play_type", "no_score_prob", "yardline_100", "roof", "posteam", "home_team",
-        "location", "half_seconds_remaining", "posteam_timeouts_remaining",
-        "defteam_timeouts_remaining", "season"]
+SYSDATA_URL = "https://raw.githubusercontent.com/nflverse/nflfastR/master/R/sysdata.rda"
 
 
-def recover(df: pd.DataFrame, ep_booster) -> pd.DataFrame:
-    df = df[(df["play_type"] == "field_goal") & df["no_score_prob"].notna()].copy()
-    for k, v in nm._era_cols(df["season"]).items():
-        df[k] = v
-    df["model_roof"] = nm._model_roof(df["roof"])
-    for r in ("retractable", "dome", "outdoors"):
-        df[r] = (df["model_roof"] == r).astype(float)
-    df["home"] = (df["posteam"] == df["home_team"]).astype(float)  # _ep_preds handles neutral sites
-    missed = df.copy()
-    missed["half_seconds_remaining"] -= 5.065401
-    missed["yardline_100"] = 100 - (missed["yardline_100"] + 8)
-    missed["down"] = 1
-    missed = nm._with_downs(missed)
-    missed["ydstogo"] = 10.0
-    ok = missed["half_seconds_remaining"] > 0
-    p = 1 - df["no_score_prob"] / nm._ep_preds(missed, ep_booster)["No_Score"]
-    return pd.DataFrame({"roof": df["model_roof"], "yardline_100": df["yardline_100"], "p": p})[ok]
+class _Reader:
+    """R's XDR serialization (format 2 or 3), enough for data objects."""
+
+    def __init__(self, data: bytes):
+        self.d, self.i, self.refs = data, 0, []
+
+    def int(self) -> int:
+        v = struct.unpack_from(">i", self.d, self.i)[0]
+        self.i += 4
+        return v
+
+    def length(self) -> int:
+        n = self.int()
+        if n == -1:
+            hi, lo = self.int(), self.int()
+            n = (hi << 32) + lo
+        return n
+
+    def take(self, n: int) -> bytes:
+        b = self.d[self.i:self.i + n]
+        self.i += n
+        return b
+
+    def obj(self):
+        flags = self.int()
+        typ, has_attr, has_tag = flags & 0xFF, flags & (1 << 9), flags & (1 << 10)
+        if typ == 254:  # NILVALUE
+            return None
+        if typ == 255:  # REFSXP
+            idx = flags >> 8 or self.int()
+            return self.refs[idx - 1]
+        if typ in (241, 242, 253):  # base / empty / global environment
+            return None
+        if typ == 1:  # SYMSXP
+            name = self.obj()
+            self.refs.append(name)
+            return name
+        if typ in (2, 6, 239, 240):  # pairlist, language
+            attr = self.obj() if has_attr else None
+            tag = self.obj() if has_tag else None
+            car = self.obj()
+            cdr = self.obj()
+            node = [(tag, car)] + (cdr if isinstance(cdr, list) else [])
+            return _Pairlist(node, attr)
+        if typ == 9:  # CHARSXP
+            n = self.int()
+            return None if n == -1 else self.take(n).decode("utf-8", "replace")
+        if typ in (10, 13):  # logical, integer
+            n = self.length()
+            val = np.frombuffer(self.take(4 * n), dtype=">i4").astype(np.int64)
+        elif typ == 14:  # double
+            n = self.length()
+            val = np.frombuffer(self.take(8 * n), dtype=">f8").astype(float)
+        elif typ == 16:  # character
+            val = [self.obj() for _ in range(self.length())]
+        elif typ in (19, 20):  # list, expression
+            val = [self.obj() for _ in range(self.length())]
+        elif typ == 24:  # raw
+            val = self.take(self.length())
+        else:
+            raise NotImplementedError(f"R object type {typ} at byte {self.i}")
+        attr = self.obj() if has_attr else None
+        return _RObj(val, attr)
 
 
-def main(first: int, last: int) -> None:
-    ep_booster = nm.load_models()["ep_model"]
-    frames = [recover(pd.read_parquet(PBP_URL.format(y=y), columns=COLS), ep_booster)
-              for y in range(first, last + 1)]
-    t = pd.concat(frames)
-    g = t.groupby(["roof", "yardline_100"])["p"]
-    spread = (g.max() - g.min()).max()
-    assert spread < 1e-6, f"make probability isn't a function of (roof, yard line): {spread}"
-    out = g.first().reset_index().sort_values(["roof", "yardline_100"])
-    out["yardline_100"] = out["yardline_100"].astype(int)
-    out.to_csv(nm.FG_TABLE, index=False, float_format="%.10f")
-    print(f"wrote {len(out)} rows to {nm.FG_TABLE}")
+class _RObj:
+    def __init__(self, value, attr):
+        self.value, self.attr = value, attr
+
+    def attribute(self, name: str):
+        return self.attr.get(name) if isinstance(self.attr, _Pairlist) else None
+
+    def __getitem__(self, name: str):
+        names = self.attribute("names").value
+        return self.value[names.index(name)]
+
+
+class _Pairlist(list):
+    def __init__(self, items, attr=None):
+        super().__init__(items)
+        self.attr = attr
+
+    def get(self, name: str):
+        return next((v for k, v in self if k == name), None)
+
+
+def read_rda(blob: bytes) -> dict:
+    """An .rda file's objects by name."""
+    for opener in (bz2.decompress, gzip.decompress, lzma.decompress):
+        try:
+            blob = opener(blob)
+            break
+        except (OSError, ValueError, lzma.LZMAError):
+            continue
+    if blob[:5] not in (b"RDX2\n", b"RDX3\n") or blob[5:7] != b"X\n":
+        raise ValueError("not an XDR .rda file")
+    r = _Reader(blob[7:])
+    version = r.int()
+    r.int(), r.int()  # writer and minimal reader versions
+    if version == 3:
+        r.take(r.int())  # native encoding
+    return dict(r.obj())
+
+
+def main(path: str | None = None) -> None:
+    if path:
+        blob = Path(path).read_bytes()
+    else:
+        with urllib.request.urlopen(SYSDATA_URL, timeout=60) as resp:
+            blob = resp.read()
+    objs = read_rda(blob)
+
+    fg = objs["fg_prob_table"]
+    n_rows, n_cols = fg.attribute("dim").value
+    cols = fg.attribute("dimnames").value[1].value
+    mat = fg.value.reshape(n_cols, n_rows).T  # R stores matrices by column
+    assert n_rows == 99, n_rows
+    out = pd.DataFrame(mat, columns=cols)
+    out.insert(0, "yardline_100", np.arange(1, n_rows + 1))
+    expected = [f"era{e}_{r}" for e in range(1, len(nm.FG_ERAS) + 2) for r in ("indoors", "outdoors")]
+    assert sorted(cols) == sorted(expected), f"FG table columns changed: {cols}"
+    out.to_csv(nm.FG_TABLE, index=False, float_format="%.10g")
+    print(f"wrote {n_rows} yard lines x {n_cols} era/roof columns to {nm.FG_TABLE}")
+
+    kick_start = tuple(float(x) for x in objs["wp_vegas_model"]["kick_start"].value)
+    if kick_start != tuple(nm.KICK_START):
+        sys.exit(f"nflfastR's kick_start is now {kick_start}; update nflfastr_models.KICK_START "
+                 f"(and KICK_REGIMES from ot_kick_first in R/helper_add_ot_wp.R)")
+    print(f"kick_start matches nflfastr_models.KICK_START: {kick_start}")
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]), int(sys.argv[2]))
+    main(sys.argv[1] if len(sys.argv) > 1 else None)
