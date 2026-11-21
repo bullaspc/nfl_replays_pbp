@@ -727,6 +727,13 @@ def _nullified_names(out: pd.DataFrame, text: pd.Series) -> None:
             out.at[i, "rusher_player_name"] = _named(snap[:act], known("rusher_player_name", key))
 
 
+# A play whose snap, its first player action, is a run: '(03:52) No
+# Huddle-Shotgun #13 D.Jones rush left for 3 yards loss ...', or a botched
+# snap the crew credits to the team, 'Shotgun Georgia Tech rush middle ...';
+# not a two-point try, '#24 C.Hawkins rush attempt failed'.
+_SNAP_IS_RUN = re.compile(rf"^[^#]*?(?:#\d+ {_NAME} )?rush\b(?! attempt\b)")
+# ESPN's types for a run that ended in a fumble or a safety.
+_RUN_END_TYPES = re.compile(r"^(?:Fumble|Safety)")
 _PASSER = re.compile(rf"#\d+ ({_NAME}) (?:pass|sacked)\b")
 _RUSHER = re.compile(rf"#\d+ ({_NAME}) rush\b|Kneel down by #\d+ ({_NAME})")
 _RECEIVER = re.compile(rf"pass (?:complete|incomplete)[^#]*?\bto #\d+ ({_NAME})")
@@ -762,7 +769,16 @@ def _text_offense_names(raw: pd.DataFrame) -> pd.DataFrame:
         hits = body.str.extract(pattern)
         return hits.bfill(axis=1).iloc[:, 0].where(crew).map(_crew_name, na_action="ignore")
 
-    is_pass, is_rush = _b(raw["pass"]), _b(raw["rush"])
+    # sportsdataverse marks a stat-crew run that ended in a fumble or a
+    # safety neither a run nor a pass in a live game ('#13 D.Jones rush left
+    # for 3 yards loss ... fumbled by ...', typed Fumble Recovery), though the
+    # release, built later, has it as a run: until the game was published,
+    # the play had no type, and its carry and EPA counted for no one.
+    is_pass = _b(raw["pass"])
+    untyped_run = (crew & ~is_pass & ~_b(raw["rush"]) & body.str.match(_SNAP_IS_RUN)
+                   & raw["type.text"].fillna("").str.match(_RUN_END_TYPES))
+    raw["rush"] = _b(raw["rush"]) | untyped_run
+    is_rush = raw["rush"]
     for col, pattern, role in (("passer_player_name", _PASSER, is_pass),
                                ("rusher_player_name", _RUSHER, is_rush),
                                ("receiver_player_name", _RECEIVER, is_pass)):
