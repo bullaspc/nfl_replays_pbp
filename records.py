@@ -144,7 +144,8 @@ def team_records(results: pd.DataFrame, game_id, away: str, home: str,
                  final: dict[str, float] | None = None) -> dict[str, dict]:
     """The `away` and `home` teams' records going into game `game_id`:
     {"overall": (wins, losses, ties), "conference": (w, l, t), or None for an
-    independent or a league without conference records}, over the finished
+    independent or a league without conference records, "conf_name": the
+    schedule's conference, or None likewise}, over the finished
     games of `results` (RESULT_COLS) that kicked off before it and count.
     Never this game's result or a later game's.
 
@@ -168,8 +169,10 @@ def team_records(results: pd.DataFrame, game_id, away: str, home: str,
         if final is not None and t in final and bool(own["counts"]):
             margin = np.append(margin, float(final[t]))
             in_conf = np.append(in_conf, bool(own["conference"]))
+        conf = own[f"{side}_conf"]
         out[t] = {"overall": _wlt(margin),
-                  "conference": None if _independent(own[f"{side}_conf"]) else _wlt(margin[in_conf])}
+                  "conference": None if _independent(conf) else _wlt(margin[in_conf]),
+                  "conf_name": None if _independent(conf) else conf}
     return out
 
 
@@ -181,28 +184,41 @@ def record_label(wlt: tuple[int, int, int] | None) -> str:
     return f"{w}-{l}" + (f"-{t}" if t else "")
 
 
-def with_records(box: pd.DataFrame, records: dict[str, dict]) -> pd.DataFrame:
-    """The Boxscore (core.boxscore, a Team column) with a Record column and,
-    where either team has a conference record, Conf. Unchanged without
-    records."""
-    if not records:
-        return box
-    out = box.assign(Record=[record_label(records[t]["overall"]) if t in records else "—"
-                             for t in box["Team"]])
-    if any(r["conference"] is not None for r in records.values()):
-        out["Conf"] = [record_label(records[t]["conference"]) if t in records else "—"
-                       for t in box["Team"]]
-    return out
+# Long conference names, shortened under a team's name so the Boxscore's Team
+# column stays narrow on a phone; the rest go as the schedule writes them.
+CONF_SHORT = {"American Athletic": "American", "Mid-American": "MAC", "Mountain West": "MWC",
+              "Conference USA": "CUSA", "Coastal Athletic": "CAA"}
 
 
-def record_note(results: pd.DataFrame, game_id, final: bool, conf: bool) -> str:
+def record_line(rec: dict) -> str:
+    """A team's record as the line under its name: "8-2", or in college "8-2,
+    5-1 Big Ten" (an independent has no conference part)."""
+    line = record_label(rec["overall"])
+    if rec.get("conference") is not None:
+        name = rec.get("conf_name") or "Conf"
+        line += f", {record_label(rec['conference'])} {CONF_SHORT.get(name, name)}"
+    return line
+
+
+def with_records(box: pd.DataFrame, records: dict[str, dict], names: dict[str, str]) -> pd.DataFrame:
+    """The Boxscore (core.boxscore) with each Team cell as the team's name
+    (`names`, abbreviation → name; else the abbreviation) and, under it in
+    small gray text, its record (`record_line`). st.table renders a cell as
+    Markdown: a backslash before the newline is a line break, and it survives
+    views.stat_table's no-wrap formatting."""
+    def cell(t: str) -> str:
+        name = names.get(t, t)
+        return f"{name}\\\n:gray[:small[{record_line(records[t])}]]" if t in records else name
+    return box.assign(Team=box["Team"].map(cell))
+
+
+def record_note(results: pd.DataFrame, game_id, final: bool) -> str:
     """The caption under the Boxscore: what the records count. `final`: the
-    game's end is revealed; `conf`: the table has a Conf column."""
+    game's end is revealed."""
     own = results[results["game_id"] == str(game_id)]
     counts = own.empty or bool(own["counts"].iloc[0])
-    note = ("Regular-season record." if not counts else
-            "Record including this game." if final else "Record going into the game.")
-    return note + (" Conf: in conference games." if conf else "")
+    return ("Regular-season records." if not counts else
+            "Records including this game." if final else "Records going into the game.")
 
 
 def final_margins(box: pd.DataFrame) -> dict[str, float]:

@@ -788,19 +788,19 @@ def _charting_block(ranks: bool = False):
                "has charted this one."))
 
 
-# Team names: the boxscore is narrow enough for them on a phone.
+# Team names: the boxscore is narrow enough for them on a phone. Under each
+# name, the team's record (college: and in conference games) from the
+# schedule's games before this one, so nothing past it shows; once the
+# revealed plays reach the final whistle, with this game too, from the score
+# on the screen.
 _box = boxscore(revealed, home, away)
-# Each team's record (college: and in conference games) from the schedule's
-# games before this one, so nothing past it shows; once the revealed plays
-# reach the final whistle, with this game too, from the score on the screen.
 _final = game_over(revealed)
 _results = records.game_results(league.key, season, stamp)
-_box = records.with_records(_box, records.team_records(
-    _results, game_id, away, home, final=records.final_margins(_box) if _final else None))
-stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
-           hide_index=True, pin="Team")
-if "Record" in _box.columns:
-    st.caption(records.record_note(_results, game_id, _final, "Conf" in _box.columns))
+_records = records.team_records(_results, game_id, away, home,
+                                final=records.final_margins(_box) if _final else None)
+stat_table(records.with_records(_box, _records, _names), hide_index=True, pin="Team")
+if _records:
+    st.caption(records.record_note(_results, game_id, _final))
 # Full game only: every play is unlocked then, so the game's Charting sits with
 # the score and the Charting section below is left out.
 if full_game:

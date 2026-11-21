@@ -5,7 +5,7 @@ A spoiler-free Streamlit app for following NFL and college football games on tap
 ## Features
 
 - **Spoiler-safe live stats** — score, boxscore, team stats, and player leaders are filtered to your exact viewing position
-- **Team records** — the boxscore shows each team's record going into the game (NFL: regular season; college: overall and in conference games), from the games played before it only; it counts this game once you've reached the final whistle
+- **Team records** — the boxscore shows each team's record under its name, going into the game (NFL: regular season; college: overall and in conference games, "7-3, 5-2 Big Ten"), from the games played before it only; it counts this game once you've reached the final whistle
 - **Three viewing modes** — wall-clock start time, broadcast minutes elapsed, or jump to a specific game clock
 - **Auto-advance** — automatically progresses to the next play every 30 seconds so you can set it and forget it
 - **Win probability chart** — x-axis capped at your current position so the chart shape itself can't spoil the ending
