@@ -17,6 +17,7 @@ Run with:
     streamlit run nfl_replay_app.py
 """
 
+import html
 import os
 import time
 
@@ -492,6 +493,17 @@ if not revealed.empty:
 else:
     home_score = away_score = 0
 
+# Each team's record (college: and in conference games) from the schedule's
+# games before this one, so nothing past it shows; once the revealed plays
+# reach the final whistle, with this game too, from the score on the screen.
+# Shown under the team names in the scoreboard line.
+_final = game_over(revealed)
+_results = records.game_results(league.key, season, stamp)
+_records = records.team_records(
+    _results, game_id, away, home,
+    final=records.final_margins(away, home, away_score, home_score) if _final else None)
+_record_tip = records.record_note(_results, game_id, _final) if _records else ""
+
 
 # ---------- Other games ticker ----------
 # The league's other games from ESPN's scoreboard, ESPN-ticker style, while any
@@ -521,14 +533,25 @@ if not hide_ticker:
 # name ("Florida International") wraps, between words; the score never does.
 _name_css = ("font-size:clamp(0.95rem,4.2vw,2rem);font-weight:700;line-height:1.15;"
              "flex:0 1 auto")
+# The record goes under the name, smaller and lighter ("7-3, 5-2 Big Ten").
+_rec_css = "font-size:clamp(0.7rem,3vw,0.95rem);font-weight:400;opacity:0.7;margin-top:2px"
+
+
+def _team_title(team: str) -> str:
+    rec = (f"<div style='{_rec_css}' title='{html.escape(_record_tip, quote=True)}'>"
+           f"{html.escape(records.record_line(_records[team]))}</div>"
+           if team in _records else "")
+    return f"{html.escape(_names.get(team, team))}{rec}"
+
+
 st.markdown(
     "<div style='display:flex;align-items:center;justify-content:center;"
     "gap:clamp(6px,2.5vw,20px);margin:0.25rem 0 0.5rem'>"
     f"{logo_img(away, team_logos)}"
-    f"<div style='{_name_css};text-align:right'>{_names.get(away, away)}</div>"
+    f"<div style='{_name_css};text-align:right'>{_team_title(away)}</div>"
     f"<div style='font-size:clamp(1.3rem,6vw,2.4rem);font-weight:700;white-space:nowrap'>"
     f"{away_score} — {home_score}</div>"
-    f"<div style='{_name_css};text-align:left'>{_names.get(home, home)}</div>"
+    f"<div style='{_name_css};text-align:left'>{_team_title(home)}</div>"
     f"{logo_img(home, team_logos)}</div>",
     unsafe_allow_html=True)
 
@@ -788,19 +811,10 @@ def _charting_block(ranks: bool = False):
                "has charted this one."))
 
 
-# Team names: the boxscore is narrow enough for them on a phone. Under each
-# name, the team's record (college: and in conference games) from the
-# schedule's games before this one, so nothing past it shows; once the
-# revealed plays reach the final whistle, with this game too, from the score
-# on the screen.
+# Team names: the boxscore is narrow enough for them on a phone.
 _box = boxscore(revealed, home, away)
-_final = game_over(revealed)
-_results = records.game_results(league.key, season, stamp)
-_records = records.team_records(_results, game_id, away, home,
-                                final=records.final_margins(_box) if _final else None)
-stat_table(records.with_records(_box, _records, _names), hide_index=True, pin="Team")
-if _records:
-    st.caption(records.record_note(_results, game_id, _final))
+stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
+           hide_index=True)
 # Full game only: every play is unlocked then, so the game's Charting sits with
 # the score and the Charting section below is left out.
 if full_game:

@@ -1,6 +1,6 @@
-"""Team records for the replay's Boxscore: each team's wins and losses going
-into the game and, in college, its conference record, from the league's
-schedule.
+"""Team records for the replay's scoreboard line: each team's wins and losses
+going into the game and, in college, its conference record, from the league's
+schedule, under its name.
 
 A separate module on purpose, like rosters.py: it isn't in
 `leagues._CODE_FILES`, so a change here doesn't make the season store rebuild
@@ -184,44 +184,33 @@ def record_label(wlt: tuple[int, int, int] | None) -> str:
     return f"{w}-{l}" + (f"-{t}" if t else "")
 
 
-# Long conference names, shortened under a team's name so the Boxscore's Team
-# column stays narrow on a phone; the rest go as the schedule writes them.
+# Long conference names, shortened under a team's name so the scoreboard line
+# stays narrow on a phone; the rest go as the schedule writes them.
 CONF_SHORT = {"American Athletic": "American", "Mid-American": "MAC", "Mountain West": "MWC",
               "Conference USA": "CUSA", "Coastal Athletic": "CAA"}
 
 
 def record_line(rec: dict) -> str:
-    """A team's record as the line under its name: "8-2", or in college "8-2,
-    5-1 Big Ten" (an independent has no conference part)."""
+    """A team's record as the line under its name in the scoreboard: "8-2",
+    or in college "8-2, 5-1 Big Ten" (an independent has no conference part).
+    Non-breaking hyphens and spaces, so on a phone it can only wrap after the
+    comma."""
     line = record_label(rec["overall"])
     if rec.get("conference") is not None:
         name = rec.get("conf_name") or "Conf"
-        line += f", {record_label(rec['conference'])} {CONF_SHORT.get(name, name)}"
-    return line
-
-
-def with_records(box: pd.DataFrame, records: dict[str, dict], names: dict[str, str]) -> pd.DataFrame:
-    """The Boxscore (core.boxscore) with each Team cell as the team's name
-    (`names`, abbreviation → name; else the abbreviation) and, under it in
-    small gray text, its record (`record_line`). st.table renders a cell as
-    Markdown: a backslash before the newline is a line break, and it survives
-    views.stat_table's no-wrap formatting."""
-    def cell(t: str) -> str:
-        name = names.get(t, t)
-        return f"{name}\\\n:gray[:small[{record_line(records[t])}]]" if t in records else name
-    return box.assign(Team=box["Team"].map(cell))
+        line += f", {record_label(rec['conference'])}\u00a0{CONF_SHORT.get(name, name).replace(' ', chr(0xa0))}"
+    return line.replace("-", "\u2011")
 
 
 def record_note(results: pd.DataFrame, game_id, final: bool) -> str:
-    """The caption under the Boxscore: what the records count. `final`: the
-    game's end is revealed."""
+    """What the records count, the records' tooltip. `final`: the game's end
+    is revealed."""
     own = results[results["game_id"] == str(game_id)]
     counts = own.empty or bool(own["counts"].iloc[0])
     return ("Regular-season records." if not counts else
             "Records including this game." if final else "Records going into the game.")
 
 
-def final_margins(box: pd.DataFrame) -> dict[str, float]:
-    """Team → its margin in the Boxscore's Total (away first, home second)."""
-    (a, h), (sa, sh) = box["Team"].tolist()[:2], box["Total"].tolist()[:2]
-    return {a: sa - sh, h: sh - sa}
+def final_margins(away: str, home: str, away_score: int, home_score: int) -> dict[str, float]:
+    """Team → its margin in the final score, for team_records' `final`."""
+    return {away: away_score - home_score, home: home_score - away_score}
