@@ -18,6 +18,7 @@ import streamlit as st
 
 import game_summary
 import leagues
+from rosters import load_roster, roster_groups, roster_table
 from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MATCHUP_LEADERS,
                          HEAVY_BOX, PLAYER_MIN_PLAYS, matchup_chart_stats, matchup_stats,
                          PROJ_SHRINK, SEASON_MIN_PLAYS, SITUATION_MIN_PLAYS, PlayFilter,
@@ -495,6 +496,24 @@ st.caption("Season totals over the same games. SR%, aDOT and EPA/play are colore
            "season's players with enough plays, as on the Season stats page. **Status** is the "
            "player's game status on this week's injury report, where he has one."
            + (f" {draft_note(season)}." if draft_board else ""))
+
+# College rosters (CFBD's), one collapsed expander per team, stacked: seven columns each.
+if league is leagues.COLLEGE:
+    roster = load_roster(season, (stamp,), names)
+    for team in (away, home):
+        with st.expander(f"{nm(team)} roster", expanded=False, key=f"_mu_exp_roster_{team}"):
+            groups = roster_groups(roster, team)
+            if not groups:
+                st.caption(f"No {season} roster for {nm(team)} in cfbfastR-data yet.")
+                continue
+            pick = st.segmented_control("Position", ["All", *groups], default="All",
+                                        key=f"_mu_roster_group_{team}",
+                                        label_visibility="collapsed") or "All"
+            shown = roster_table(roster, team, None if pick not in groups else pick)
+            stat_table(shown, hide_index=True, pin="Player")
+            st.caption(f"{len(shown)} players · {season} roster from CFBD via cfbfastR-data, by "
+                       "position group and jersey number. Yr is the class year, Ht feet and "
+                       "inches, Wt pounds.")
 
 # ---------- How to read this ----------
 st.divider()
