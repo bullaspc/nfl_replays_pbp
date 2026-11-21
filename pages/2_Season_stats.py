@@ -16,6 +16,7 @@ import pandas as pd
 import streamlit as st
 
 import leagues
+from rosters import load_roster, roster_groups, roster_table
 from replay_core import (
     ADJUST_MAX_PASSES, CHART_ROWS, CLASS_COL, COMPARE_ABS_FULL, COMPARE_FULL_PCT, COMPARE_MODES, PLAYER_LOWER_IS_BETTER, EXPLOSIVE_RUN_YDS, HEAVY_BOX, LINE_ROWS, NGS_CHART_COLS, NGS_COLS, NGS_GLOSSARY,
     NGS_RATE_COLS, PLAYER_GLOSSARY, SCATTER_HIGHER_IS_BETTER, SCATTER_LOWER_IS_BETTER,
@@ -548,6 +549,23 @@ with tab_team:
                                hide_index=True)
     if draft_board:
         st.caption(f"{draft_note(season)}.")
+
+    # The college roster (CFBD's, through cfbfastR-data), collapsed.
+    if league is leagues.COLLEGE:
+        with st.expander(f"{team_name} roster", expanded=False, key="_ss_exp_roster"):
+            roster = load_roster(season, (stamp,), _school_names)
+            groups = roster_groups(roster, team)
+            if not groups:
+                st.caption(f"No {season} roster for {team_name} in cfbfastR-data yet.")
+            else:
+                pick = st.segmented_control("Position", ["All", *groups], default="All",
+                                            key="_ss_roster_group",
+                                            label_visibility="collapsed") or "All"
+                shown = roster_table(roster, team, None if pick == "All" or pick not in groups else pick)
+                stat_table(shown, hide_index=True, pin="Player")
+                st.caption(f"{len(shown)} players · {season} season roster from CFBD via cfbfastR-data, "
+                           "by position group and jersey number. Yr is the class year (Fr/So/Jr/Sr), "
+                           "Ht in feet and inches, Wt in pounds.")
 
     # Snap counts and the latest injury report. Snap counts are whole games,
     # so they follow the selection's games (weeks, games, venue) but not its
