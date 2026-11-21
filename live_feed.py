@@ -74,6 +74,9 @@ _LEAD = re.compile(r"^\s*(?:\([^)]*\)\s*)+")          # "(12:48) (Shotgun) "
 _YARDS = re.compile(r"for (-?\d+) yards?|for (no gain)")
 _RUN_DIR = re.compile(r"\b(?:left|right) (?:end|tackle|guard)\b|\bup the middle\b|\brushes\b")
 _RUN_GAP = re.compile(r"\b(left|right) (end|tackle|guard)\b")
+# A run the text gives no direction, mostly a botched snap or exchange:
+# "B.Mayfield to ATL 17 for -2 yards. FUMBLES, and recovers at ATL 18."
+_RUN_NO_DIR = re.compile(rf"^{NAME} to (?:[A-Z]{{2,3}} )?\d{{1,2}} for (?:-?\d+ yards?|no gain)")
 _PASS_DIR = re.compile(r" pass (?:incomplete )?(short|deep) (left|middle|right)\b")
 _PREAMBLE = re.compile(rf"^(?:(?:{NAME}(?:,? and {NAME})*|{NAME}(?:, {NAME})+,? and {NAME}) "
                        rf"reported in as eligible\.\s*|Direct snap to {NAME}\.\s*)+")
@@ -119,7 +122,7 @@ def parse_play_text(desc: str) -> dict:
     no_play = bool(re.search(r"\bNo Play\b", body, re.I)) or (
         bool(re.search(r"PENALTY on", body, re.I))
         and not re.search(r" pass | sacked | scrambles | punts | kicks |field goal|extra point|kneels|spiked", body)
-        and not _RUN_DIR.search(body))
+        and not _RUN_DIR.search(body) and not _RUN_NO_DIR.match(body))
     if re.match(r"^(END (QUARTER|GAME)|END OF|GAME$|Two-Minute Warning)", body.strip(), re.I):
         play_type = None
     elif re.match(r"Timeout #\d", body):
@@ -140,7 +143,8 @@ def parse_play_text(desc: str) -> dict:
         play_type = "qb_spike"
     elif re.search(r" pass |sacked|INTERCEPTED", body):
         play_type = "pass"
-    elif " scrambles " in body or _RUN_DIR.search(body) or re.search(r"\bAborted\b", body):
+    elif (" scrambles " in body or _RUN_DIR.search(body) or re.search(r"\bAborted\b", body)
+          or _RUN_NO_DIR.match(body)):
         play_type = "run"
     else:
         play_type = None
@@ -182,7 +186,8 @@ def parse_play_text(desc: str) -> dict:
                                        or _first(rf" pass (?:incomplete )?(?:short|deep) (?:left|middle|right) to ({NAME})", body)
                                        or _first(rf" pass (?:incomplete )?to ({NAME})", body))
     if is_run or play_type == "qb_kneel":
-        out["rusher_player_name"] = _first(rf"^({NAME}) (?:scrambles|kneels|left|right|up|rushes|Aborted)", body)
+        out["rusher_player_name"] = _first(
+            rf"^({NAME}) (?:scrambles|kneels|left|right|up|rushes|Aborted|to (?:[A-Z]{{2,3}} )?\d)", body)
     # --- direction (offense's left/right), as nflfastR reads it ---
     if is_pass and not is_sack:
         m = _PASS_DIR.search(body)
