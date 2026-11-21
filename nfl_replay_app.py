@@ -27,6 +27,7 @@ from streamlit_autorefresh import st_autorefresh
 
 import game_summary
 import leagues
+import records
 import replay_core as core
 import scoreboard
 from replay_core import (
@@ -789,8 +790,17 @@ def _charting_block(ranks: bool = False):
 
 # Team names: the boxscore is narrow enough for them on a phone.
 _box = boxscore(revealed, home, away)
+# Each team's record (college: and in conference games) from the schedule's
+# games before this one, so nothing past it shows; once the revealed plays
+# reach the final whistle, with this game too, from the score on the screen.
+_final = game_over(revealed)
+_results = records.game_results(league.key, season, stamp)
+_box = records.with_records(_box, records.team_records(
+    _results, game_id, away, home, final=records.final_margins(_box) if _final else None))
 stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
-           hide_index=True)
+           hide_index=True, pin="Team")
+if "Record" in _box.columns:
+    st.caption(records.record_note(_results, game_id, _final, "Conf" in _box.columns))
 # Full game only: every play is unlocked then, so the game's Charting sits with
 # the score and the Charting section below is left out.
 if full_game:
