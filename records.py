@@ -202,13 +202,28 @@ def record_line(rec: dict) -> str:
     return line.replace("-", "\u2011")
 
 
+def record_text(rec: dict) -> str:
+    """A team's record as plain text for the AI summary and booth: "8-2", or
+    in college "8-2, 5-1 in American Athletic games" (the full conference
+    name)."""
+    text = record_label(rec["overall"])
+    if rec.get("conference") is not None:
+        text += f", {record_label(rec['conference'])} in {rec.get('conf_name') or 'conference'} games"
+    return text
+
+
+def summary_records(records: dict[str, dict]) -> dict[str, str]:
+    """team_records() as team → record_text(), for game_summary.GameContext."""
+    return {t: record_text(r) for t, r in records.items()}
+
+
 def record_note(results: pd.DataFrame, game_id, final: bool) -> str:
-    """What the records count, the records' tooltip. `final`: the game's end
-    is revealed."""
+    """What the records count: the records' tooltip, and how the AI summary's
+    snapshot introduces them. `final`: the game's end is revealed."""
     own = results[results["game_id"] == str(game_id)]
     counts = own.empty or bool(own["counts"].iloc[0])
-    return ("Regular-season records." if not counts else
-            "Records including this game." if final else "Records going into the game.")
+    return ("Regular-season records" if not counts else
+            "Records including this game" if final else "Records going into the game")
 
 
 def final_margins(away: str, home: str, away_score: int, home_score: int) -> dict[str, float]:

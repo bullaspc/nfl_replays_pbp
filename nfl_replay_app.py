@@ -949,6 +949,7 @@ def _game_context() -> game_summary.GameContext:
                                   LINE_LOWER_IS_BETTER),
         run_gaps=league.run_gaps,
         tendency_baselines=leagues.tendency_baselines(league, season),
+        records=records.summary_records(_records), records_note=_record_tip,
         boxscore=boxscore(revealed, home, away),
         scoring=scoring_timeline(revealed, home, away),
         team_stats=_stats, team_pct=stat_percentiles(_stats, _season_baselines,

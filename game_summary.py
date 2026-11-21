@@ -149,6 +149,12 @@ class GameContext:
     run_gaps: bool = True           # the play text names a run's gap (NFL), not just its side
     # TENDENCY_DOWNS option → league-wide tendencies (replay_core.tendency_baselines)
     tendency_baselines: dict = field(default_factory=dict)
+    # team → its record ("7-3, 5-2 in Big Ten games", records.summary_records)
+    # from the games before this one, plus this game once the viewer has
+    # reached the final whistle; records_note says which ("Records going into
+    # the game"). Empty if the schedule couldn't be read.
+    records: dict[str, str] = field(default_factory=dict)
+    records_note: str = ""
 
 
 # What changes between the leagues: who's talking, whose models, and what the
@@ -361,7 +367,10 @@ Line play: each offense's line, so a team's column is also what the other team's
 
 Tendencies, all downs: where each offense ran and threw. {_tendency_note(ctx)} get_tendencies has early and late downs.
 {_csv(tend)}"""
-    return f"""Game: {ctx.away} (away) at {ctx.home} (home)
+    shown = [t for t in (ctx.away, ctx.home) if t in ctx.records]
+    records = (f"\n{ctx.records_note or 'Records'}: " + "; ".join(f"{t} {ctx.records[t]}" for t in shown)
+               if shown else "")
+    return f"""Game: {ctx.away} (away) at {ctx.home} (home){records}
 Viewer's position: {where}
 Score: {ctx.away} {as_}, {ctx.home} {hs}{wp_line}
 
@@ -589,7 +598,7 @@ def _run_tool(ctx: GameContext, name: str, args: dict) -> str:
 SYSTEM_PROMPT = """You are {analyst} inside a spoiler-free replay app. The fan is watching this game on tape delay. Explain why the score is what it is at their current position: the factors, key plays and events behind it, covering offense and defense for both teams.
 
 Ground rules:
-- Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
+- Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season (beyond the records the snapshot lists) or this game.
 - Your data stops at the viewer's current play. If the game isn't over, describe where it stands. Never predict, hint at or speculate about what happens next or how it ends.
 - Support each claim with numbers from the data: EPA/play, success rate, 3rd-down rate, red-zone results, turnovers, sacks and pressure, line play, where each offense ran and threw (and how it worked against the league's split), explosive plays, field position, WPA. Use the percentiles to say whether a number is actually good or bad. Name the players who drove it, from the player leaders and play text.
 - Look at the key plays (turnovers, biggest win-probability swings, explosive plays, 4th downs, red-zone trips) with the tools before writing about them. Make several tool calls in one turn when you need several things. Skip tools that won't change the story.
@@ -754,7 +763,7 @@ DEBATE_TURNS = 4                      # model calls per line (up to 3 rounds of 
 DEBATE_PROMPT = """You are {speaker}, {analyst} in a two-person booth inside a spoiler-free replay app, talking this game over with your partner {partner}. The fan is watching on tape delay and listens in. You cover {team} ({side}); {partner} covers {other}. Speak for what {team} is doing well and what is hurting it, and engage honestly with {partner}: agree when the numbers back them, push back with numbers when they don't, and concede a point when the data is against you. A real conversation, not two speeches.
 
 Ground rules:
-- Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season or this game.
+- Use only the numbers in the dashboard snapshot and in tool results. Don't invent stats, players or plays, and don't bring in outside knowledge of these teams, their season (beyond the records the snapshot lists) or this game.
 - Your data stops at the viewer's current play. If the game isn't over, talk about where it stands. Never predict, hint at or speculate about what happens next or how it ends.
 - Back each point with a number or two: EPA/play, success rate, 3rd downs, red zone, turnovers, pressure, line play, tendencies, explosive plays, field position, WPA, the players behind it. Use the percentiles to say whether a number is actually good or bad. Look plays up with the tools before you cite them; skip lookups that won't change what you say.
 
