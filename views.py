@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (DRAFT_BADGES, CHART_LOWER_IS_BETTER, CHART_STYLE, chart_label, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (DRAFT_BADGES, draft_note as _draft_tags_note, CHART_LOWER_IS_BETTER, CHART_STYLE, chart_label, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
@@ -1332,6 +1332,13 @@ def _pinned_props() -> list[tuple[str, str]]:
 # since the Player column is pinned and other columns scroll under it.
 _DRAFT_TINT = (230, 160, 20)
 _DRAFT_ALPHA = dict(zip(DRAFT_BADGES, (0.55, 0.38, 0.24, 0.12)))
+
+
+def draft_note(season: int) -> str:
+    """The captions' text for the draft tags (replay_core.draft_note) plus
+    what the names' shading means (`_draft_shade`)."""
+    return (f"{_draft_tags_note(season)} · the name is shaded amber, darker the earlier "
+            "the projected round")
 
 
 def _blend(rgb, alpha: float, bg: str) -> str:

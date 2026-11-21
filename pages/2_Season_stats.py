@@ -26,10 +26,10 @@ from replay_core import (
     availability_summary, has_air_yards, injury_report, team_snaps, venue_plays, weekly_snaps,
     pass_tendencies, run_tendencies, season_lower_is_better, season_player_distributions,
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
-    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft, draft_note,
+    situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft,
     with_nextgen, compare_team, player_season_compare, team_season_compare, teams_season_compare,
 )
-from views import (
+from views import (draft_note, 
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
     style_availability_summary, SCATTER_MAX_LABELS,
     style_defense_table, style_injury_report, style_kicking_table,

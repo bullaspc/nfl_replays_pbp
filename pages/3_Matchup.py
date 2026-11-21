@@ -25,8 +25,8 @@ from replay_core import (EDGE_EVEN, LIKELY_OUT, LINEUP_EFFECTS, LINEUP_SHOWN, MA
                          availability_summary, head_to_head, injury_report, lineup_adjustment,
                          lineup_change, lineup_groups, matchup_table, season_player_distributions,
                          season_qualified, situational_matchup, status_by_name, team_snaps,
-                         with_class_year, with_draft, draft_note)
-from views import (MATCHUP_TINTS, logo_img, mobile_css, section_nav, stat_table, status_badge, style_availability_summary,
+                         with_class_year, with_draft)
+from views import (draft_note, MATCHUP_TINTS, logo_img, mobile_css, section_nav, stat_table, status_badge, style_availability_summary,
                    style_defense_table, style_head_to_head, style_injury_report, style_lineup_change,
                    style_lineup_groups, style_matchup_table, style_player_table,
                    style_situational_matchup)
