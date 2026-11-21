@@ -16,6 +16,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import fresh  # reload modules a hot update left stale, before importing from them
+fresh.reload_stale()
 import game_summary
 import leagues
 from rosters import load_roster, roster_groups, roster_table

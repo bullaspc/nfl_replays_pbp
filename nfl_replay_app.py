@@ -26,6 +26,8 @@ import pandas as pd
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
+import fresh  # reload modules a hot update left stale, before importing from them
+fresh.reload_stale()
 import game_summary
 import leagues
 import records
