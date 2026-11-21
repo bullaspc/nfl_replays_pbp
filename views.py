@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from replay_core import (CHART_LOWER_IS_BETTER, CHART_STYLE, chart_label, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
+from replay_core import (DRAFT_BADGES, CHART_LOWER_IS_BETTER, CHART_STYLE, chart_label, PLAYER_COMPARE_STYLE, compare_strength, EDGE_EVEN, GAME_TOTAL_ROWS, LINE_COUNT_ROWS, LINE_LOWER_IS_BETTER, LOWER_IS_BETTER, PLAY_CATS,
                          PLAY_SPLIT_GROUPS, NGS_FORMATS, NGS_RATE_COLS, PLAYER_MIN_PLAYS, PLAYER_RATE_COLS, PLAYER_VOLUME_COL, SEASON_PER_GAME, SEASON_VOLUME,
                          SR_METRICS, SR_SUBTOTALS, down_distance, edge_label,
                          field_pos_label, fmt_top, percentile_of, period_label, play_type_label,
@@ -1326,6 +1326,30 @@ def _pinned_props() -> list[tuple[str, str]]:
             ("box-shadow", "inset -1px 0 0 rgba(128, 128, 128, 0.45)")]
 
 
+# A draft prospect's name ("D.Lee · R2", replay_core.with_draft) is shaded
+# amber, strongest for R1: one hue, apart from the tables' red/green
+# percentiles and the teal accent. Opaque (blended over the page background),
+# since the Player column is pinned and other columns scroll under it.
+_DRAFT_TINT = (230, 160, 20)
+_DRAFT_ALPHA = dict(zip(DRAFT_BADGES, (0.55, 0.38, 0.24, 0.12)))
+
+
+def _blend(rgb, alpha: float, bg: str) -> str:
+    bg = bg.lstrip("#")
+    base = [int(bg[i:i + 2], 16) for i in (0, 2, 4)] if len(bg) == 6 else [255, 255, 255]
+    mixed = [round(alpha * c + (1 - alpha) * b) for c, b in zip(rgb, base)]
+    return "#" + "".join(f"{c:02x}" for c in mixed)
+
+
+def _draft_shade(v) -> str:
+    if not isinstance(v, str) or " · " not in v:
+        return ""
+    alpha = _DRAFT_ALPHA.get(v.rsplit(" · ", 1)[1])
+    # !important: the pinned column's own background (`#T_x .col0`) outranks
+    # a cell's (`#T_x_row0_col0`).
+    return f"background-color: {_blend(_DRAFT_TINT, alpha, _page_bg())} !important" if alpha else ""
+
+
 def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     """A table (DataFrame or Styler) as a static st.table: on a phone it
     scrolls with the page instead of catching swipes, its cells are tighter
@@ -1346,6 +1370,8 @@ def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
     if "Description" in df.columns:
         styled = styled.set_properties(
             subset=["Description"], **{"min-width": "260px", "text-align": "left"})
+    if PINNED_COL in df.columns:  # draft prospects, shaded by projected round
+        styled = smap(styled, _draft_shade, subset=[PINNED_COL])
     col = pin if pin in df.columns else PINNED_COL if PINNED_COL in df.columns else None
     if col is not None:
         styled = styled.set_table_styles(
