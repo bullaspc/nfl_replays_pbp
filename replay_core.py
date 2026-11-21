@@ -2897,16 +2897,16 @@ def with_class_year(df: pd.DataFrame, years: dict, team: str | None = None) -> p
 
 
 # ---------- NFL draft prospects (college) ----------
-# A badge after the name of a player on next year's draft boards or mocks
+# A round tag after the name of a player ("D.Lee · R2") on next year's draft boards or mocks
 # (ESPN's big board, Tankathon's big board and mock draft), by the round his
 # best board rank or mock pick projects to: (last pick of the band, badge,
 # label), best first. A board rank is read as a pick number; past the last
 # band (seven rounds, 32 picks each plus compensatory picks) no badge.
 DRAFT_TIERS = [
-    (32, "🥇", "1st round"),
-    (64, "🥈", "2nd round"),
-    (100, "🥉", "3rd round"),
-    (257, "🏅", "rounds 4–7"),
+    (32, "R1", "1st round"),
+    (64, "R2", "2nd round"),
+    (100, "R3", "3rd round"),
+    (257, "R4+", "rounds 4–7"),
 ]
 DRAFT_BADGES = [badge for _, badge, _ in DRAFT_TIERS]
 
@@ -2969,7 +2969,7 @@ def with_draft(df: pd.DataFrame, draft: dict, team: str | None = None) -> pd.Dat
     if not any(badges):
         return df
     out = df.copy()
-    out["Player"] = [f"{p} {b}" if b else p for p, b in zip(df["Player"], badges)]
+    out["Player"] = [f"{p} · {b}" if b else p for p, b in zip(df["Player"], badges)]
     return out
 
 
