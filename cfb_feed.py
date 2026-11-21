@@ -188,8 +188,9 @@ DRAFT_ARCHIVE = Path(__file__).resolve().parent / "models" / "draft_boards.csv"
 DRAFT_BOARD_URL = ("https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/"
                    "seasons/{}/draft/athletes?limit=500")
 # Past ESPN's top this many, the board's records aren't read (a past
-# draft's board lists 600+, one request each).
-DRAFT_BOARD_MAX = 100
+# draft's board lists 600+, one request each): enough for all seven rounds
+# (257 picks) as the board fills in toward the draft.
+DRAFT_BOARD_MAX = 300
 # Tankathon's big board and mock draft: always the next draft's, the year
 # in the page's title.
 TANKATHON_BOARD_URL = "https://www.tankathon.com/nfl/big_board"
@@ -280,10 +281,11 @@ def read_tankathon(draft_year: int) -> pd.DataFrame:
                                draft_year)
     except Exception:
         mock = []
-    picks = {}
-    for pick, _alt, src, name, _pos in mock:
+    picks, mock_school = {}, {}
+    for pick, _alt, src, name, pos_school in mock:
         nfl = re.search(r"/nfl/([a-z]+)\.svg", src)
         picks.setdefault(name, (int(pick), nfl.group(1).upper() if nfl else None))
+        mock_school.setdefault(name, pos_school)
     rows, seen = [], set()
     for rank, _alt, _src, name, pos_school in board:
         if name in seen:
@@ -294,6 +296,16 @@ def read_tankathon(draft_year: int) -> pd.DataFrame:
         pick, nfl_team = picks.get(name, (None, None))
         rows.append({"source": "Tankathon", "team_id": None, "school": school,
                      "first_name": first, "last_name": last, "pos": pos, "rank": int(rank),
+                     "mock_pick": pick, "mock_team": nfl_team})
+    # Mocked players the big board doesn't list, with their pick only.
+    for name, (pick, nfl_team) in picks.items():
+        if name in seen:
+            continue
+        seen.add(name)
+        pos, _, school = (s.strip() for s in mock_school[name].partition("|"))
+        first, last = _split_name(name)
+        rows.append({"source": "Tankathon", "team_id": None, "school": school,
+                     "first_name": first, "last_name": last, "pos": pos, "rank": None,
                      "mock_pick": pick, "mock_team": nfl_team})
     return pd.DataFrame(rows, columns=DRAFT_COLS)
 

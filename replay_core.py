@@ -2898,22 +2898,41 @@ def with_class_year(df: pd.DataFrame, years: dict, team: str | None = None) -> p
 
 # ---------- NFL draft prospects (college) ----------
 # A badge after the name of a player on next year's draft boards or mocks
-# (ESPN's big board, Tankathon's big board and mock draft): gold within the
-# top `DRAFT_GOLD_RANK` of any of them, silver further down.
-DRAFT_GOLD, DRAFT_SILVER = "🥇", "🥈"
-DRAFT_GOLD_RANK = 50
+# (ESPN's big board, Tankathon's big board and mock draft), by the round his
+# best board rank or mock pick projects to: (last pick of the band, badge,
+# label), best first. A board rank is read as a pick number; past the last
+# band (seven rounds, 32 picks each plus compensatory picks) no badge.
+DRAFT_TIERS = [
+    (32, "🥇", "1st round"),
+    (64, "🥈", "2nd round"),
+    (100, "🥉", "3rd round"),
+    (257, "🏅", "rounds 4–7"),
+]
+DRAFT_BADGES = [badge for _, badge, _ in DRAFT_TIERS]
+
+
+def draft_badge(best) -> str:
+    """The `DRAFT_TIERS` badge for a best board rank or mock pick; "" past
+    the last band or without one."""
+    if pd.isna(best):
+        return ""
+    for last, badge, _ in DRAFT_TIERS:
+        if best <= last:
+            return badge
+    return ""
 
 
 def draft_note(season: int) -> str:
-    """The leaders tables' caption for the draft badges."""
-    return (f"{DRAFT_GOLD} top {DRAFT_GOLD_RANK} on a {int(season) + 1} NFL draft big board or "
-            f"mock draft (ESPN, Tankathon) · {DRAFT_SILVER} on one further down")
+    """The leaders and roster tables' caption for the draft badges."""
+    bands = " · ".join(f"{badge} {label}" for _, badge, label in DRAFT_TIERS)
+    return (f"Projected round in the {int(season) + 1} NFL draft, from the best rank on ESPN's "
+            f"or Tankathon's big board or pick in Tankathon's mock draft: {bands}")
 
 
 def draft_keys(board: pd.DataFrame, roster_keys=None) -> dict[tuple[str, str], str]:
-    """(team, `player_key`) → `DRAFT_GOLD` or `DRAFT_SILVER` from the boards
-    (`cfb_feed.DRAFT_COLS` with team, `cfb_feed.board_teams()`): gold where his best
-    board rank or mock pick is within `DRAFT_GOLD_RANK`. A player is one
+    """(team, `player_key`) → a `DRAFT_TIERS` badge from the boards
+    (`cfb_feed.DRAFT_COLS` with team, `cfb_feed.board_teams()`), by his best
+    board rank or mock pick; players past the last band are left out. A player is one
     (team, full name) across the boards. Each goes in under his full name
     and, where `roster_keys` (`class_year_keys`, whose keys two teammates
     never share) has it, as stat-crew text writes it ("D.Lee"): without the
@@ -2927,13 +2946,15 @@ def draft_keys(board: pd.DataFrame, roster_keys=None) -> dict[tuple[str, str], s
     b["best"] = np.fmin(pd.to_numeric(b["rank"], errors="coerce"),
                         pd.to_numeric(b["mock_pick"], errors="coerce"))
     out = {}
+    tier = {badge: i for i, badge in enumerate(DRAFT_BADGES)}
     for (team, key), g in b.groupby(["team", "key"], sort=False):
-        badge = DRAFT_GOLD if g["best"].min() <= DRAFT_GOLD_RANK else DRAFT_SILVER
+        badge = draft_badge(g["best"].min())
+        if not badge:
+            continue
         out[(team, key)] = badge
         crew = g["crew"].iloc[0]
         if roster_keys and (team, crew) in roster_keys:
-            out[(team, crew)] = min(out.get((team, crew), badge), badge,
-                                    key=lambda x: x != DRAFT_GOLD)
+            out[(team, crew)] = min(out.get((team, crew), badge), badge, key=tier.get)
     return out
 
 

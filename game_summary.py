@@ -170,9 +170,10 @@ _LEAGUE = {
                     "college feed has no QB hits, and older games' feeds have no tackles, TFLs or hurries)"),
         "notes": (" College overtime is untimed: each team gets a possession from the "
                   "opponent's 25, and from the third overtime on, teams trade two-point tries."),
-        "draft": (" In the player leaders, 🥇 after a name marks a player in the top 50 of next "
-                  "year's NFL draft big boards or mock drafts (ESPN, Tankathon) and 🥈 one further "
-                  "down: you can say a player is a draft prospect (leave the badge out of his name), "
+        "draft": (" In the player leaders, a medal after a name marks a prospect for next year's "
+                  "NFL draft by the round he projects to on ESPN's or Tankathon's big board or "
+                  "Tankathon's mock draft: 🥇 1st round, 🥈 2nd, 🥉 3rd, 🏅 rounds 4–7. You can say "
+                  "a player is a draft prospect (leave the badge out of his name), "
                   "but judge him by the numbers given."),
     },
 }

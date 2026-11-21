@@ -562,10 +562,11 @@ with tab_team:
                                             key="_ss_roster_group",
                                             label_visibility="collapsed") or "All"
                 shown = roster_table(roster, team, None if pick == "All" or pick not in groups else pick)
-                stat_table(shown, hide_index=True, pin="Player")
+                stat_table(with_draft(shown, draft_board, team), hide_index=True, pin="Player")
                 st.caption(f"{len(shown)} players · {season} season roster from CFBD via cfbfastR-data, "
                            "by position group and jersey number. Yr is the class year (Fr/So/Jr/Sr), "
-                           "Ht in feet and inches, Wt in pounds.")
+                           "Ht in feet and inches, Wt in pounds."
+                           + (f" {draft_note(season)}." if draft_board else ""))
 
     # Snap counts and the latest injury report. Snap counts are whole games,
     # so they follow the selection's games (weeks, games, venue) but not its

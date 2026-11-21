@@ -510,10 +510,10 @@ if league is leagues.COLLEGE:
                                         key=f"_mu_roster_group_{team}",
                                         label_visibility="collapsed") or "All"
             shown = roster_table(roster, team, None if pick not in groups else pick)
-            stat_table(shown, hide_index=True, pin="Player")
+            stat_table(with_draft(shown, draft_board, team), hide_index=True, pin="Player")
             st.caption(f"{len(shown)} players · {season} roster from CFBD via cfbfastR-data, by "
                        "position group and jersey number. Yr is the class year, Ht feet and "
-                       "inches, Wt pounds.")
+                       "inches, Wt pounds." + (f" {draft_note(season)}." if draft_board else ""))
 
 # ---------- How to read this ----------
 st.divider()
