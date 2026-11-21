@@ -1327,13 +1327,11 @@ def _pinned_props() -> list[tuple[str, str]]:
 
 
 # A draft prospect's name ("D.Lee · R2", replay_core.with_draft) is shaded
-# on a diverging purple ↔ orange palette (PuOr), apart from the tables'
-# red/green percentiles: R1 deep purple, R2 light purple, R3 light orange,
-# R4+ deep orange. Opaque (blended over the page background), since the
-# Player column is pinned and other columns scroll under it.
-_PURPLE, _ORANGE = (94, 60, 153), (230, 97, 1)
-_DRAFT_SHADES = dict(zip(DRAFT_BADGES, ((_PURPLE, 0.62), (_PURPLE, 0.30),
-                                        (_ORANGE, 0.30), (_ORANGE, 0.58))))
+# amber, strongest for R1: one hue, apart from the tables' red/green
+# percentiles and the teal accent. Opaque (blended over the page background),
+# since the Player column is pinned and other columns scroll under it.
+_DRAFT_TINT = (230, 160, 20)
+_DRAFT_ALPHA = dict(zip(DRAFT_BADGES, (0.55, 0.38, 0.24, 0.12)))
 
 
 def _blend(rgb, alpha: float, bg: str) -> str:
@@ -1346,12 +1344,10 @@ def _blend(rgb, alpha: float, bg: str) -> str:
 def _draft_shade(v) -> str:
     if not isinstance(v, str) or " · " not in v:
         return ""
-    shade = _DRAFT_SHADES.get(v.rsplit(" · ", 1)[1])
-    if not shade:
-        return ""
+    alpha = _DRAFT_ALPHA.get(v.rsplit(" · ", 1)[1])
     # !important: the pinned column's own background (`#T_x .col0`) outranks
     # a cell's (`#T_x_row0_col0`).
-    return f"background-color: {_blend(*shade, _page_bg())} !important"
+    return f"background-color: {_blend(_DRAFT_TINT, alpha, _page_bg())} !important" if alpha else ""
 
 
 def stat_table(table, hide_index: bool = False, pin: str | None = None) -> None:
