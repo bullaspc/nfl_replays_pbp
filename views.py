@@ -794,31 +794,13 @@ _FIELD_GREEN_ALT = "#2a6f35"
 
 
 # ---------- Tendencies ----------
-# EPA/play red → grey → green. The middle is a mid grey, not the tables'
-# white: a white bar or cell vanished into the light theme's white page and
-# glared on the dark one, so a run gap or pass zone near 0 EPA was unreadable.
-_EPA_SCALE = [[0.0, "#be2337"], [0.5, "#a8adb3"], [1.0, "#19873c"]]
+# EPA/play on the percentile tables' red → white → green, white at 0.
+_EPA_SCALE = [[0.0, "#be2337"], [0.5, "#ffffff"], [1.0, "#19873c"]]
 _EPA_RANGE = 0.8  # ± EPA/play at the scale's ends
-
-
-def _epa_rgb(v: float) -> tuple[int, int, int]:
-    """`_EPA_SCALE`'s color for an EPA/play (clipped to ±`_EPA_RANGE`)."""
-    v = 0.0 if v is None or pd.isna(v) else float(v)
-    t = (min(max(v, -_EPA_RANGE), _EPA_RANGE) + _EPA_RANGE) / (2 * _EPA_RANGE)
-    (p0, c0), (p1, c1) = next((a, b) for a, b in zip(_EPA_SCALE, _EPA_SCALE[1:]) if t <= b[0])
-    f = (t - p0) / (p1 - p0)
-    rgb0 = [int(c0[i:i + 2], 16) for i in (1, 3, 5)]
-    rgb1 = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
-    return tuple(round(a + f * (b - a)) for a, b in zip(rgb0, rgb1))
-
-
-def _contrast_text(rgb) -> str:
-    """White or near-black, whichever has the higher WCAG contrast on `rgb`."""
-    def _lin(c: int) -> float:
-        c /= 255
-        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-    lum = 0.2126 * _lin(rgb[0]) + 0.7152 * _lin(rgb[1]) + 0.0722 * _lin(rgb[2])
-    return "#ffffff" if 1.05 / (lum + 0.05) >= (lum + 0.05) / 0.068 else "#212529"
+# The Tendencies charts' text: the app's font (Inter, .streamlit/config.toml)
+# and larger than Plotly's 12px default, which read small and thin on a phone.
+_TEND_FONT = dict(family="Inter, 'Source Sans Pro', sans-serif", size=14)
+_TEND_CELL_FONT = dict(family=_TEND_FONT["family"], size=15)
 
 
 def _vs_league(base: pd.DataFrame | None, key) -> tuple[float, float]:
@@ -852,11 +834,16 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
                           line=dict(width=2, color="rgba(128,128,128,0.9)"))
     top = max([*share, *[ls * 100 for ls, _ in league if pd.notna(ls)], 10])
     fig.update_layout(
-        height=240, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, bargap=0.15,
-        xaxis=dict(fixedrange=True, tickangle=0, tickvals=list(runs.index),
-                   ticktext=[f"{k}<br><b>{n}</b>" + (f" · {y:.1f}" if n else "")
+        height=260, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, bargap=0.15,
+        font=_TEND_FONT,
+        xaxis=dict(fixedrange=True, tickangle=0, tickvals=list(runs.index), tickfont=_TEND_FONT,
+                   automargin=True,
+                   # carries and yds/carry on lines of their own, so seven
+                   # gaps' labels don't run together at phone width
+                   ticktext=[f"{k}<br><b>{n}</b>" + (f"<br>{y:.1f}" if n else "<br> ")
                              for k, n, y in zip(runs.index, runs["Plays"], runs["Yds/Play"])]),
-        yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False),
+        yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False,
+                   automargin=True),
     )
     return fig
 
@@ -964,7 +951,8 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
                        r["EPA/play"], f" · aDOT {r['aDOT']:.1f}" if pd.notna(r["aDOT"]) else "", ls * 100, le])
         z.append(zr), text.append(tr), custom.append(cr)
     fig = go.Figure(go.Heatmap(
-        z=z, x=sides, y=depths, customdata=custom,
+        z=z, x=sides, y=depths, text=text, texttemplate="%{text}", textfont=_TEND_CELL_FONT,
+        customdata=custom,
         colorscale=_EPA_SCALE, zmin=-_EPA_RANGE, zmax=_EPA_RANGE, showscale=False,
         xgap=3, ygap=3, hoverongaps=False,
         hovertemplate=("<b>%{y} %{x}</b><br>%{customdata[0]} att · %{customdata[1]:.0f}% of "
@@ -973,18 +961,12 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
                        "SR %{customdata[4]:.0%} · EPA/play %{customdata[5]:+.2f} "
                        "(league %{customdata[8]:+.2f})<extra></extra>"),
     ))
-    # Each cell's text as its own annotation, in white or near-black for that
-    # cell's color (a heatmap's text has one color, the theme's, which was
-    # dark on strong red and light on the grey middle); empty cells in grey.
-    for d, zr, tr in zip(depths, z, text):
-        for sd, v, t in zip(sides, zr, tr):
-            fig.add_annotation(x=sd, y=d, text=t, showarrow=False,
-                               font=dict(color=_contrast_text(_epa_rgb(v)) if v is not None
-                                         else "rgba(128,128,128,0.9)"))
     fig.update_layout(
-        height=60 + 70 * len(depths), margin=dict(l=10, r=10, t=10, b=10),
-        xaxis=dict(fixedrange=True, side="bottom", showgrid=False),
-        yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False),
+        height=60 + 80 * len(depths), margin=dict(l=10, r=10, t=10, b=10), font=_TEND_FONT,
+        xaxis=dict(fixedrange=True, side="bottom", showgrid=False, tickfont=_TEND_FONT,
+                   automargin=True),
+        yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False, tickfont=_TEND_FONT,
+                   automargin=True),
     )
     return fig
 
