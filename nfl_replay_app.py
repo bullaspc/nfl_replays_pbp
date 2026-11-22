@@ -767,10 +767,7 @@ section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-manageme
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
 # ---------- Boxscore ----------
-# A game still being played says so in the heading (the revealed plays
-# haven't reached the final whistle, so nothing is given away).
-st.subheader("🔴 Live boxscore" if live_open and not game_over(revealed) else "Boxscore",
-             anchor="boxscore")
+st.subheader("Boxscore", anchor="boxscore")
 def _charting_block(ranks: bool = False):
     """The Charting table and its notes (here under the Boxscore in Full game,
     else in the Charting section), from the side the Offense / Defense control
