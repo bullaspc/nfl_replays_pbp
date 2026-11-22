@@ -250,8 +250,8 @@ with st.sidebar:
                      "game you've already watched. Uncheck to replay it spoiler-free.")
     full_game = st.session_state["_v_full"]
     if full_game:
-        st.caption("Every play is unlocked: the final score and all the stats, plus the "
-                   "game's charting (Blitz %, Under C %, …) under the Boxscore. Uncheck "
+        st.caption("Every play is unlocked: the final score and all the stats, and the "
+                   "Charting section ranks this game among each team's own games. Uncheck "
                    "to replay the game spoiler-free.")
     follow_live = (not full_game and live_open
                    and st.session_state.get("_v_follow", _url.get("follow") == "1"))
@@ -762,15 +762,14 @@ st.divider()
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
              ("Kicking", "kicking"), ("Line", "line-play"), ("Tendencies", "tendencies")]
-            + ([] if full_game else [("Charting", "charting")])
+            + [("Charting", "charting")]
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
 # ---------- Boxscore ----------
 st.subheader("Boxscore", anchor="boxscore")
 def _charting_block(ranks: bool = False):
-    """The Charting table and its notes (here under the Boxscore in Full game,
-    else in the Charting section), from the side the Offense / Defense control
+    """The Charting section's table and notes (after Tendencies), from the side the Offense / Defense control
     picks: an offense's calls, the blitzes and boxes it faced and its results,
     or a defense's calls, what it faced and what it allowed."""
     _chart = chart_table(revealed, home, away)
@@ -823,11 +822,6 @@ def _charting_block(ranks: bool = False):
 _box = boxscore(revealed, home, away)
 stat_table(_box.assign(Team=lambda b: b["Team"].map(lambda t: _names.get(t, t))),
            hide_index=True)
-# Full game only: every play is unlocked then, so the game's Charting sits with
-# the score and the Charting section below is left out.
-if full_game:
-    st.markdown("**Charting**")
-    _charting_block(ranks=True)
 
 # ---------- Spoiler-free preview ----------
 # The Matchup page's preview of this game, written from the season before it:
@@ -1543,9 +1537,9 @@ elif not revealed.empty:
 # (FTN's rows by play id, the text's formation), so it grows snap by snap and
 # nothing past the cursor is read. Whether FTN has charted the game at all is
 # a fact about the data (loaded.charted), not about what happened in it.
-if not full_game:
-    st.subheader("Charting", anchor="charting")
-    _charting_block()
+# In Full game it adds each team's rank among its own games of the season.
+st.subheader("Charting", anchor="charting")
+_charting_block(ranks=full_game)
 
 # ---------- Player leaders ----------
 if not hide_leaders:
