@@ -797,6 +797,10 @@ _FIELD_GREEN_ALT = "#2a6f35"
 # EPA/play on the percentile tables' red → white → green, white at 0.
 _EPA_SCALE = [[0.0, "#be2337"], [0.5, "#ffffff"], [1.0, "#19873c"]]
 _EPA_RANGE = 0.8  # ± EPA/play at the scale's ends
+# The Tendencies charts' text: the app's font (Inter, .streamlit/config.toml)
+# and larger than Plotly's 12px default, which read small and thin on a phone.
+_TEND_FONT = dict(family="Inter, 'Source Sans Pro', sans-serif", size=14)
+_TEND_CELL_FONT = dict(family=_TEND_FONT["family"], size=15)
 
 
 def _vs_league(base: pd.DataFrame | None, key) -> tuple[float, float]:
@@ -830,11 +834,16 @@ def run_tendency_figure(runs: pd.DataFrame, base: pd.DataFrame | None = None) ->
                           line=dict(width=2, color="rgba(128,128,128,0.9)"))
     top = max([*share, *[ls * 100 for ls, _ in league if pd.notna(ls)], 10])
     fig.update_layout(
-        height=240, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, bargap=0.15,
-        xaxis=dict(fixedrange=True, tickangle=0, tickvals=list(runs.index),
-                   ticktext=[f"{k}<br><b>{n}</b>" + (f" · {y:.1f}" if n else "")
+        height=260, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, bargap=0.15,
+        font=_TEND_FONT,
+        xaxis=dict(fixedrange=True, tickangle=0, tickvals=list(runs.index), tickfont=_TEND_FONT,
+                   automargin=True,
+                   # carries and yds/carry on lines of their own, so seven
+                   # gaps' labels don't run together at phone width
+                   ticktext=[f"{k}<br><b>{n}</b>" + (f"<br>{y:.1f}" if n else "<br> ")
                              for k, n, y in zip(runs.index, runs["Plays"], runs["Yds/Play"])]),
-        yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False),
+        yaxis=dict(range=[0, top * 1.15], ticksuffix="%", fixedrange=True, showgrid=False,
+                   automargin=True),
     )
     return fig
 
@@ -942,7 +951,8 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
                        r["EPA/play"], f" · aDOT {r['aDOT']:.1f}" if pd.notna(r["aDOT"]) else "", ls * 100, le])
         z.append(zr), text.append(tr), custom.append(cr)
     fig = go.Figure(go.Heatmap(
-        z=z, x=sides, y=depths, text=text, texttemplate="%{text}", customdata=custom,
+        z=z, x=sides, y=depths, text=text, texttemplate="%{text}", textfont=_TEND_CELL_FONT,
+        customdata=custom,
         colorscale=_EPA_SCALE, zmin=-_EPA_RANGE, zmax=_EPA_RANGE, showscale=False,
         xgap=3, ygap=3, hoverongaps=False,
         hovertemplate=("<b>%{y} %{x}</b><br>%{customdata[0]} att · %{customdata[1]:.0f}% of "
@@ -952,9 +962,11 @@ def pass_tendency_figure(passes: pd.DataFrame, base: pd.DataFrame | None = None)
                        "(league %{customdata[8]:+.2f})<extra></extra>"),
     ))
     fig.update_layout(
-        height=60 + 70 * len(depths), margin=dict(l=10, r=10, t=10, b=10),
-        xaxis=dict(fixedrange=True, side="bottom", showgrid=False),
-        yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False),
+        height=60 + 80 * len(depths), margin=dict(l=10, r=10, t=10, b=10), font=_TEND_FONT,
+        xaxis=dict(fixedrange=True, side="bottom", showgrid=False, tickfont=_TEND_FONT,
+                   automargin=True),
+        yaxis=dict(fixedrange=True, autorange="reversed", showgrid=False, tickfont=_TEND_FONT,
+                   automargin=True),
     )
     return fig
 

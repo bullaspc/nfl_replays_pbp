@@ -3526,29 +3526,67 @@ def explosive_plays(revealed: pd.DataFrame, min_pass_yds: int = 15, min_rush_yds
     rush_mask = (revealed["rush_attempt"].fillna(0) == 1) & (revealed["rushing_yards"].fillna(0) >= min_rush_yds)
     return revealed[pass_mask | rush_mask].sort_values("yards_gained", ascending=False)
 
-def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> pd.DataFrame:
-    """Top n plays by absolute win probability added, computed from home_wp shifts."""
+TOP_PLAY_MODES = ("Win probability", "EPA")  # the replay's Top plays toggle
+
+
+def _top_play_frame(revealed: pd.DataFrame) -> pd.DataFrame:
+    """The revealed rows with `_wpa`, the play's change in home win
+    probability (home_wp of the row after it, less its own; NaN for the last
+    revealed row, whose next row isn't revealed), and `_epa`."""
+    df = revealed.copy().reset_index(drop=True)
+    df["_wpa"] = df["home_wp"].shift(-1) - df["home_wp"]
+    df["_epa"] = pd.to_numeric(df["epa"], errors="coerce")
+    return df
+
+
+def top_plays(revealed: pd.DataFrame, home: str, away: str, by: str = "Win probability",
+              n: int = 25) -> pd.DataFrame:
+    """Top n plays by the size of their win probability added (`by` "Win
+    probability", `top_plays_wpa()`) or of their EPA (`by` "EPA"): one by the
+    swing in the game, the other by the play's own value, whatever the score.
+    For EPA, For is the team the play helped: the offense for positive EPA,
+    the defense for negative. Kickoffs and other rows without a posteam have
+    no EPA to rank by."""
+    if by != "EPA":
+        return top_plays_wpa(revealed, home, away, n)
     if revealed.empty:
         return pd.DataFrame()
-    df = revealed.copy().reset_index(drop=True)
-    wp = df["home_wp"].copy()
-    wpa = wp.shift(-1) - wp
-    df["_wpa"] = wpa
-    df["_abs_wpa"] = wpa.abs()
-    plays = df[df["_abs_wpa"].notna() & (df["_abs_wpa"] > 0)].nlargest(n, "_abs_wpa").copy()
+    df = _top_play_frame(revealed)
+    df["_abs_epa"] = df["_epa"].abs()
+    plays = df[df["_abs_epa"].notna() & (df["_abs_epa"] > 0) & df["posteam"].notna()
+               ].nlargest(n, "_abs_epa").copy()
     if plays.empty:
         return pd.DataFrame()
+    plays["For"] = [o if e > 0 else d for o, d, e in zip(plays["posteam"], plays["defteam"], plays["_epa"])]
+    return _top_play_table(plays, home, away)
+
+
+def _top_play_table(plays: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
+    """The Top plays table's columns for the picked rows, in their order."""
     plays["Q"] = plays["qtr"].apply(lambda x: str(int(x)) if pd.notna(x) else "")
     plays["Score"] = plays.apply(
         lambda r: f"{away} {int(r['total_away_score'] or 0)}–{int(r['total_home_score'] or 0)} {home}", axis=1
     )
     plays["D&D"] = plays.apply(down_distance, axis=1)
     plays["WPA"] = plays["_wpa"].round(3)
-    plays["EPA"] = pd.to_numeric(plays["epa"], errors="coerce").round(2)
-    plays["For"] = plays["_wpa"].apply(lambda x: home if x > 0 else away)
-    return plays[["Q", "time", "posteam", "D&D", "Score", "For", "desc", "EPA", "WPA", "_abs_wpa"]].rename(
+    plays["EPA"] = plays["_epa"].round(2)
+    return plays[["Q", "time", "posteam", "D&D", "Score", "For", "desc", "EPA", "WPA"]].rename(
         columns={"time": "Clock", "posteam": "Off", "desc": "Description"}
     ).reset_index(drop=True)
+
+
+def top_plays_wpa(revealed: pd.DataFrame, home: str, away: str, n: int = 25) -> pd.DataFrame:
+    """Top n plays by absolute win probability added, computed from home_wp shifts."""
+    if revealed.empty:
+        return pd.DataFrame()
+    df = _top_play_frame(revealed)
+    wpa = df["_wpa"]
+    df["_abs_wpa"] = wpa.abs()
+    plays = df[df["_abs_wpa"].notna() & (df["_abs_wpa"] > 0)].nlargest(n, "_abs_wpa").copy()
+    if plays.empty:
+        return pd.DataFrame()
+    plays["For"] = plays["_wpa"].apply(lambda x: home if x > 0 else away)
+    return _top_play_table(plays, home, away).assign(_abs_wpa=plays["_abs_wpa"].to_numpy())
 
 def wp_crossings(revealed: pd.DataFrame, elapsed_min: pd.Series) -> list[float]:
     """Elapsed minutes at which the revealed home win probability crosses 50%.

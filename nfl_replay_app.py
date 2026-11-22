@@ -37,7 +37,7 @@ from replay_core import (
     EXPLOSIVE_RUN_YDS, GAME_SECONDS, LINE_LOWER_IS_BETTER, boxscore, cursor_anchor, cursor_from_anchor, cursor_from_elapsed,
     down_distance, drive_chart, drive_field_spots, explosive_plays, field_pos_label, filter_plays,
     HEAVY_BOX, PLAY_KINDS, CHART_SIDES, chart_rates, chart_view, game_ranks, PLAYER_MIN_PLAYS, TENDENCY_DOWNS, chart_table, has_air_yards, line_play_stats, pass_tendencies, period_label, play_timeline,
-    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays_wpa, special_teams_box, kick_log, top_kickers, top_punters, with_class_year, with_draft, wp_crossings,
+    run_tendencies, scoring_timeline, game_over, play_splits, series_success, situational_success_rate, stat_percentiles, team_stats, top_defenders, top_players, top_plays, top_plays_wpa, TOP_PLAY_MODES, special_teams_box, kick_log, top_kickers, top_punters, with_class_year, with_draft, wp_crossings,
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
@@ -761,7 +761,10 @@ section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-manageme
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
 # ---------- Boxscore ----------
-st.subheader("Boxscore", anchor="boxscore")
+# A game still being played says so in the heading (the revealed plays
+# haven't reached the final whistle, so nothing is given away).
+st.subheader("🔴 Live boxscore" if live_open and not game_over(revealed) else "Boxscore",
+             anchor="boxscore")
 def _charting_block(ranks: bool = False):
     """The Charting table and its notes (here under the Boxscore in Full game,
     else in the Charting section), from the side the Offense / Defense control
@@ -1616,38 +1619,53 @@ if not hide_wp:
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend_title_text="")
         st.plotly_chart(_touch_safe(fig), width='stretch', config=_STATIC_CHART)
 
-# ---------- Top plays by win probability added ----------
-st.subheader("Top plays by win probability added")
+# ---------- Top plays ----------
+# Ranked by win probability added (the swing in the game) or by EPA (the
+# play's own value, whatever the score), a toggle away; keyed so the pick
+# holds through reruns.
+st.subheader("Top plays", anchor="top-plays")
+_top_by = st.segmented_control("Rank by", list(TOP_PLAY_MODES), default=TOP_PLAY_MODES[0],
+                               key="_top_by", label_visibility="collapsed") or TOP_PLAY_MODES[0]
+_by_epa = _top_by == "EPA"
 if not revealed.empty:
-    _top_wpa = top_plays_wpa(revealed, home, away)
-    if not _top_wpa.empty:
+    _top = top_plays(revealed, home, away, by=_top_by)
+    if not _top.empty:
         display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "EPA", "WPA"]
         if not hide_descriptions:
             display_cols = ["Q", "Clock", "Off", "D&D", "Score", "For", "Description", "EPA", "WPA"]
-        _top_display = _top_wpa[display_cols].copy()
+        _top_display = _top[display_cols].copy()
         _top_display.index = range(1, len(_top_display) + 1)
 
-        def _wpa_color(val):
+        def _swing_color(val, strong: float):
+            """Green above 0, red below; stronger past `strong`."""
             if pd.isna(val):
                 return ""
-            if val > 0.15:
+            if val > strong:
                 return "background-color: #d4edda; color: #155724"
-            if val < -0.15:
+            if val < -strong:
                 return "background-color: #f8d7da; color: #721c24"
             if val > 0:
                 return "background-color: #e8f5e9; color: #155724"
             return "background-color: #fdecea; color: #721c24"
 
-        styled_wpa = smap(_top_display.style, _wpa_color, subset=["WPA"])
-        styled_wpa = styled_wpa.format({"WPA": "{:+.3f}", "EPA": "{:+.2f}"}, na_rep="—")
-        styled_wpa = styled_wpa.set_properties(**{"text-align": "center"}).set_table_styles(
+        # The ranked column is the colored one: EPA for the offense (green =
+        # good for it), WPA for the home team (green = home benefits).
+        styled_top = (smap(_top_display.style, _swing_color, strong=2.0, subset=["EPA"]) if _by_epa
+                      else smap(_top_display.style, _swing_color, strong=0.15, subset=["WPA"]))
+        styled_top = styled_top.format({"WPA": "{:+.3f}", "EPA": "{:+.2f}"}, na_rep="—")
+        styled_top = styled_top.set_properties(**{"text-align": "center"}).set_table_styles(
             [{"selector": "th", "props": [("text-align", "center"), ("font-weight", "bold")]}]
         )
-        stat_table(styled_wpa)
-        st.caption("WPA = change in home-team win probability · green = home benefits · red = away benefits "
-                   "· EPA = the offense's expected points added on the play")
+        stat_table(styled_top)
+        st.caption("Ranked by the size of the play's EPA (expected points added for the offense) · "
+                   "green = good for the offense · red = good for the defense · For = the team it "
+                   "helped · WPA = change in home-team win probability"
+                   if _by_epa else
+                   "Ranked by the size of the play's WPA (change in home-team win probability) · "
+                   "green = home benefits · red = away benefits · EPA = the offense's expected "
+                   "points added on the play")
     else:
-        st.caption("No win probability data available.")
+        st.caption("No EPA data available." if _by_epa else "No win probability data available.")
 else:
     st.caption("No plays revealed yet.")
 
