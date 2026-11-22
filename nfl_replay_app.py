@@ -142,9 +142,12 @@ with st.sidebar:
     league = leagues.LEAGUES[league_name]
 
 mobile_css()
+# Placeholders: drawn as the replay's here, rewritten once the game turns out
+# to be live (`live_open`, below), since the game isn't known yet.
 with st.container(key="page_head"):
-    st.title(league.title)
-    st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
+    _head_title, _head_tagline = st.empty(), st.empty()
+    _head_title.title(league.title)
+    _head_tagline.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
     season = int(st.number_input("Season", min_value=league.first_season,
@@ -230,6 +233,9 @@ with st.sidebar:
     # phone, but the cursor needs them before that: they're read here from
     # their keys, with the URL's values until the popover has drawn them.
     live_open = source == "live" and live_state != "post"
+    if live_open:  # a game still being played: say so instead of "Tape-Delay Replay"
+        _head_title.title("🔴 " + league.title.removeprefix("🏈 ").replace("Tape-Delay Replay", "Live"))
+        _head_tagline.caption("Spoiler-free: plays unlock as your broadcast airs them.")
     # Full game: the whole game at once, for analysis of a game already seen.
     # Its own checkbox at the top so it's easy to find; turning it on asks
     # first (_confirm_full_game()), since it shows the final score. A session
@@ -755,8 +761,8 @@ st.divider()
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Kicking", "kicking"), ("Line", "line-play")]
-            + ([] if full_game else [("Charting", "charting")]) + [("Tendencies", "tendencies")]
+             ("Kicking", "kicking"), ("Line", "line-play"), ("Tendencies", "tendencies")]
+            + ([] if full_game else [("Charting", "charting")])
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
@@ -1500,15 +1506,6 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
            f"OL penalties: holding, false starts and ineligible man downfield on the "
            f"offense, per snap (pass, run or no-play).")
 
-# ---------- Charting ----------
-# Over the revealed plays only, like every section: the charting is per play
-# (FTN's rows by play id, the text's formation), so it grows snap by snap and
-# nothing past the cursor is read. Whether FTN has charted the game at all is
-# a fact about the data (loaded.charted), not about what happened in it.
-if not full_game:
-    st.subheader("Charting", anchor="charting")
-    _charting_block()
-
 # ---------- Tendencies ----------
 st.subheader("Tendencies", anchor="tendencies")
 _tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
@@ -1543,6 +1540,15 @@ if _tend_any:
                f"{league.baseline_label}.")
 elif not revealed.empty:
     st.caption("This game's play text gives no run or pass directions.")
+
+# ---------- Charting ----------
+# Over the revealed plays only, like every section: the charting is per play
+# (FTN's rows by play id, the text's formation), so it grows snap by snap and
+# nothing past the cursor is read. Whether FTN has charted the game at all is
+# a fact about the data (loaded.charted), not about what happened in it.
+if not full_game:
+    st.subheader("Charting", anchor="charting")
+    _charting_block()
 
 # ---------- Player leaders ----------
 if not hide_leaders:
