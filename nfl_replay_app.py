@@ -1562,9 +1562,7 @@ if not hide_leaders:
                 _lead_df = with_draft(with_class_year(top_players(revealed, team, _kind, _n,
                                                                   drop=missing_stats),
                                                       class_years, team), draft_board, team)
-                # A bold label, not a caption: the caption's grey was hard to
-                # read against the page background (dark theme above all).
-                st.markdown(f"**{_kind.capitalize()}**")
+                st.caption(_kind.capitalize())
                 if not _lead_df.empty:
                     stat_table(style_player_table(_lead_df, _kind, _player_baselines),
                                hide_index=True)
@@ -1572,7 +1570,7 @@ if not hide_leaders:
                     st.caption("No data yet")
             _def_df = with_draft(with_class_year(top_defenders(revealed, team, 10, drop=missing_stats),
                                                  class_years, team), draft_board, team)
-            st.markdown("**Defense**")
+            st.caption("Defense")
             if not _def_df.empty:
                 stat_table(style_defense_table(_def_df), hide_index=True)
             else:
