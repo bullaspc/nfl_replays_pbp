@@ -761,7 +761,10 @@ section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-manageme
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
 # ---------- Boxscore ----------
-st.subheader("Boxscore", anchor="boxscore")
+# A game still being played says so in the heading (the revealed plays
+# haven't reached the final whistle, so nothing is given away).
+st.subheader("🔴 Live boxscore" if live_open and not game_over(revealed) else "Boxscore",
+             anchor="boxscore")
 def _charting_block(ranks: bool = False):
     """The Charting table and its notes (here under the Boxscore in Full game,
     else in the Charting section), from the side the Offense / Defense control
@@ -1559,7 +1562,9 @@ if not hide_leaders:
                 _lead_df = with_draft(with_class_year(top_players(revealed, team, _kind, _n,
                                                                   drop=missing_stats),
                                                       class_years, team), draft_board, team)
-                st.caption(_kind.capitalize())
+                # A bold label, not a caption: the caption's grey was hard to
+                # read against the page background (dark theme above all).
+                st.markdown(f"**{_kind.capitalize()}**")
                 if not _lead_df.empty:
                     stat_table(style_player_table(_lead_df, _kind, _player_baselines),
                                hide_index=True)
@@ -1567,7 +1572,7 @@ if not hide_leaders:
                     st.caption("No data yet")
             _def_df = with_draft(with_class_year(top_defenders(revealed, team, 10, drop=missing_stats),
                                                  class_years, team), draft_board, team)
-            st.caption("Defense")
+            st.markdown("**Defense**")
             if not _def_df.empty:
                 stat_table(style_defense_table(_def_df), hide_index=True)
             else:
