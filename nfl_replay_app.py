@@ -761,8 +761,8 @@ st.divider()
 # (mobile_css()), so a section is a tap away from anywhere on the page.
 section_nav([("Score", "boxscore"), ("Plays", "plays"), ("Clock", "game-management"),
              ("Drives", "drive-chart"), ("Stats", "team-stats"), ("Situations", "situational"),
-             ("Kicking", "kicking"), ("Line", "line-play")]
-            + ([] if full_game else [("Charting", "charting")]) + [("Tendencies", "tendencies")]
+             ("Kicking", "kicking"), ("Line", "line-play"), ("Tendencies", "tendencies")]
+            + ([] if full_game else [("Charting", "charting")])
             + ([] if hide_leaders else [("Players", "player-leaders")])
             + ([] if hide_wp else [("WP", "momentum")]) + [("Booth", "booth")])
 
@@ -1506,15 +1506,6 @@ st.caption(f"Dropbacks include sacks; QB hits include sacks. Designed runs leave
            f"OL penalties: holding, false starts and ineligible man downfield on the "
            f"offense, per snap (pass, run or no-play).")
 
-# ---------- Charting ----------
-# Over the revealed plays only, like every section: the charting is per play
-# (FTN's rows by play id, the text's formation), so it grows snap by snap and
-# nothing past the cursor is read. Whether FTN has charted the game at all is
-# a fact about the data (loaded.charted), not about what happened in it.
-if not full_game:
-    st.subheader("Charting", anchor="charting")
-    _charting_block()
-
 # ---------- Tendencies ----------
 st.subheader("Tendencies", anchor="tendencies")
 _tend_downs = st.segmented_control("Downs", list(TENDENCY_DOWNS), default="All downs",
@@ -1549,6 +1540,15 @@ if _tend_any:
                f"{league.baseline_label}.")
 elif not revealed.empty:
     st.caption("This game's play text gives no run or pass directions.")
+
+# ---------- Charting ----------
+# Over the revealed plays only, like every section: the charting is per play
+# (FTN's rows by play id, the text's formation), so it grows snap by snap and
+# nothing past the cursor is read. Whether FTN has charted the game at all is
+# a fact about the data (loaded.charted), not about what happened in it.
+if not full_game:
+    st.subheader("Charting", anchor="charting")
+    _charting_block()
 
 # ---------- Player leaders ----------
 if not hide_leaders:
