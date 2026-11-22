@@ -142,9 +142,12 @@ with st.sidebar:
     league = leagues.LEAGUES[league_name]
 
 mobile_css()
+# Placeholders: drawn as the replay's here, rewritten once the game turns out
+# to be live (`live_open`, below), since the game isn't known yet.
 with st.container(key="page_head"):
-    st.title(league.title)
-    st.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
+    _head_title, _head_tagline = st.empty(), st.empty()
+    _head_title.title(league.title)
+    _head_tagline.caption("Spoiler-free boxscore that unlocks as your broadcast progresses.")
 
 with st.sidebar:
     season = int(st.number_input("Season", min_value=league.first_season,
@@ -230,6 +233,9 @@ with st.sidebar:
     # phone, but the cursor needs them before that: they're read here from
     # their keys, with the URL's values until the popover has drawn them.
     live_open = source == "live" and live_state != "post"
+    if live_open:  # a game still being played: say so instead of "Tape-Delay Replay"
+        _head_title.title("🔴 " + league.title.removeprefix("🏈 ").replace("Tape-Delay Replay", "Live"))
+        _head_tagline.caption("Spoiler-free: plays unlock as your broadcast airs them.")
     # Full game: the whole game at once, for analysis of a game already seen.
     # Its own checkbox at the top so it's easy to find; turning it on asks
     # first (_confirm_full_game()), since it shows the final score. A session
