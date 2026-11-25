@@ -30,6 +30,8 @@ from replay_core import (
     season_qualified, season_rank_label, season_ranks, situational_distributions_from,
     situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft,
     with_nextgen, compare_team, player_season_compare, team_season_compare, teams_season_compare,
+    FOURTH_FG_MAX, FOURTH_PLAY_SECS, FOURTH_PUNT_MIN, FOURTH_TOSS_UP, _ordinal, fourth_down_summary,
+    fourth_down_table,
 )
 from views import (draft_note, 
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
@@ -38,7 +40,7 @@ from views import (draft_note,
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
     style_team_chart, style_team_season,
     style_team_schedule, style_weekly_snaps, style_player_compare, style_team_compare,
-    style_teams_compare,
+    style_teams_compare, style_fourth_downs, style_fourth_summary,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -49,9 +51,10 @@ QUARTERS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", OT_QTR: "OT"}
 # The team table's column groups (replay_core.SEASON_COLS is "All").
 TEAM_VIEWS = {
     "Efficiency": ["Games", "EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR",
-                   "ED SR", "CMP%", "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss."],
+                   "ED SR", "CMP%", "CPOE", "aDoT", "RYOE/att", "Yds/Play", "Explosive %", "1st Down %", "3rd Down %",
+                   "RZ TD%", "Pts/Drive", "RZ Trip TD%", "Turnovers", "Lost Poss."],
     "Volume": ["Games", "Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
-               "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
+               "Total Yds", "Drives", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP"],
     "Line play": ["Games", *LINE_ROWS],
     "Charting": ["Games", *CHART_ROWS],  # FTN's, NFL 2022 on
     "All": None,
@@ -367,7 +370,9 @@ with tab_team:
                 + [("Schedule", "ss-schedule"),
                  ("Situations", "ss-situations"), ("Tendencies", "ss-tendencies")]
                 + ([("Charting", "ss-charting")] if team_charting else [])
-                + [("Leaders", "ss-leaders"), ("Snaps", "ss-snaps")]
+                + [("Leaders", "ss-leaders")]
+                + ([("4th downs", "ss-fourth")] if CAN_COMPARE else [])
+                + [("Snaps", "ss-snaps")]
                 + ([("Injuries", "ss-injuries")] if league.availability(season).source else []))
     st.subheader(f"{team_name} · {ranked_teams.get(team, '')}".rstrip(" ·"), anchor="ss-season")
     col_o, col_d = st.columns(2)
@@ -551,6 +556,50 @@ with tab_team:
                                hide_index=True)
     if draft_board:
         st.caption(f"{draft_note(season)}.")
+
+    # 4th downs: each call against nflfastR's win probability after going,
+    # kicking and punting (replay_core.fourth_down_wp), NFL only.
+    if CAN_COMPARE:
+        st.markdown("<span id='ss-fourth'></span>**4th-down decisions**", unsafe_allow_html=True)
+        calls4 = leagues.season_fourth_downs(league, season, stamp, weeks, part)
+        if VENUES[venue] and not calls4.empty:
+            home_games = calls4["home"] == 1
+            calls4 = calls4[(home_games if VENUES[venue] == "home_team" else ~home_games)
+                            | (calls4["posteam"] != team)]
+        summary4 = fourth_down_summary(calls4)
+        if team not in summary4.index:
+            st.caption("No 4th downs in this selection, or the win probability model isn't available.")
+        else:
+            r4 = summary4.loc[team]
+            place = list(summary4.index).index(team) + 1
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Went for it", f"{r4['Go %']:.0%}", help=f"of {int(r4['4th downs'])} 4th downs")
+            c2.metric("Model says go", f"{r4['Model go %']:.0%}")
+            c3.metric("Agree with the model", f"{r4['Agree %']:.0%}")
+            c4.metric("WP lost / call", f"{r4['WP lost/call']:.2f}",
+                      help=f"{r4['WP lost']:.1f} win probability points over the selection")
+            st.caption(f"{_ordinal(place)} of {len(summary4)} in WP lost per call (1st = fewest). "
+                       f"{int(r4['Should go'])} times {team_name} kicked or punted where going for it "
+                       f"was worth {FOURTH_TOSS_UP * 100:.0f}+ WP point more.")
+            mine = calls4[calls4["posteam"] == team].sort_values("lost", ascending=False)
+            with st.expander(f"Calls against the model: {team_name} "
+                             f"({int((mine['Verdict'].str.startswith('Should')).sum())})",
+                             expanded=False, key="_ss_exp_fourth_team"):
+                off = mine[mine["Verdict"].str.startswith("Should")]
+                shown = fourth_down_table(off)
+                if shown.empty:
+                    st.caption("None: every call was the model's best or within a point of it.")
+                else:
+                    weeks_of = calls4.loc[off.index, "game_id"].str.split("_").str[1].astype(int)
+                    shown.insert(0, "Wk", weeks_of.to_numpy())
+                    stat_table(style_fourth_downs(shown), hide_index=True)
+            with st.expander("Every team", expanded=False, key="_ss_exp_fourth_league"):
+                stat_table(style_fourth_summary(summary4.rename(index=_nm)))
+            st.caption("Each 4th down in regulation, graded by the offense's win probability after going "
+                       "for it, kicking or punting (nflfastR's WP model; conversion rates by distance from "
+                       "NFL 2019–2025): Model go % is how often going was the best option, WP lost the "
+                       "win probability points the calls gave up, summed. Whole games: the selection's "
+                       "weeks and venue apply, the situation filters don't. Details in Methodology.")
 
     # The college roster (CFBD's, through cfbfastR-data), collapsed.
     if league is leagues.COLLEGE:
@@ -887,7 +936,7 @@ games are used; the sidebar picks the regular-season weeks and/or the postseason
 of successes. EPA/play and SR also count a pass or run a penalty wiped out ("No Play"), whose EPA is
 the penalty's, for the offense and the players named on it; play counts, yards and other rates
 count real plays only. 1st Down % is first downs per play, 3rd Down % third-down conversions per attempt,
-ED SR is the success rate on 1st and 2nd down, passes and runs together. RZ TD% touchdowns per play snapped at or inside the opponent's 20. Turnovers are interceptions plus lost
+ED SR is the success rate on 1st and 2nd down, passes and runs together. RZ TD% touchdowns per play snapped at or inside the opponent's 20, RZ Trip TD% the share of drives reaching the 20 that end in a touchdown. Yds/Play is yards per pass or run (sacks included), Explosive % the share of passes of 20+ yards and runs of 10+. Pts/Drive is the offense's own points (touchdowns, field goals, tries) per drive with a down snapped. Turnovers are interceptions plus lost
 fumbles; Lost Poss. adds turnovers on downs and missed or blocked field goals. Time of possession is read from the game clock within each drive. Line play counts downs
 only: dropbacks (no spikes), Sack % and QB Hit % (hits include sacks) per dropback, designed runs
 (no kneels or scrambles), Stuff % (≤ {STUFF_MAX_YDS} yds) and Explosive Run % (≥ {EXPLOSIVE_RUN_YDS} yds)
@@ -985,6 +1034,8 @@ weighted by how many plays he had against each. The adjustment adds and subtract
 player with only a few plays in a cell can land past what the stat can be (a success rate below
 0% or above 100%, fewer than 0 turnovers a game, more rushes and completions than plays, fewer QB
 hits than sacks): such a value is shown at the nearest one it can take.
+
+**4th-down decisions** (Team tab, NFL). Every 4th down in regulation (a pass, run, punt or field goal try; fakes count as going for it) is graded by the offense's win probability after each option, from nflfastR's WP model: going for it is the chance of converting at that distance (3rd and 4th downs, NFL 2019–2025, `models/fourth_down.csv`) times the WP of a first down past the marker by the average extra yards (or a touchdown), plus the WP of the other team's ball at the spot; the field goal is nflfastR's make rate, a miss giving the ball at the spot of the kick (or the 20); the punt is the average spot the other team starts from after a punt from there. No field goal option past the opponent's {FOURTH_FG_MAX}, no punt inside its {FOURTH_PUNT_MIN}; each option takes {FOURTH_PLAY_SECS} seconds off the clock. WP lost is the best option less the one chosen; a call within {FOURTH_TOSS_UP * 100:.0f} WP point of the best is close. In 2025 the chosen option's WP was within 0.3 points of nflverse's after the play, on average, for every choice (`tools/validate_fourth_downs.py`).
 
 **Snap counts and injury reports** (Team tab, NFL). Snap counts are PFR's, per player and game:
 a player's share is his snaps over the team's snaps in the selected games, counted per phase

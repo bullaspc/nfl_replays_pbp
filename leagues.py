@@ -156,6 +156,12 @@ class League:
         if the league has no model to run on them."""
         return None
 
+    def fourth_down_wp(self, sits: pd.DataFrame) -> pd.DataFrame | None:
+        """`core.fourth_down_wp()` on `core.fourth_situations()` rows: the
+        offense's win probability after going, kicking and punting; None if
+        the league has no model."""
+        return None
+
     def season_pbp(self, season: int, stamp: str) -> pd.DataFrame:
         """Every finished game of `season` published so far (PBP_COLS), plus
         `postseason` (bool), for the Season stats page. Raises
@@ -281,6 +287,20 @@ def xrush_table(league_key: str) -> pd.DataFrame | None:
         return None
     t = t[t["league"] == league_key].drop(columns="league")
     return None if t.empty else t
+
+
+FOURTH_DOWN_TABLE = Path(__file__).parent / "models" / "fourth_down.csv"
+
+
+@st.cache_resource
+def fourth_down_table() -> pd.DataFrame | None:
+    """The NFL's 3rd/4th-down conversion rates and punt spots
+    (tools/build_fourth_down_table.py), or None if it isn't there: the
+    4th-down decisions are then left out."""
+    try:
+        return pd.read_csv(FOURTH_DOWN_TABLE)
+    except OSError:
+        return None
 
 
 PASS_RATE_TABLE = Path(__file__).parent / "models" / "pass_rate.csv"
@@ -956,6 +976,19 @@ class NFLLeague(League):
         if models is None or states.empty:
             return None
         return nflfastr_models.wp_for_states(states, models)
+
+    def fourth_down_wp(self, sits: pd.DataFrame) -> pd.DataFrame | None:
+        models, fg_table, _ = load_nflfastr_models()
+        table = fourth_down_table()
+        if models is None or table is None:
+            return None
+        return core.fourth_down_wp(
+            sits, table,
+            wp=lambda states: nflfastr_models.wp_for_states(states, models),
+            fg_prob=lambda s: nflfastr_models.fg_make_prob(
+                s["season"], s["roof"] if "roof" in s.columns else None,
+                s["yardline_100"], fg_table),
+            kickoff_yl=lambda s: nflfastr_models.kickoff_start(s["season"]))
 
 
 # ---------- College football ----------
@@ -1888,6 +1921,24 @@ def season_tendencies(league: League, season: int, stamp: str, weeks: tuple[int,
     """League-wide tendencies over the selection (`core.tendency_baselines`),
     what a team's split is compared against on the Season stats page."""
     return _season_tendencies(league.name, season, stamp, tuple(weeks), part, play_filter)
+
+
+@st.cache_data(max_entries=4, show_spinner=False)
+def _season_fourth_downs(league_name: str, season: int, stamp: str, weeks: tuple[int, int],
+                         part: str) -> pd.DataFrame:
+    league = LEAGUES[league_name]
+    pbp = season_plays(league, season, stamp, weeks, part)
+    sits = core.fourth_situations(pbp)
+    wps = league.fourth_down_wp(sits) if not sits.empty else None
+    return pd.DataFrame() if wps is None else core.fourth_down_calls(sits, wps)
+
+
+def season_fourth_downs(league: League, season: int, stamp: str, weeks: tuple[int, int],
+                        part: str) -> pd.DataFrame:
+    """Every 4th down of the selection's games graded by the decision model
+    (`core.fourth_down_calls`), whole games (the score before each snap needs
+    them); empty where the league has no model."""
+    return _season_fourth_downs(league.name, season, stamp, tuple(weeks), part)
 
 
 # ---------- Pre-game preview ----------

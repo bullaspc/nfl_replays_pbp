@@ -41,11 +41,13 @@ from replay_core import (
     FG_RANGE, HURRY_PLAY_SECS, HURRY_RUNOFF_SECS, HURRY_STOP_SHARE, NET_PUNT, RUN_SECS, SCENARIO_SECS, first_downs_to_kneel, fmt_clock, next_snap, scores_needed,
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
+    FOURTH_OPTIONS, FOURTH_TOSS_UP, fourth_down_calls, fourth_down_summary, fourth_down_table, fourth_situations,
+    snap_fourth_situation,
 )
 from views import (draft_note, 
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
     logo_img, mobile_css, momentum_figure, pass_tendency_figure, section_nav, plays_table, run_tendency_figure, smap, style_drive_chart,
-    stat_table, style_chart_table, style_defense_table, style_kick_log, style_kicking_table, style_line_table, style_matchup_table, style_player_table,
+    stat_table, style_chart_table, style_defense_table, style_fourth_downs, style_fourth_summary, style_kick_log, style_kicking_table, style_line_table, style_matchup_table, style_player_table,
     style_play_splits, style_scoring_timeline, style_series_table, style_sr_table, style_stat_table, ticker_html, time_bar_html,
     timeout_pips,
 )
@@ -1286,6 +1288,26 @@ if _snap is not None:
                    + (" when they go for it" if _down == 4 else "")
                    + ": teams that trail throw more, the later it gets.")
 
+    # 4th down coming up: what the win probability model says to do.
+    if not hide_wp:
+        _roof = revealed["roof"].dropna().iloc[-1] if revealed["roof"].notna().any() else None
+        _sit4 = snap_fourth_situation(_snap, _roof)
+        _wp4 = league.fourth_down_wp(_sit4) if not _sit4.empty else None
+        if _wp4 is not None and not _wp4.empty:
+            _r4 = _wp4.iloc[0]
+            _opts = [(o, _r4[o]) for o in FOURTH_OPTIONS if pd.notna(_r4[o])]
+            _best = max(_opts, key=lambda t: t[1])
+            _second = max((t for t in _opts if t[0] != _best[0]), key=lambda t: t[1], default=None)
+            _edge = (_best[1] - _second[1]) if _second else 0
+            _verb = {"Go": "go for it", "FG": "kick the field goal", "Punt": "punt"}[_best[0]]
+            st.markdown(f"4th-down call: **{_verb}**"
+                        + (" (close)" if _edge < FOURTH_TOSS_UP else f" by {_edge * 100:.1f} WP points")
+                        + " · " + " · ".join(f"{o} {w:.0%}" for o, w in _opts))
+            st.caption(f"{_P}'s win probability after each choice (nflfastR's WP model): going converts "
+                       f"{_r4['Conv %']:.0%} of the time at this distance (3rd and 4th downs, NFL 2019–2025)"
+                       + (f", the field goal is good {_r4['FG %']:.0%}" if pd.notna(_r4["FG %"]) else "")
+                       + ".")
+
     _late = _h is not None and _h <= SCENARIO_SECS and _snap.qtr in (2, 4, 5, 6, 7, 8)
     if _late:
         _end = "the half" if _snap.qtr == 2 else "the game"
@@ -1378,6 +1400,34 @@ if _snap is not None:
         st.caption(f"Clock scenarios show up in the last {SCENARIO_SECS // 60} minutes of each half.")
 elif not revealed.empty:
     st.caption("Nothing to estimate: the half is over, or the last play hasn't been scored yet.")
+
+# Every revealed 4th down, graded by the win probability after each choice
+# (the state before the snap and the choice the row itself shows: nothing
+# after the cursor). NFL regulation only.
+if not hide_wp and not revealed.empty:
+    _sits4 = fourth_situations(revealed)
+    _wps4 = league.fourth_down_wp(_sits4) if not _sits4.empty else None
+    if _wps4 is not None:
+        _calls4 = fourth_down_calls(_sits4, _wps4)
+        _n_off = int((_calls4["Verdict"].str.startswith("Should")).sum())
+        with st.expander(f"4th-down decisions ({len(_calls4)}"
+                         + (f", {_n_off} against the model" if _n_off else "") + ")",
+                         expanded=False, key="_exp_fourth"):
+            stat_table(style_fourth_downs(fourth_down_table(_calls4)), hide_index=True)
+            _sum4 = fourth_down_summary(_calls4)
+            st.caption(" · ".join(
+                f"**{t}**: went {r['Go %']:.0%}, model says go {r['Model go %']:.0%}, "
+                f"{r['WP lost']:.1f} WP points given up" for t, r in _sum4.iterrows()))
+            st.caption("Each option is the offense's win probability after it (nflfastR's WP model): "
+                       "going for it weighs a first down past the marker (or a touchdown) against the "
+                       "other team's ball at the spot, at the conversion rate for that distance (3rd and "
+                       "4th downs, NFL 2019–2025); the field goal nflfastR's make rate, a miss giving the "
+                       "ball at the spot of the kick; the punt the average spot the other team starts "
+                       "from after one from there. Best option underlined; a call within "
+                       f"{FOURTH_TOSS_UP * 100:.0f} WP point of it is Close. WP lost is in points. "
+                       "Fakes count as going for it; regulation only. Checked by "
+                       "tools/validate_fourth_downs.py: in 2025 the chosen option's WP was within "
+                       "0.3 points of nflverse's after the play, on average, for every choice.")
 
 # ---------- Explosive plays ----------
 if not revealed.empty:

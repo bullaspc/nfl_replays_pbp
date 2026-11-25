@@ -286,13 +286,54 @@ def _ryoe(td: pd.DataFrame) -> float:
 
 TEAM_STAT_ROWS = [
     "Plays", "Pass Plays", "Rush Plays", "Rush+Comp",
-    "Pass Yds", "Rush Yds", "Total Yds",
+    "Pass Yds", "Rush Yds", "Total Yds", "Yds/Play", "Explosive %",
     "CMP%", "CPOE", "aDoT", "RYOE/att",
     "Pass EPA/play", "Rush EPA/play", "EPA/play",
     "Pass SR", "Rush SR", "ED SR",
     "1st Down %", "3rd Down %", "RZ TD%",
+    "Drives", "Pts/Drive", "RZ Trip TD%",
     "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
 ]
+
+
+# A pass of 20+ yards or a run of 10+ (`EXPLOSIVE_RUN_YDS`) is explosive.
+EXPLOSIVE_PASS_YDS = 20
+
+
+def _drive_keys(td: pd.DataFrame) -> pd.Series:
+    """(game, drive) of each row as one key: drive numbers restart every game."""
+    game = td["game_id"].astype(str) if "game_id" in td.columns else ""
+    return game + ":" + td["drive"].astype(str)
+
+
+def _yards_drives(td: pd.DataFrame, sc_mask: pd.Series, total_yds: float) -> dict:
+    """Yds/Play and Explosive % over the snaps in `sc_mask`, then the drive
+    outcomes of the offense in `td`: Drives (with a down snapped: a kickoff
+    returned for a score isn't one), Pts/Drive (its own touchdowns, field
+    goals and tries; not the defense's or a return team's) and RZ Trip TD%
+    (drives with a snap at or inside the opponent's 20 that end in its
+    touchdown)."""
+    plays = int(sc_mask.sum())
+    explosive = sc_mask & (
+        ((td["pass_attempt"].fillna(0) == 1) & (td["passing_yards"].fillna(0) >= EXPLOSIVE_PASS_YDS)) |
+        ((td["rush_attempt"].fillna(0) == 1) & (td["rushing_yards"].fillna(0) >= EXPLOSIVE_RUN_YDS)))
+    keys = _drive_keys(td)
+    drives = set(keys[td["down"].notna()])
+    on_drive = keys.isin(drives)
+    off_td = on_drive & ((td["pass_touchdown"].fillna(0) == 1) | (td["rush_touchdown"].fillna(0) == 1))
+    points = (6 * int(off_td.sum())
+              + 3 * int((on_drive & (td["field_goal_result"] == "made")).sum())
+              + int((on_drive & (td["extra_point_result"] == "good")).sum())
+              + 2 * int((on_drive & (td["two_point_conv_result"] == "success")).sum()))
+    rz_trips = set(keys[sc_mask & (td["yardline_100"].fillna(100) <= 20)])
+    rz_tds = rz_trips & set(keys[off_td])
+    return {
+        "Yds/Play": _rate(total_yds, plays),
+        "Explosive %": _rate(int(explosive.sum()), plays),
+        "Drives": len(drives),
+        "Pts/Drive": _rate(points, len(drives)),
+        "RZ Trip TD%": _rate(len(rz_tds), len(rz_trips)),
+    }
 
 
 def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
@@ -347,6 +388,7 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
     pen_mask = plays["penalty_team"] == team
     penalties = int(pen_mask.sum())
     penalty_yds = int(plays.loc[pen_mask, "penalty_yards"].fillna(0).sum())
+    yd = _yards_drives(td, scrimmage_mask, pass_yds + rush_yds)
 
     return [
         total_plays,
@@ -356,6 +398,8 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         pass_yds,
         rush_yds,
         pass_yds + rush_yds,
+        yd["Yds/Play"],
+        yd["Explosive %"],
         _rate(cmp, pass_plays),
         cpoe,
         adot if not pd.isna(adot) else float("nan"),
@@ -369,6 +413,9 @@ def _team_col(plays: pd.DataFrame, team: str, side: str = "posteam") -> list:
         _rate(first_downs, total_plays),
         _rate(third_conv, third_conv + third_fail),
         _rate(rz_td, rz_plays),
+        yd["Drives"],
+        yd["Pts/Drive"],
+        yd["RZ Trip TD%"],
         tos,
         _lost_possessions(td, tos),
         penalties,
@@ -388,7 +435,7 @@ def team_stats(revealed: pd.DataFrame, home: str, away: str) -> pd.DataFrame:
 # Team stats that pile up over a game: against whole games they only say
 # something once this one is over, so until then they get no percentile.
 GAME_TOTAL_ROWS = {"Pass Yds", "Rush Yds", "Total Yds", "Pass Plays", "Rush Plays", "Plays",
-                   "Rush+Comp", "Turnovers", "Lost Poss.", "TOP"}
+                   "Rush+Comp", "Drives", "Turnovers", "Lost Poss.", "TOP"}
 
 
 def game_over(revealed: pd.DataFrame) -> bool:
@@ -423,6 +470,7 @@ BASELINE_COLS = [
     "interception", "fumble_lost", "first_down",
     "third_down_converted", "third_down_failed", "fourth_down_failed",
     "yardline_100", "touchdown", "field_goal_result",
+    "pass_touchdown", "rush_touchdown", "extra_point_result", "two_point_conv_result",
     "drive", "qtr", "game_seconds_remaining",
     "penalty", "penalty_team", "penalty_yards",
     "down", "ydstogo",
@@ -471,6 +519,7 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
         tos      = int(td["interception"].fillna(0).sum() + td["fumble_lost"].fillna(0).sum())
         comp_rush = int(cmp) + rp
         top       = _top_seconds(td)
+        yd        = _yards_drives(td, sc_mask, pass_yds + rush_yds)
         return pd.Series({
             "Plays":        tp,
             "Pass Plays":   pp,
@@ -479,6 +528,8 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "Pass Yds":     pass_yds,
             "Rush Yds":     rush_yds,
             "Total Yds":    pass_yds + rush_yds,
+            "Yds/Play":     yd["Yds/Play"],
+            "Explosive %":  yd["Explosive %"],
             "CMP%":         _rate(cmp, pp),
             "CPOE":         cpoe,
             "aDoT":         adot,
@@ -492,6 +543,9 @@ def stat_distributions(raw_all: pd.DataFrame) -> dict[str, np.ndarray]:
             "1st Down %":   _rate(fd, tp),
             "3rd Down %":   _rate(tc, tc + tf),
             "RZ TD%":       _rate(rz_td, rz_plays),
+            "Drives":       yd["Drives"],
+            "Pts/Drive":    yd["Pts/Drive"],
+            "RZ Trip TD%":  yd["RZ Trip TD%"],
             "Turnovers":    tos,
             "Lost Poss.":   _lost_possessions(td, tos),
             "TOP":          top,
@@ -1800,10 +1854,10 @@ def team_chart_games(sums: pd.DataFrame, games: pd.DataFrame, team: str,
 # (teams play different numbers of games), and every cell is ranked against
 # the other teams (or qualified players) in the same selection.
 SEASON_PER_GAME = {"Plays", "Pass Plays", "Rush Plays", "Rush+Comp", "Pass Yds", "Rush Yds",
-                   "Total Yds", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
+                   "Total Yds", "Drives", "Turnovers", "Lost Poss.", "Penalties", "Penalty Yds", "TOP",
                    *LINE_COUNT_ROWS}
 # Volumes (and the charting's choices): neither good nor bad, so never colored.
-SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Dropbacks", "Designed Runs", "Snaps",
+SEASON_VOLUME = {"Games", "Plays", "Pass Plays", "Rush Plays", "Drives", "Dropbacks", "Designed Runs", "Snaps",
                  *CHART_STYLE}
 SEASON_COLS = ["Games", *TEAM_STAT_ROWS, *LINE_ROWS]
 # A defense's own penalties aren't "allowed"; they're in the offense table.
@@ -2153,12 +2207,13 @@ def opponent_adjust(off: pd.DataFrame, def_: pd.DataFrame, games: pd.DataFrame,
 # QB hits than sacks (hits include sacks). Adjusted tables keep the nearest
 # possible value.
 SEASON_RATES = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%",
+                "Explosive %", "RZ Trip TD%",
                 *(set(LINE_ROWS) - LINE_COUNT_ROWS), *CHART_RATES}  # fractions, 0–1
 SEASON_PERCENTS = {"SR%", "Pass SR%", "Rush SR%"}     # players' and situations', 0–100
-# Per game, never below 0. Rush+Comp also lies between the row's Rush Plays and
+# Per game (Pts/Drive per drive), never below 0. Rush+Comp also lies between the row's Rush Plays and
 # Plays, which stay as played; turnovers and lost possessions have no ceiling (a special-teams fumble
 # isn't on a play from scrimmage).
-SEASON_COUNTS = {"Rush+Comp", "Turnovers", "Lost Poss."}
+SEASON_COUNTS = {"Rush+Comp", "Turnovers", "Lost Poss.", "Pts/Drive"}
 
 
 def possible_values(df: pd.DataFrame) -> pd.DataFrame:
@@ -2642,7 +2697,8 @@ def player_season_compare(df: pd.DataFrame, earlier: dict[int, pd.DataFrame], st
 # Head to head compares like with like (offense with offense, defense with
 # defense); a matchup sets one team's offense against the other's defense.
 MATCHUP_ROWS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "ED SR", "CMP%",
-                "CPOE", "aDoT", "RYOE/att", "1st Down %", "3rd Down %", "RZ TD%", "Turnovers", "Lost Poss.", "Sack %", "QB Hit %",
+                "CPOE", "aDoT", "RYOE/att", "Yds/Play", "Explosive %", "1st Down %", "3rd Down %", "RZ TD%",
+                "Pts/Drive", "RZ Trip TD%", "Turnovers", "Lost Poss.", "Sack %", "QB Hit %",
                 "Stuff %", "Explosive Run %", "Total Yds", "Pass Yds", "Rush Yds", "Plays"]
 
 
@@ -4192,3 +4248,275 @@ def success_emoji(r) -> str:
     if pd.notna(r["epa"]) and r["epa"] > 0:
         return "✅"
     return ""
+
+
+# ---------- 4th-down decisions ----------
+# Go for it, kick a field goal or punt: the offense's win probability after
+# each, nflfastR's WP model on the state each outcome leaves (a simpler cousin
+# of nflverse's nfl4th). NFL regulation only, the WP model's range.
+# models/fourth_down.csv (tools/build_fourth_down_table.py, `fit_fourth_down()`)
+# holds what the model doesn't: how often a 3rd or 4th down converts by
+# distance and how far past the marker a conversion goes, and where a punt
+# leaves the other team by the punting spot.
+FOURTH_TOGO_BINS = [0, 1, 2, 3, 4, 5, 7, 10, 15, 99]  # ydstogo cells (a, b]
+FOURTH_PUNT_BINS = list(range(30, 101, 5))             # yardline_100 cells (a, b]
+FOURTH_OPTIONS = ("Go", "FG", "Punt")
+FOURTH_PLAY_SECS = 6     # a snap's runoff, for every option, as nfl4th takes it
+FOURTH_FG_MAX = 45       # no field goal option past the 45 (a 62-yarder)
+FOURTH_PUNT_MIN = 30     # no punt option inside the 30
+FOURTH_XP_PROB = 0.94    # a touchdown's try counted as an extra point
+FOURTH_KICK_BACK = 7     # a field goal is kicked 7 yards behind the line
+FOURTH_TOSS_UP = 0.01    # a call within 1 WP point of the best is "close"
+
+
+def _fourth_bin(togo) -> np.ndarray:
+    return pd.cut(np.asarray(togo, dtype=float), FOURTH_TOGO_BINS, labels=False)
+
+
+def fit_fourth_down(pbp: pd.DataFrame) -> pd.DataFrame:
+    """The 4th-down table from nflverse-layout plays: kind "go" per ydstogo
+    cell (`FOURTH_TOGO_BINS`), with `rate` (3rd and 4th downs, passes and runs,
+    that gained a first down or scored), `extra` (a conversion's mean yards
+    past the marker) and `fail` (a failure's mean yards gained); kind "punt"
+    per spot (`FOURTH_PUNT_BINS`), with `opp_yl` (the receiving team's mean
+    yardline_100 on its first snap after the punt). `plays` counts each."""
+    df = pbp.reset_index(drop=True)
+    snap = (df["down"].isin([3, 4]) & df["play_type"].isin(["pass", "run"])
+            & (df["qb_kneel"].fillna(0) == 0) & (df["qb_spike"].fillna(0) == 0)
+            & (df.get("no_play", pd.Series(0, index=df.index)).fillna(0) == 0)
+            & (df["qtr"] <= 4))
+    s = df[snap]
+    conv = ((s["first_down"].fillna(0) == 1) | (s["pass_touchdown"].fillna(0) == 1)
+            | (s["rush_touchdown"].fillna(0) == 1))
+    gained = s["yards_gained"].fillna(0)
+    g = pd.DataFrame({"bin": _fourth_bin(s["ydstogo"]), "conv": conv,
+                      "extra": (gained - s["ydstogo"]).where(conv), "fail": gained.where(~conv)})
+    go = g.groupby("bin").agg(rate=("conv", "mean"), extra=("extra", "mean"),
+                              fail=("fail", "mean"), plays=("conv", "size")).reset_index()
+    go.insert(0, "kind", "go")
+
+    # The first snap after a punt: the next row of the game with a down.
+    downs = df[df["down"].notna()]
+    nxt = downs[["game_id", "posteam", "yardline_100"]].shift(-1)
+    pidx = df.index[(df["play_type"] == "punt") & (df["qtr"] <= 4)]
+    rows = []
+    for i in pidx:
+        later = downs.index.searchsorted(i, side="right")
+        if later >= len(downs):
+            continue
+        n = downs.iloc[later]
+        if n["game_id"] != df.at[i, "game_id"] or n["posteam"] != df.at[i, "defteam"]:
+            continue  # a return touchdown, a muff the kicking team kept, the half's end
+        rows.append((df.at[i, "yardline_100"], n["yardline_100"]))
+    p = pd.DataFrame(rows, columns=["yl", "opp_yl"])
+    p["bin"] = pd.cut(p["yl"], FOURTH_PUNT_BINS, labels=False)
+    punt = p.groupby("bin").agg(opp_yl=("opp_yl", "mean"), plays=("opp_yl", "size")).reset_index()
+    punt.insert(0, "kind", "punt")
+    return pd.concat([go, punt], ignore_index=True)[["kind", "bin", "rate", "extra", "fail",
+                                                    "opp_yl", "plays"]]
+
+
+def fourth_situations(pbp: pd.DataFrame) -> pd.DataFrame:
+    """The 4th downs of `pbp` (whole games in order, nflverse layout) the
+    decision model takes: regulation, a pass, run, punt or field goal try not
+    wiped out by a penalty. Columns: the model's state (`posteam`, `home`,
+    `qtr`, half and game seconds left, `score_differential`, `ydstogo`,
+    `yardline_100`, both timeouts, `receive_2h_ko`, `season`, `roof`) plus
+    `choice` (Go / FG / Punt) and the row's index in `pbp` as `row`."""
+    df = pbp.reset_index(drop=True)
+    kind = df["play_type"].map({"pass": "Go", "run": "Go", "field_goal": "FG", "punt": "Punt"})
+    no_play = df["desc"].astype(str).str.contains(r"\bNo Play\b", case=False, regex=True)
+    keep = ((df["down"] == 4) & kind.notna() & (df["qtr"] <= 4) & ~no_play
+            & df["posteam"].notna() & df["yardline_100"].notna() & df["ydstogo"].notna()
+            & df["game_seconds_remaining"].notna())
+    if not keep.any():
+        return pd.DataFrame()
+    margin = pre_play_margin(df)
+    first_def = df.groupby("game_id")["defteam"].transform(
+        lambda s: s.dropna().iloc[0] if s.notna().any() else np.nan)
+    d = df[keep]
+    home = (d["posteam"] == d["home_team"])
+    is_home = home.to_numpy()
+    ht, at = d["home_timeouts_remaining"], d["away_timeouts_remaining"]
+    gsr = d["game_seconds_remaining"].astype(float)
+    return pd.DataFrame({
+        "row": d.index, "game_id": d["game_id"].to_numpy(), "posteam": d["posteam"].to_numpy(),
+        "defteam": d["defteam"].to_numpy(), "home": is_home.astype(float),
+        "qtr": d["qtr"].to_numpy(),
+        "half_seconds_remaining": np.where(d["qtr"] <= 2, gsr - 1800, gsr),
+        "game_seconds_remaining": gsr.to_numpy(),
+        "score_differential": np.where(is_home, margin[keep], -margin[keep]),
+        "ydstogo": d["ydstogo"].astype(float).to_numpy(),
+        "yardline_100": d["yardline_100"].astype(float).to_numpy(),
+        "posteam_timeouts_remaining": np.where(is_home, ht, at).astype(float),
+        "defteam_timeouts_remaining": np.where(is_home, at, ht).astype(float),
+        "receive_2h_ko": ((d["qtr"] <= 2) & (d["posteam"] == first_def[keep])).astype(float).to_numpy(),
+        "season": d["season"].astype(float).to_numpy() if "season" in d.columns else np.nan,
+        "roof": d["roof"].to_numpy() if "roof" in d.columns else None,
+        "choice": kind[keep].to_numpy(),
+    }).reset_index(drop=True)
+
+
+def snap_fourth_situation(snap: Snap, roof=None) -> pd.DataFrame:
+    """The next snap (a 4th down in regulation) as a one-row `fourth_situations()`
+    frame, without `choice`; empty otherwise."""
+    if snap is None or snap.down != 4 or snap.qtr > 4 or snap.half_secs is None or snap.kickoff:
+        return pd.DataFrame()
+    other = snap.defteam
+    game = snap.half_secs + (1800 if snap.qtr <= 2 else 0)
+    return pd.DataFrame([{
+        "row": -1, "posteam": snap.posteam, "defteam": other, "home": float(snap.posteam == snap.home),
+        "qtr": snap.qtr, "half_seconds_remaining": snap.half_secs, "game_seconds_remaining": game,
+        "score_differential": snap.score[snap.posteam] - snap.score[other],
+        "ydstogo": float(snap.ydstogo), "yardline_100": float(snap.yardline_100),
+        "posteam_timeouts_remaining": snap.timeouts.get(snap.posteam),
+        "defteam_timeouts_remaining": snap.timeouts.get(other),
+        "receive_2h_ko": float(snap.qtr <= 2 and snap.posteam == snap.receives_2h),
+        "season": snap.season, "roof": roof}])
+
+
+_WP_STATE_COLS = ["receive_2h_ko", "home", "half_seconds_remaining", "game_seconds_remaining",
+                  "score_differential", "down", "ydstogo", "yardline_100",
+                  "posteam_timeouts_remaining", "defteam_timeouts_remaining"]
+
+
+def _after(s: pd.DataFrame, yl, diff_change, flip: bool) -> pd.DataFrame:
+    """1st & 10 (or goal) at `yl` one snap after the situations `s`, for the
+    offense (`flip` False) or the other team (True), the offense's margin
+    changed by `diff_change` first."""
+    out = s.copy()
+    yl = np.clip(np.asarray(yl, dtype=float), 1, 99)
+    secs = FOURTH_PLAY_SECS
+    out["half_seconds_remaining"] = (s["half_seconds_remaining"] - secs).clip(lower=0)
+    out["game_seconds_remaining"] = (s["game_seconds_remaining"] - secs).clip(lower=0)
+    diff = s["score_differential"] + diff_change
+    if flip:
+        out["home"] = 1 - s["home"]
+        out["score_differential"] = -diff
+        out["posteam_timeouts_remaining"] = s["defteam_timeouts_remaining"]
+        out["defteam_timeouts_remaining"] = s["posteam_timeouts_remaining"]
+        out["receive_2h_ko"] = np.where(s["qtr"] <= 2, 1 - s["receive_2h_ko"], 0.0)
+    else:
+        out["score_differential"] = diff
+    out["down"] = 1.0
+    out["yardline_100"] = yl
+    out["ydstogo"] = np.minimum(10.0, yl)
+    return out
+
+
+def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff_yl) -> pd.DataFrame:
+    """The offense's win probability after going for it, kicking and punting
+    on each of `sits` (`fourth_situations()` rows): columns Go, FG, Punt (NaN
+    where the option is off: no field goal past `FOURTH_FG_MAX`, no punt
+    inside `FOURTH_PUNT_MIN`), Conv % (the chance of converting), FG % and
+    Best (the option with the highest). `wp(states)` is the WP model on
+    `_WP_STATE_COLS` (the offense's), `fg_prob(sits)` the make chance per row,
+    `kickoff_yl(sits)` where the receiving team starts after a kickoff."""
+    out = pd.DataFrame(index=sits.index, columns=["Go", "FG", "Punt", "Conv %", "FG %"], dtype=float)
+    if sits.empty or table is None or table.empty:
+        out["Best"] = None
+        return out
+    s = sits.reset_index(drop=True)
+    yl, togo = s["yardline_100"].to_numpy(), s["ydstogo"].to_numpy()
+    go = table[table["kind"] == "go"].set_index("bin")
+    b = pd.Series(_fourth_bin(togo)).fillna(len(FOURTH_TOGO_BINS) - 2).astype(int)
+    rate = go["rate"].reindex(b).to_numpy()
+    extra = go["extra"].reindex(b).fillna(0).to_numpy()
+    fail = go["fail"].reindex(b).fillna(0).to_numpy()
+    kick = np.asarray(kickoff_yl(s), dtype=float)
+
+    def wp_off(states, flip):
+        p = np.asarray(wp(states[_WP_STATE_COLS]), dtype=float)
+        return 1 - p if flip else p
+
+    def after_td(pts):  # the other team's kickoff after the offense scores
+        return wp_off(_after(s, kick, pts, True), True)
+
+    td_wp = FOURTH_XP_PROB * after_td(7) + (1 - FOURTH_XP_PROB) * after_td(6)
+    new_yl = yl - togo - extra
+    td = (yl <= togo) | (new_yl <= 0)
+    first = wp_off(_after(s, np.maximum(new_yl, 1), 0, False), False)
+    success = np.where(td, td_wp, first)
+    failed = wp_off(_after(s, 100 - (yl - fail), 0, True), True)
+    out_go = rate * success + (1 - rate) * failed
+
+    pfg = np.asarray(fg_prob(s), dtype=float)
+    make = wp_off(_after(s, kick, 3, True), True)
+    miss = wp_off(_after(s, np.minimum(100 - (yl + FOURTH_KICK_BACK), 80), 0, True), True)
+    out_fg = np.where(yl <= FOURTH_FG_MAX, pfg * make + (1 - pfg) * miss, np.nan)
+
+    punt = table[table["kind"] == "punt"].set_index("bin")["opp_yl"]
+    pb = pd.Series(pd.cut(yl, FOURTH_PUNT_BINS, labels=False))
+    opp = punt.reindex(pb.fillna(0).astype(int)).to_numpy()
+    out_punt = np.where(yl > FOURTH_PUNT_MIN, wp_off(_after(s, opp, 0, True), True), np.nan)
+
+    res = pd.DataFrame({"Go": out_go, "FG": out_fg, "Punt": out_punt, "Conv %": rate,
+                        "FG %": np.where(yl <= FOURTH_FG_MAX, pfg, np.nan)})
+    res["Best"] = res[list(FOURTH_OPTIONS)].idxmax(axis=1)
+    res.index = sits.index
+    return res
+
+
+def fourth_down_calls(sits: pd.DataFrame, wps: pd.DataFrame) -> pd.DataFrame:
+    """`sits` with `wps` and the grade of each choice: `chosen` (its WP),
+    `best_wp`, `lost` (WP points the choice gave up, ≥ 0) and Verdict:
+    "Right call", "Close" (within `FOURTH_TOSS_UP`) or "Should have …"."""
+    df = pd.concat([sits, wps], axis=1)
+    opts = df[list(FOURTH_OPTIONS)]
+    df["best_wp"] = opts.max(axis=1)
+    if "choice" in df.columns:
+        df["chosen"] = [r[c] if c in FOURTH_OPTIONS else np.nan
+                        for c, (_, r) in zip(df["choice"], opts.iterrows())]
+        df["lost"] = (df["best_wp"] - df["chosen"]).clip(lower=0)
+        df["Verdict"] = np.select(
+            [df["choice"] == df["Best"], df["lost"] < FOURTH_TOSS_UP],
+            ["Right call", "Close"],
+            "Should " + df["Best"].map({"Go": "go", "FG": "kick", "Punt": "punt"}).fillna("?"))
+    return df
+
+
+def _fourth_label(r) -> str:
+    togo = "goal" if r["yardline_100"] <= r["ydstogo"] else f"{int(r['ydstogo'])}"
+    return f"4th & {togo} at {field_pos_label(r)}"
+
+
+def fourth_down_table(calls: pd.DataFrame, pbp: pd.DataFrame | None = None) -> pd.DataFrame:
+    """The replay's 4th-down decisions table: one row per call, Q, Clock,
+    Team, Situation, Score (the offense's margin), the WP of each option,
+    Call (the best), Choice, Verdict and WP lost."""
+    if calls.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, r in calls.iterrows():
+        secs = r["half_seconds_remaining"] - (900 if r["qtr"] in (1, 3) else 0)
+        m = int(r["score_differential"])
+        rows.append({
+            "Q": period_label(r["qtr"]), "Clock": fmt_clock(secs), "Team": r["posteam"],
+            "Situation": _fourth_label(r), "Score": "Tied" if m == 0 else f"{m:+d}",
+            "Go": r["Go"], "FG": r["FG"], "Punt": r["Punt"], "Call": r["Best"],
+            "Choice": r.get("choice"), "Verdict": r.get("Verdict"), "WP lost": r.get("lost")})
+    return pd.DataFrame(rows)
+
+
+def fourth_down_summary(calls: pd.DataFrame) -> pd.DataFrame:
+    """Per team: 4th downs, Go % (how often it went), Model go % (how often
+    the model says go), Agree %, Should go (stayed off the field when the
+    model, past `FOURTH_TOSS_UP`, said go), WP lost (summed, in WP points),
+    sorted by WP lost per call, best first."""
+    if calls.empty:
+        return pd.DataFrame()
+    c = calls.dropna(subset=["Best"])
+    g = c.groupby("posteam")
+    out = pd.DataFrame({
+        "4th downs": g.size(),
+        "Go %": g["choice"].apply(lambda s: (s == "Go").mean()),
+        "Model go %": g["Best"].apply(lambda s: (s == "Go").mean()),
+        "Agree %": g.apply(lambda d: (d["choice"] == d["Best"]).mean(), include_groups=False),
+        "Should go": g.apply(lambda d: int(((d["Best"] == "Go") & (d["choice"] != "Go")
+                                            & (d["lost"] >= FOURTH_TOSS_UP)).sum()),
+                             include_groups=False),
+        "WP lost": g["lost"].sum() * 100,
+    })
+    out["WP lost/call"] = out["WP lost"] / out["4th downs"]
+    out.index.name = "Team"
+    return out.sort_values("WP lost/call")

@@ -158,7 +158,8 @@ def style_play_splits(df: pd.DataFrame, baselines: dict | None = None):
 _OE_FORMATS = {"CPOE": "{:+.1f}", "RYOE/att": "{:+.2f}", "Pass CPOE": "{:+.1f}",
                "Rush RYOE": "{:+.2f}"}
 _EPA_ROWS        = {"Pass EPA/play", "Rush EPA/play", "EPA/play"}
-_RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%"}
+_RATE_ROWS       = {"CMP%", "Pass SR", "Rush SR", "ED SR", "1st Down %", "3rd Down %", "RZ TD%",
+                    "Explosive %", "RZ Trip TD%"}
 _PCT_FORMAT_ROWS = _RATE_ROWS
 _EPA_FORMAT_ROWS = _EPA_ROWS
 
@@ -192,8 +193,10 @@ def style_stat_table(df: pd.DataFrame, away: str, home: str,
             fmt_str = "{:+.2f}"
         elif row in _OE_FORMATS:
             fmt_str = _OE_FORMATS[row]
-        elif row == "aDoT":
+        elif row in ("aDoT", "Yds/Play"):
             fmt_str = "{:.1f}"
+        elif row == "Pts/Drive":
+            fmt_str = "{:.2f}"
         else:
             fmt_str = "{:.0f}"
         styled = styled.format(fmt_str, subset=pd.IndexSlice[row, :], na_rep="—")
@@ -280,6 +283,40 @@ def style_kick_log(df: pd.DataFrame):
         return ""
     fmt = {c: f for c, f in {**_KICK_FORMATS, "Yds": "{:.0f}"}.items() if c in df.columns}
     return smap(df.style.format(fmt, na_rep="—"), _tint, subset=["Result"])
+
+
+_GOOD = "background-color: #d4edda; color: #155724"
+_BAD = "background-color: #f8d7da; color: #721c24"
+_CLOSE = "background-color: #fff3cd; color: #856404"
+
+
+def style_fourth_downs(df: pd.DataFrame):
+    """The 4th-down decisions (replay_core.fourth_down_table()): each
+    option's win probability, the best one bold; Verdict green for the right
+    call, amber for a close one, red otherwise; WP lost in points."""
+    opts = [c for c in ("Go", "FG", "Punt") if c in df.columns]
+    fmt = {c: "{:.1%}" for c in opts}
+    if "WP lost" in df.columns:
+        fmt["WP lost"] = lambda v: "—" if pd.isna(v) else ("0.0" if v < 0.0005 else f"{v * 100:.1f}")
+    styled = df.style.format(fmt, na_rep="—")
+
+    def _best(row):
+        return ["font-weight: bold; text-decoration: underline" if c == row.get("Call") else ""
+                for c in row.index]
+    styled = styled.apply(_best, axis=1, subset=[*opts, "Call"] if "Call" in df.columns else opts)
+
+    def _verdict(v):
+        return _GOOD if v == "Right call" else _CLOSE if v == "Close" else _BAD if str(v).startswith("Should") else ""
+    if "Verdict" in df.columns:
+        styled = smap(styled, _verdict, subset=["Verdict"])
+    return styled
+
+
+def style_fourth_summary(df: pd.DataFrame):
+    """Teams' 4th-down decisions (replay_core.fourth_down_summary())."""
+    fmt = {"Go %": "{:.0%}", "Model go %": "{:.0%}", "Agree %": "{:.0%}",
+           "WP lost": "{:.1f}", "WP lost/call": "{:.2f}"}
+    return df.style.format({k: v for k, v in fmt.items() if k in df.columns}, na_rep="—")
 
 
 def style_kicking_table(df: pd.DataFrame, dists: dict | None = None,
@@ -467,8 +504,10 @@ def _season_format(col: str):
         f = "{:+.2f}"
     elif col in _OE_FORMATS:
         f = _OE_FORMATS[col]
-    elif col in ("aDoT", "Rushers") or col in SEASON_PER_GAME:
+    elif col in ("aDoT", "Rushers", "Yds/Play") or col in SEASON_PER_GAME:
         f = "{:.1f}"
+    elif col == "Pts/Drive":
+        f = "{:.2f}"
     else:
         f = "{:.0f}"
     return lambda v: "—" if pd.isna(v) else f.format(v)
