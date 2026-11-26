@@ -28,6 +28,7 @@ python tools/build_pass_rate_table.py NFL 2019 2025 [dir]  # rebuild one league'
 python tools/build_draft_board.py [draft_year]  # add today's snapshot of ESPN's and Tankathon's draft boards to models/draft_boards.csv (GitHub Actions runs it weekly)
 python tools/build_fourth_down_table.py 2019 2025 [dir]  # rebuild models/fourth_down.csv (3rd/4th-down conversion by distance, punt spots)
 python tools/build_coach_table.py 2019 2025 [dir]  # rebuild models/fourth_coaches.json (4th-down coach profiles), with its out-of-sample check
+python tools/validate_team_conversion.py <dir>  # team-specific 4th-down conversion vs the league table, out of sample (no gain: not used)
 python tools/validate_fourth_downs.py 2025 [path]  # 4th-down decisions: the chosen option's WP vs nflverse's after the play
 python tools/validate_game_management.py 2025 [path] [n]  # next_snap() / three_and_out() / plays_left() vs what followed
 python tools/validate_cfb_adapter.py 2026     # cfb_feed.to_pbp vs college final scores, ESPN team box + player box (defense)
