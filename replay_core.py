@@ -69,6 +69,8 @@ PBP_COLS = [
     # NaN under a roof, and the gamebook's weather text ("Light Rain Temp:
     # 45° F, Humidity: 89%, Wind: SSW 12 mph"); NaN for live NFL and college
     "roof", "temp", "wind", "weather",
+    # nflverse's head coaches (live NFL games: the schedule's; NaN for college)
+    "home_coach", "away_coach",
 ]
 
 GAME_SECONDS = 3600.0
@@ -4353,6 +4355,8 @@ def fourth_situations(pbp: pd.DataFrame) -> pd.DataFrame:
         "receive_2h_ko": ((d["qtr"] <= 2) & (d["posteam"] == first_def[keep])).astype(float).to_numpy(),
         "season": d["season"].astype(float).to_numpy() if "season" in d.columns else np.nan,
         "roof": d["roof"].to_numpy() if "roof" in d.columns else None,
+        "coach": (np.where(is_home, d["home_coach"], d["away_coach"])
+                  if {"home_coach", "away_coach"} <= set(d.columns) else None),
         "choice": kind[keep].to_numpy(),
     }).reset_index(drop=True)
 
@@ -4480,21 +4484,29 @@ def _fourth_label(r) -> str:
     return f"4th & {togo} at {field_pos_label(r)}"
 
 
-def fourth_down_table(calls: pd.DataFrame, pbp: pd.DataFrame | None = None) -> pd.DataFrame:
+def fourth_down_table(calls: pd.DataFrame, coach_model: dict | None = None) -> pd.DataFrame:
     """The replay's 4th-down decisions table: one row per call, Q, Clock,
     Team, Situation, Score (the offense's margin), the WP of each option,
-    Call (the best), Choice, Verdict and WP lost."""
+    Call (the best), Choice, Verdict and WP lost; with `coach_model`, Coach
+    usually (the team's coach's likeliest choice there, `coach_probs()`)."""
     if calls.empty:
         return pd.DataFrame()
+    usual = None
+    if coach_model and "coach" in calls.columns:
+        parts = [coach_probs(g, coach_model, name if isinstance(name, str) else None)
+                 for name, g in calls.groupby(calls["coach"].fillna(""), sort=False)]
+        probs = pd.concat(parts).reindex(calls.index)
+        usual = [f"{o} {p:.0%}" for o, p in zip(probs.idxmax(axis=1), probs.max(axis=1))]
     rows = []
-    for _, r in calls.iterrows():
+    for i, (_, r) in enumerate(calls.iterrows()):
         secs = r["half_seconds_remaining"] - (900 if r["qtr"] in (1, 3) else 0)
         m = int(r["score_differential"])
         rows.append({
             "Q": period_label(r["qtr"]), "Clock": fmt_clock(secs), "Team": r["posteam"],
             "Situation": _fourth_label(r), "Score": "Tied" if m == 0 else f"{m:+d}",
             "Go": r["Go"], "FG": r["FG"], "Punt": r["Punt"], "Call": r["Best"],
-            "Choice": r.get("choice"), "Verdict": r.get("Verdict"), "WP lost": r.get("lost")})
+            "Choice": r.get("choice"), "Verdict": r.get("Verdict"), "WP lost": r.get("lost"),
+            **({"Coach usually": usual[i]} if usual else {})})
     return pd.DataFrame(rows)
 
 
@@ -4520,3 +4532,172 @@ def fourth_down_summary(calls: pd.DataFrame) -> pd.DataFrame:
     out["WP lost/call"] = out["WP lost"] / out["4th downs"]
     out.index.name = "Team"
     return out.sort_values("WP lost/call")
+
+
+
+# ---------- Coach profiles (4th downs) ----------
+# What a coach usually does on 4th down: a league model of how often teams go
+# for it (and, when they don't, kick rather than punt) in the same spot, plus
+# each coach's own lean, shrunk toward the league by his number of 4th downs.
+# The spot is described by what the decision model sees (the WP the go option
+# gains over the best kick, the distance, the field, the score and clock), so a
+# coach's lean is how much more or less he goes than coaches in the same spots.
+# models/fourth_coaches.json (tools/build_coach_table.py, `fit_coach_model()`).
+COACH_ZONES = {"own": (50, 100), "mid": (35, 50), "score": (0, 35)}  # yardline_100 (a, b]
+COACH_ZONE_LABELS = {"own": "Own half", "mid": "Opp 50–36", "score": "Opp 35 in"}
+COACH_SHRINK = 0.25      # prior sd of a coach's overall lean (logit; tools/build_coach_table.py picks it); zone leans get half
+COACH_MIN_DOWNS = 50     # coaches with fewer 4th downs aren't listed
+
+
+def _sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+
+def _logit_fit(X: np.ndarray, y: np.ndarray, l2: float = 1e-2, iters: int = 50) -> np.ndarray:
+    """Logistic regression coefficients by Newton's method, a small ridge
+    penalty on every coefficient but the first (the intercept)."""
+    w = np.zeros(X.shape[1])
+    pen = np.full(X.shape[1], l2)
+    pen[0] = 0.0
+    for _ in range(iters):
+        p = _sigmoid(X @ w)
+        g = X.T @ (y - p) - pen * w
+        h = (X * (p * (1 - p))[:, None]).T @ X + np.diag(pen)
+        step = np.linalg.solve(h, g)
+        w += step
+        if np.abs(step).max() < 1e-7:
+            break
+    return w
+
+
+def _offset_fit(eta: np.ndarray, y: np.ndarray, sd: float) -> float:
+    """The one shift of the logits `eta` that best fits `y`, with a normal
+    prior of sd `sd` around 0 (so few plays pull it toward 0)."""
+    b = 0.0
+    for _ in range(30):
+        p = _sigmoid(eta + b)
+        g = (y - p).sum() - b / sd ** 2
+        h = (p * (1 - p)).sum() + 1 / sd ** 2
+        b += g / h
+        if abs(g / h) < 1e-8:
+            break
+    return float(b)
+
+
+GO_FEATURES = ["const", "gain", "gain_pos", "log_togo", "short", "yl", "yl2", "diff", "late",
+               "late_diff", "season"]
+FG_FEATURES = ["const", "yl", "yl2", "log_togo", "fg_prob", "diff", "late", "late_diff", "season"]
+
+
+def coach_features(calls: pd.DataFrame) -> pd.DataFrame:
+    """The coach model's inputs per 4th down (`fourth_down_calls()` rows)."""
+    kick = calls[["FG", "Punt"]].max(axis=1)
+    gain = ((calls["Go"] - kick) * 100).clip(-30, 30).fillna(0)
+    yl = calls["yardline_100"] / 100
+    diff = (calls["score_differential"] / 8).clip(-3, 3)
+    late = ((calls["qtr"] == 4) & (calls["half_seconds_remaining"] <= 300)).astype(float)
+    return pd.DataFrame({
+        "const": 1.0, "gain": gain, "gain_pos": gain.clip(lower=0),
+        "log_togo": np.log1p(calls["ydstogo"].clip(1, 30)), "short": (calls["ydstogo"] <= 1).astype(float),
+        "yl": yl, "yl2": yl ** 2, "diff": diff, "late": late, "late_diff": late * diff,
+        "season": (calls["season"].fillna(2025) - 2022) / 3,
+        "fg_prob": calls["FG %"].fillna(0),
+    }, index=calls.index)
+
+
+def _zone(yl: pd.Series) -> pd.Series:
+    out = pd.Series("own", index=yl.index)
+    for name, (a, b) in COACH_ZONES.items():
+        out[(yl > a) & (yl <= b)] = name
+    return out
+
+
+def fit_coach_model(calls: pd.DataFrame, coach_sd: float = COACH_SHRINK) -> dict:
+    """The league go and field-goal models and each coach's leans, from graded
+    4th downs (`fourth_down_calls()` rows with `coach` and `choice`)."""
+    c = calls.dropna(subset=["Go", "choice"]).copy()
+    X = coach_features(c)
+    go = (c["choice"] == "Go").to_numpy(float)
+    w_go = _logit_fit(X[GO_FEATURES].to_numpy(), go)
+    kick = c["choice"] != "Go"
+    fg = (c.loc[kick, "choice"] == "FG").to_numpy(float)
+    w_fg = _logit_fit(X.loc[kick, FG_FEATURES].to_numpy(), fg)
+    eta_go = X[GO_FEATURES].to_numpy() @ w_go
+    eta_fg = X[FG_FEATURES].to_numpy() @ w_fg
+    zone = _zone(c["yardline_100"]).to_numpy()
+    coaches = {}
+    for name, idx in c.groupby("coach").indices.items():
+        if not isinstance(name, str):
+            continue
+        b = _offset_fit(eta_go[idx], go[idx], coach_sd)
+        zones = {}
+        for z in COACH_ZONES:
+            m = idx[zone[idx] == z]
+            zones[z] = _offset_fit(eta_go[m] + b, go[m], coach_sd / 2) if len(m) else 0.0
+        k = idx[kick.to_numpy()[idx]]
+        kpos = np.searchsorted(np.flatnonzero(kick.to_numpy()), k)
+        b_fg = _offset_fit(eta_fg[kpos], fg[kpos], coach_sd / 2) if len(k) else 0.0
+        sub = c.iloc[idx]
+        coaches[name] = {
+            "go": b, **{f"go_{z}": v for z, v in zones.items()}, "fg": b_fg,
+            "downs": int(len(idx)), "seasons": sorted({int(v) for v in sub["season"].dropna()}),
+            "go_rate": float(go[idx].mean()), "league_go": float(_sigmoid(eta_go[idx]).mean()),
+            "model_go": float((sub["Best"] == "Go").mean()),
+            "agree": float((sub["Best"] == sub["choice"]).mean()),
+            "wp_lost": float(sub["lost"].mean() * 100),
+        }
+    return {"go_features": GO_FEATURES, "go": w_go.tolist(), "fg_features": FG_FEATURES,
+            "fg": w_fg.tolist(), "coaches": coaches}
+
+
+def coach_probs(calls: pd.DataFrame, model: dict, coach: str | None = None) -> pd.DataFrame:
+    """P(Go), P(FG), P(Punt) on each 4th down for `coach` (his leans on the
+    league model), or the league's average coach with None or one the model
+    doesn't know. No field goal past `FOURTH_FG_MAX`, no punt inside
+    `FOURTH_PUNT_MIN`, as the decision model has them."""
+    X = coach_features(calls)
+    eta_go = X[model["go_features"]].to_numpy() @ np.asarray(model["go"])
+    eta_fg = X[model["fg_features"]].to_numpy() @ np.asarray(model["fg"])
+    lean = model["coaches"].get(coach) if coach else None
+    if lean:
+        zone = _zone(calls["yardline_100"])
+        eta_go = eta_go + lean["go"] + zone.map(lambda z: lean.get(f"go_{z}", 0.0)).to_numpy()
+        eta_fg = eta_fg + lean["fg"]
+    p_go = _sigmoid(eta_go)
+    p_fg = _sigmoid(eta_fg)
+    no_fg = calls["FG"].isna().to_numpy()
+    no_punt = calls["Punt"].isna().to_numpy()
+    p_fg = np.where(no_fg, 0.0, np.where(no_punt, 1.0, p_fg))
+    return pd.DataFrame({"Go": p_go, "FG": (1 - p_go) * p_fg, "Punt": (1 - p_go) * (1 - p_fg)},
+                        index=calls.index)
+
+
+def coach_lean_label(lean: dict | None, zone: str | None = None) -> str:
+    """A coach's lean in words: his odds of going for it against the average
+    coach's in the same spots ("at 1.9× the average coach's odds")."""
+    if not lean:
+        return "no profile"
+    b = lean["go"] + (lean.get(f"go_{zone}", 0.0) if zone else 0.0)
+    r = float(np.exp(b))
+    if 0.95 <= r <= 1.05:
+        return "about as often as the average coach"
+    return f"at {r:.1f}× the average coach's odds"
+
+
+def coach_table(model: dict, min_downs: int = COACH_MIN_DOWNS) -> pd.DataFrame:
+    """Every coach with `min_downs`+ 4th downs: Seasons, 4th downs, Go %,
+    Expected go % (the league model in his spots), Go odds × (his lean),
+    by field zone, Model go %, Agree % and WP lost/call, most aggressive first."""
+    rows = []
+    for name, c in model["coaches"].items():
+        if c["downs"] < min_downs:
+            continue
+        yrs = c["seasons"]
+        rows.append({"Coach": name, "Seasons": f"{yrs[0]}–{yrs[-1]}" if len(yrs) > 1 else str(yrs[0]),
+                     "4th downs": c["downs"], "Go %": c["go_rate"], "Expected go %": c["league_go"],
+                     "Go odds ×": float(np.exp(c["go"])),
+                     **{f"{COACH_ZONE_LABELS[z]} ×": float(np.exp(c["go"] + c[f"go_{z}"])) for z in COACH_ZONES},
+                     "Model go %": c["model_go"], "Agree %": c["agree"], "WP lost/call": c["wp_lost"]})
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).set_index("Coach").sort_values("Go odds ×", ascending=False)

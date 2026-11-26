@@ -31,7 +31,7 @@ from replay_core import (
     situational_table, team_chart_games, team_chart_summary, team_schedule, with_class_year, with_draft,
     with_nextgen, compare_team, player_season_compare, team_season_compare, teams_season_compare,
     FOURTH_FG_MAX, FOURTH_PLAY_SECS, FOURTH_PUNT_MIN, FOURTH_TOSS_UP, _ordinal, fourth_down_summary,
-    fourth_down_table,
+    fourth_down_table, COACH_ZONE_LABELS, COACH_ZONES, coach_table,
 )
 from views import (draft_note, 
     mobile_css, section_nav, pass_tendency_figure, player_scatter_figure, run_tendency_figure, stat_table,
@@ -40,7 +40,7 @@ from views import (draft_note,
     style_chart_games, style_player_table, style_season_table, style_snap_table, style_sr_table,
     style_team_chart, style_team_season,
     style_team_schedule, style_weekly_snaps, style_player_compare, style_team_compare,
-    style_teams_compare, style_fourth_downs, style_fourth_summary,
+    style_teams_compare, style_fourth_downs, style_fourth_summary, style_coach_table,
 )
 
 st.set_page_config(page_title="Season Stats", layout="wide", page_icon="📊")
@@ -582,6 +582,20 @@ with tab_team:
                        f"{int(r4['Should go'])} times {team_name} kicked or punted where going for it "
                        f"was worth {FOURTH_TOSS_UP * 100:.0f}+ WP point more.")
             mine = calls4[calls4["posteam"] == team].sort_values("lost", ascending=False)
+            cm = leagues.coach_model()
+            if cm is not None and "coach" in mine.columns:
+                for name, n in mine["coach"].value_counts().items():
+                    lean = cm["coaches"].get(name)
+                    if not lean:
+                        st.caption(f"**{name}** ({n} 4th downs here): no coach profile.")
+                        continue
+                    zones = ", ".join(f"{COACH_ZONE_LABELS[z].lower()} {np.exp(lean['go'] + lean[f'go_{z}']):.1f}×"
+                                      for z in COACH_ZONES)
+                    yrs = lean["seasons"]
+                    st.markdown(f"**{name}** goes for it at {np.exp(lean['go']):.1f}× the odds of the average "
+                                f"coach in the same spots ({zones}): {lean['go_rate']:.0%} of his "
+                                f"{lean['downs']} 4th downs {yrs[0]}–{yrs[-1]}, where the average coach "
+                                f"would have gone {lean['league_go']:.0%}.")
             with st.expander(f"Calls against the model: {team_name} "
                              f"({int((mine['Verdict'].str.startswith('Should')).sum())})",
                              expanded=False, key="_ss_exp_fourth_team"):
@@ -595,6 +609,18 @@ with tab_team:
                     stat_table(style_fourth_downs(shown), hide_index=True)
             with st.expander("Every team", expanded=False, key="_ss_exp_fourth_league"):
                 stat_table(style_fourth_summary(summary4.rename(index=_nm)))
+            if cm is not None:
+                with st.expander("Coach profiles", expanded=False, key="_ss_exp_coaches"):
+                    stat_table(style_coach_table(coach_table(cm)))
+                    st.caption("Every head coach with 50+ 4th downs in regulation, NFL "
+                               f"{cm['fit']['seasons'][0]}–{cm['fit']['seasons'][1]}, most aggressive first. "
+                               "Expected go % is how often the average coach goes in the same spots (distance, "
+                               "field position, score, clock and the WP going would gain, a league model); "
+                               "Go odds × is the coach's own lean on it (2× = twice the odds of going), overall "
+                               "and by part of the field, shrunk toward 1 by his number of 4th downs. Model go %, "
+                               "Agree % and WP lost/call are the decision model's, over his 4th downs. With "
+                               "the leans, the choice (go, kick, punt) is predicted better in seasons left out "
+                               "of the fit (log loss 0.304 → 0.300, tools/build_coach_table.py).")
             st.caption("Each 4th down in regulation, graded by the offense's win probability after going "
                        "for it, kicking or punting (nflfastR's WP model; conversion rates by distance from "
                        "NFL 2019–2025): Model go % is how often going was the best option, WP lost the "

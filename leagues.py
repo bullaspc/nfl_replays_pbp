@@ -303,6 +303,19 @@ def fourth_down_table() -> pd.DataFrame | None:
         return None
 
 
+COACH_MODEL = Path(__file__).parent / "models" / "fourth_coaches.json"
+
+
+@st.cache_resource
+def coach_model() -> dict | None:
+    """The 4th-down coach profiles (tools/build_coach_table.py), or None if
+    the file isn't there: the profiles are then left out."""
+    try:
+        return json.loads(COACH_MODEL.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 PASS_RATE_TABLE = Path(__file__).parent / "models" / "pass_rate.csv"
 
 

@@ -312,6 +312,21 @@ def style_fourth_downs(df: pd.DataFrame):
     return styled
 
 
+def style_coach_table(df: pd.DataFrame):
+    """The 4th-down coach profiles (replay_core.coach_table()): rates as
+    percentages, leans as odds multiples, green above 1 and red below."""
+    fmt = {c: "{:.0%}" for c in df.columns if c.endswith("%")}
+    fmt.update({c: "{:.2f}×" for c in df.columns if c.endswith("×")})
+    fmt["WP lost/call"] = "{:.2f}"
+
+    def _lean(v):
+        if pd.isna(v) or 0.95 <= v <= 1.05:
+            return ""
+        return _GOOD if v > 1 else _BAD
+    styled = df.style.format({k: v for k, v in fmt.items() if k in df.columns}, na_rep="—")
+    return smap(styled, _lean, subset=[c for c in df.columns if c.endswith("×")])
+
+
 def style_fourth_summary(df: pd.DataFrame):
     """Teams' 4th-down decisions (replay_core.fourth_down_summary())."""
     fmt = {"Go %": "{:.0%}", "Model go %": "{:.0%}", "Agree %": "{:.0%}",

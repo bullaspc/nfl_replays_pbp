@@ -42,7 +42,7 @@ from replay_core import (
     clock_stops, plays_left, snap_wp_state, three_and_out, timeouts_left,
     PASS_MARGIN_BINS, PASS_PHASES, PASS_STOP_SHARE, after_three_and_out, pass_phase, pass_rate, runoff_secs,
     FOURTH_OPTIONS, FOURTH_TOSS_UP, fourth_down_calls, fourth_down_summary, fourth_down_table, fourth_situations,
-    snap_fourth_situation,
+    snap_fourth_situation, coach_lean_label, coach_probs, coach_table, _zone,
 )
 from views import (draft_note, 
     MATCHUP_TINTS, build_plays_df, drive_field_figure, hex_or_none, keep_screen_awake,
@@ -1307,6 +1307,36 @@ if _snap is not None:
                        f"{_r4['Conv %']:.0%} of the time at this distance (3rd and 4th downs, NFL 2019–2025)"
                        + (f", the field goal is good {_r4['FG %']:.0%}" if pd.notna(_r4["FG %"]) else "")
                        + ".")
+            # What coaches do here: this team's coach, the average coach and one to compare.
+            _cm = leagues.coach_model()
+            if _cm is not None:
+                _side = "home_coach" if _P == home else "away_coach"
+                _own = (revealed[_side].dropna().iloc[0]
+                        if _side in revealed.columns and revealed[_side].notna().any() else None)
+                _spot = pd.concat([_sit4, _wp4], axis=1)
+                _known = list(coach_table(_cm).index)
+                # Drawn on 4th downs only, so the pick is kept in a key of its own between them.
+                if "_coach_pick" not in st.session_state and st.session_state.get("_coach_keep") in _known:
+                    st.session_state["_coach_pick"] = st.session_state["_coach_keep"]
+                _pick = st.selectbox("Compare a coach", ["—", *_known], key="_coach_pick",
+                                     help="What another head coach (2019–2025) usually does in this spot.")
+                st.session_state["_coach_keep"] = _pick
+                _rows = [("Average coach", None)] + ([(_own, _own)] if _own else []) \
+                        + ([(_pick, _pick)] if _pick != "—" and _pick != _own else [])
+                _lines = []
+                for _label, _name in _rows:
+                    _pp = coach_probs(_spot, _cm, _name).iloc[0]
+                    _lines.append(f"**{_label}**: " + " · ".join(
+                        f"{o} {_pp[o]:.0%}" for o in FOURTH_OPTIONS if _pp[o] >= 0.005))
+                st.markdown("What coaches do here: " + "  \n".join(_lines))
+                _z = _zone(_spot["yardline_100"]).iloc[0]
+                _notes = [f"{n} goes for it {coach_lean_label(_cm['coaches'].get(n), _z)} in this part "
+                          "of the field" for _, n in _rows[1:] if n]
+                st.caption("How often head coaches choose each option in spots like this one (NFL 2019–2025: "
+                           "distance, field position, score, clock and what going would gain), each coach's "
+                           "own lean on top, shrunk toward the average by his number of 4th downs."
+                           + (" " + "; ".join(_notes) + "." if _notes else "")
+                           + (f" No profile for {_own}." if _own and _own not in _cm["coaches"] else ""))
 
     _late = _h is not None and _h <= SCENARIO_SECS and _snap.qtr in (2, 4, 5, 6, 7, 8)
     if _late:
@@ -1413,7 +1443,7 @@ if not hide_wp and not revealed.empty:
         with st.expander(f"4th-down decisions ({len(_calls4)}"
                          + (f", {_n_off} against the model" if _n_off else "") + ")",
                          expanded=False, key="_exp_fourth"):
-            stat_table(style_fourth_downs(fourth_down_table(_calls4)), hide_index=True)
+            stat_table(style_fourth_downs(fourth_down_table(_calls4, leagues.coach_model())), hide_index=True)
             _sum4 = fourth_down_summary(_calls4)
             st.caption(" · ".join(
                 f"**{t}**: went {r['Go %']:.0%}, model says go {r['Model go %']:.0%}, "
@@ -1425,6 +1455,8 @@ if not hide_wp and not revealed.empty:
                        "ball at the spot of the kick; the punt the average spot the other team starts "
                        "from after one from there. Best option underlined; a call within "
                        f"{FOURTH_TOSS_UP * 100:.0f} WP point of it is Close. WP lost is in points. "
+                       "Coach usually: what the team's head coach most often does in spots like it "
+                       "(NFL 2019–2025, his lean shrunk toward the average coach). "
                        "Fakes count as going for it; regulation only. Checked by "
                        "tools/validate_fourth_downs.py: in 2025 the chosen option's WP was within "
                        "0.3 points of nflverse's after the play, on average, for every choice.")

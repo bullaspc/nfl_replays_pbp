@@ -720,6 +720,9 @@ def espn_to_base(summary: dict, sched: dict) -> pd.DataFrame:
     df["home_team"], df["away_team"] = home, away
     roof = sched.get("roof")
     df["roof"] = roof if isinstance(roof, str) and roof else np.nan
+    for side in ("home_coach", "away_coach"):
+        coach = sched.get(side)
+        df[side] = coach if isinstance(coach, str) and coach else np.nan
     df["location"] = sched.get("location") or "Home"
     df["spread_line"] = sched.get("spread_line")
     return df
