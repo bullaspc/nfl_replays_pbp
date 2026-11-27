@@ -1295,48 +1295,71 @@ if _snap is not None:
         _wp4 = league.fourth_down_wp(_sit4) if not _sit4.empty else None
         if _wp4 is not None and not _wp4.empty:
             _r4 = _wp4.iloc[0]
-            _opts = [(o, _r4[o]) for o in FOURTH_OPTIONS if pd.notna(_r4[o])]
-            _best = max(_opts, key=lambda t: t[1])
-            _second = max((t for t in _opts if t[0] != _best[0]), key=lambda t: t[1], default=None)
-            _edge = (_best[1] - _second[1]) if _second else 0
-            _verb = {"Go": "go for it", "FG": "kick the field goal", "Punt": "punt"}[_best[0]]
-            st.markdown(f"4th-down call: **{_verb}**"
-                        + (" (close)" if _edge < FOURTH_TOSS_UP else f" by {_edge * 100:.1f} WP points")
-                        + " · " + " · ".join(f"{o} {w:.0%}" for o, w in _opts))
-            st.caption(f"{_P}'s win probability after each choice (nflfastR's WP model): going converts "
-                       f"{_r4['Conv %']:.0%} of the time at this distance (3rd and 4th downs, NFL 2019–2025)"
-                       + (f", the field goal is good {_r4['FG %']:.0%}" if pd.notna(_r4["FG %"]) else "")
-                       + ".")
-            # What coaches do here: this team's coach, the average coach and one to compare.
-            _cm = leagues.coach_model()
-            if _cm is not None:
-                _side = "home_coach" if _P == home else "away_coach"
-                _own = (revealed[_side].dropna().iloc[0]
-                        if _side in revealed.columns and revealed[_side].notna().any() else None)
-                _spot = pd.concat([_sit4, _wp4], axis=1)
-                _known = list(coach_table(_cm).index)
-                # Drawn on 4th downs only, so the pick is kept in a key of its own between them.
-                if "_coach_pick" not in st.session_state and st.session_state.get("_coach_keep") in _known:
-                    st.session_state["_coach_pick"] = st.session_state["_coach_keep"]
-                _pick = st.selectbox("Compare a coach", ["—", *_known], key="_coach_pick",
-                                     help="What another head coach (2019–2025) usually does in this spot.")
-                st.session_state["_coach_keep"] = _pick
-                _rows = [("Average coach", None)] + ([(_own, _own)] if _own else []) \
-                        + ([(_pick, _pick)] if _pick != "—" and _pick != _own else [])
-                _lines = []
-                for _label, _name in _rows:
-                    _pp = coach_probs(_spot, _cm, _name).iloc[0]
-                    _lines.append(f"**{_label}**: " + " · ".join(
-                        f"{o} {_pp[o]:.0%}" for o in FOURTH_OPTIONS if _pp[o] >= 0.005))
-                st.markdown("What coaches do here: " + "  \n".join(_lines))
-                _z = _zone(_spot["yardline_100"]).iloc[0]
-                _notes = [f"{n} goes for it {coach_lean_label(_cm['coaches'].get(n), _z)} in this part "
-                          "of the field" for _, n in _rows[1:] if n]
-                st.caption("How often head coaches choose each option in spots like this one (NFL 2019–2025: "
-                           "distance, field position, score, clock and what going would gain), each coach's "
-                           "own lean on top, shrunk toward the average by his number of 4th downs."
-                           + (" " + "; ".join(_notes) + "." if _notes else "")
-                           + (f" No profile for {_own}." if _own and _own not in _cm["coaches"] else ""))
+            if bool(_r4["Last"]):
+                # The half's last play, whatever the down: kick it or take one shot at the end zone.
+                if not (_snap.qtr == 4 and _lead > 0):  # a leader just kneels
+                    def _result(pts: int) -> str:
+                        m = _lead + pts
+                        if _snap.qtr == 2:
+                            return f"{'up' if m > 0 else 'down' if m < 0 else 'tied'}{f' {abs(m)}' if m else ''} at the half"
+                        return "win" if m > 0 else "overtime" if m == 0 else "still a loss"
+                    _parts = []
+                    if pd.notna(_r4["FG"]):
+                        _parts.append((_r4["FG"], f"Field goal: good {_r4['FG %']:.0%} of the time → {_result(3)}"))
+                    _parts.append((_r4["Go"], f"Try for a touchdown: {_r4['TD %']:.0%} → {_result(6)}"))
+                    _parts.sort(key=lambda t: -t[0])
+                    _end_of = "the game" if _snap.qtr == 4 else "the half"
+                    st.markdown(f"Last play of {_end_of}: " + "  \n".join(
+                        ("**" + t + "**" if i == 0 else t) for i, (_, t) in enumerate(_parts)))
+                    st.caption(f"The clock runs out on this snap, whatever the down. The field goal's chance is "
+                               "nflfastR's make rate from this spot; the touchdown's, how often a pass or run "
+                               "from here scored on the snap (3rd and 4th downs, NFL 2019–2025)."
+                               + (f" {_P}'s win probability after each: "
+                                  + " · ".join(f"{o} {_r4[o]:.0%}" for o in ("FG", "Go") if pd.notna(_r4[o]))
+                                  + " (the 2nd half's kickoff next)." if _snap.qtr == 2 else ""))
+            else:
+                _opts = [(o, _r4[o]) for o in FOURTH_OPTIONS if pd.notna(_r4[o])]
+                _best = max(_opts, key=lambda t: t[1])
+                _second = max((t for t in _opts if t[0] != _best[0]), key=lambda t: t[1], default=None)
+                _edge = (_best[1] - _second[1]) if _second else 0
+                _verb = {"Go": "go for it", "FG": "kick the field goal", "Punt": "punt"}[_best[0]]
+                st.markdown(f"4th-down call: **{_verb}**"
+                            + (" (close)" if _edge < FOURTH_TOSS_UP else f" by {_edge * 100:.1f} WP points")
+                            + " · " + " · ".join(f"{o} {w:.0%}" for o, w in _opts))
+                st.caption(f"{_P}'s win probability after each choice (nflfastR's WP model): going converts "
+                           f"{_r4['Conv %']:.0%} of the time at this distance (3rd and 4th downs, NFL 2019–2025)"
+                           + (f", the field goal is good {_r4['FG %']:.0%}" if pd.notna(_r4["FG %"]) else "")
+                           + ".")
+                # What coaches do here: this team's coach, the average coach and one to compare.
+                _cm = leagues.coach_model()
+                if _cm is not None:
+                    _side = "home_coach" if _P == home else "away_coach"
+                    _own = (revealed[_side].dropna().iloc[0]
+                            if _side in revealed.columns and revealed[_side].notna().any() else None)
+                    _spot = pd.concat([_sit4, _wp4], axis=1)
+                    _known = list(coach_table(_cm).index)
+                    # Drawn on 4th downs only, so the pick is kept in a key of its own between them.
+                    if "_coach_pick" not in st.session_state and st.session_state.get("_coach_keep") in _known:
+                        st.session_state["_coach_pick"] = st.session_state["_coach_keep"]
+                    _pick = st.selectbox("Compare a coach", ["—", *_known], key="_coach_pick",
+                                         help="What another head coach (2019–2025) usually does in this spot.")
+                    st.session_state["_coach_keep"] = _pick
+                    _rows = [("Average coach", None)] + ([(_own, _own)] if _own else []) \
+                            + ([(_pick, _pick)] if _pick != "—" and _pick != _own else [])
+                    _lines = []
+                    for _label, _name in _rows:
+                        _pp = coach_probs(_spot, _cm, _name).iloc[0]
+                        _lines.append(f"**{_label}**: " + " · ".join(
+                            f"{o} {_pp[o]:.0%}" for o in FOURTH_OPTIONS if _pp[o] >= 0.005))
+                    st.markdown("What coaches do here: " + "  \n".join(_lines))
+                    _z = _zone(_spot["yardline_100"]).iloc[0]
+                    _notes = [f"{n} goes for it {coach_lean_label(_cm['coaches'].get(n), _z)} in this part "
+                              "of the field" for _, n in _rows[1:] if n]
+                    st.caption("How often head coaches choose each option in spots like this one (NFL 2019–2025: "
+                               "distance, field position, score, clock and what going would gain), each coach's "
+                               "own lean on top, shrunk toward the average by his number of 4th downs."
+                               + (" " + "; ".join(_notes) + "." if _notes else "")
+                               + (f" No profile for {_own}." if _own and _own not in _cm["coaches"] else ""))
 
     _late = _h is not None and _h <= SCENARIO_SECS and _snap.qtr in (2, 4, 5, 6, 7, 8)
     if _late:

@@ -4369,10 +4369,19 @@ def fourth_situations(pbp: pd.DataFrame) -> pd.DataFrame:
     }).reset_index(drop=True)
 
 
+def last_play(snap: Snap | None) -> bool:
+    """The next snap is the half's last: the clock runs out on it, whatever the
+    down (`FOURTH_PLAY_SECS`), at the end of the 2nd or 4th quarter."""
+    return (snap is not None and not snap.kickoff and snap.half_secs is not None
+            and snap.qtr in (2, 4) and snap.half_secs <= FOURTH_PLAY_SECS)
+
+
 def snap_fourth_situation(snap: Snap, roof=None) -> pd.DataFrame:
-    """The next snap (a 4th down in regulation) as a one-row `fourth_situations()`
-    frame, without `choice`; empty otherwise."""
-    if snap is None or snap.down != 4 or snap.qtr > 4 or snap.half_secs is None or snap.kickoff:
+    """The next snap as a one-row `fourth_situations()` frame, without
+    `choice`: a 4th down in regulation, or any down on the half's last play
+    (`last_play()`); empty otherwise."""
+    if (snap is None or snap.qtr > 4 or snap.half_secs is None or snap.kickoff
+            or (snap.down != 4 and not last_play(snap))):
         return pd.DataFrame()
     other = snap.defteam
     game = snap.half_secs + (1800 if snap.qtr <= 2 else 0)
@@ -4448,7 +4457,8 @@ def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff
     inside `FOURTH_PUNT_MIN`), Conv % (the chance of converting), FG % and
     Best (the option with the highest). `wp(states)` is the WP model on
     `_WP_STATE_COLS` (the offense's), `fg_prob(sits)` the make chance per row,
-    `kickoff_yl(sits)` where the receiving team starts after a kickoff."""
+    `kickoff_yl(sits)` where the receiving team starts after a kickoff. On
+    the half's last play also TD % (a touchdown on the snap) and Last."""
     out = pd.DataFrame(index=sits.index, columns=["Go", "FG", "Punt", "Conv %", "FG %"], dtype=float)
     if sits.empty or table is None or table.empty:
         out["Best"] = None
@@ -4491,6 +4501,7 @@ def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff
     # 2nd half's kickoff is next (the 2nd), whatever the WP model would make of
     # a state at 0:00. Going for it then pays only with a touchdown on the snap.
     end = (s["half_seconds_remaining"] <= FOURTH_PLAY_SECS).to_numpy() & (s["qtr"] <= 4).to_numpy()
+    p_td_all = np.full(len(s), np.nan)
     if end.any():
         e = s[end]
         tdr = table[table["kind"] == "td"].set_index("bin")["rate"]
@@ -4502,9 +4513,11 @@ def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff
         out_go[end] = p_td * td_end + (1 - p_td) * none
         out_fg[end] = np.where(yl[end] <= FOURTH_FG_MAX, pfg[end] * after(3) + (1 - pfg[end]) * none, np.nan)
         out_punt[end] = np.where(yl[end] > FOURTH_PUNT_MIN, none, np.nan)
+        p_td_all[end] = p_td
 
     res = pd.DataFrame({"Go": out_go, "FG": out_fg, "Punt": out_punt, "Conv %": rate,
-                        "FG %": np.where(yl <= FOURTH_FG_MAX, pfg, np.nan)})
+                        "FG %": np.where(yl <= FOURTH_FG_MAX, pfg, np.nan),
+                        "TD %": p_td_all, "Last": end})
     res["Best"] = res[list(FOURTH_OPTIONS)].idxmax(axis=1)
     res.index = sits.index
     return res
