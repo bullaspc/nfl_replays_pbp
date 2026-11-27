@@ -1443,7 +1443,17 @@ if not hide_wp and not revealed.empty:
         with st.expander(f"4th-down decisions ({len(_calls4)}"
                          + (f", {_n_off} against the model" if _n_off else "") + ")",
                          expanded=False, key="_exp_fourth"):
-            stat_table(style_fourth_downs(fourth_down_table(_calls4, leagues.coach_model())), hide_index=True)
+            _cm4 = leagues.coach_model()
+            _cmp4 = None
+            if _cm4 is not None:
+                _known4 = list(coach_table(_cm4).index)
+                # Starts at the next snap's pick, if one was made; its own key after that.
+                if "_coach_recap" not in st.session_state and st.session_state.get("_coach_keep") in _known4:
+                    st.session_state["_coach_recap"] = st.session_state["_coach_keep"]
+                _cmp4 = st.selectbox("Compare a coach", ["—", *_known4], key="_coach_recap",
+                                     help="What another head coach (2019–2025) usually does on each of these 4th downs.")
+                _cmp4 = None if _cmp4 == "—" else _cmp4
+            stat_table(style_fourth_downs(fourth_down_table(_calls4, _cm4, _cmp4)), hide_index=True)
             _sum4 = fourth_down_summary(_calls4)
             st.caption(" · ".join(
                 f"**{t}**: went {r['Go %']:.0%}, model says go {r['Model go %']:.0%}, "
@@ -1456,7 +1466,8 @@ if not hide_wp and not revealed.empty:
                        "from after one from there. Best option underlined; a call within "
                        f"{FOURTH_TOSS_UP * 100:.0f} WP point of it is Close. WP lost is in points. "
                        "Coach usually: what the team's head coach most often does in spots like it "
-                       "(NFL 2019–2025, his lean shrunk toward the average coach). "
+                       "(NFL 2019–2025, his lean shrunk toward the average coach); a coach picked above "
+                       "adds what he would usually do on each. "
                        "Fakes count as going for it; regulation only. Checked by "
                        "tools/validate_fourth_downs.py: in 2025 the chosen option's WP was within "
                        "0.3 points of nflverse's after the play, on average, for every choice.")

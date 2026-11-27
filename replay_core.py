@@ -4484,14 +4484,19 @@ def _fourth_label(r) -> str:
     return f"4th & {togo} at {field_pos_label(r)}"
 
 
-def fourth_down_table(calls: pd.DataFrame, coach_model: dict | None = None) -> pd.DataFrame:
+def fourth_down_table(calls: pd.DataFrame, coach_model: dict | None = None,
+                      compare: str | None = None) -> pd.DataFrame:
     """The replay's 4th-down decisions table: one row per call, Q, Clock,
     Team, Situation, Score (the offense's margin), the WP of each option,
     Call (the best), Choice, Verdict and WP lost; with `coach_model`, Coach
-    usually (the team's coach's likeliest choice there, `coach_probs()`)."""
+    usually (the team's coach's likeliest choice there, `coach_probs()`) and,
+    for a `compare` coach, "<coach> would" (his likeliest choice there)."""
     if calls.empty:
         return pd.DataFrame()
-    usual = None
+    usual = other = None
+    if coach_model and compare:
+        probs = coach_probs(calls, coach_model, compare)
+        other = [f"{o} {p:.0%}" for o, p in zip(probs.idxmax(axis=1), probs.max(axis=1))]
     if coach_model and "coach" in calls.columns:
         parts = [coach_probs(g, coach_model, name if isinstance(name, str) else None)
                  for name, g in calls.groupby(calls["coach"].fillna(""), sort=False)]
@@ -4506,7 +4511,8 @@ def fourth_down_table(calls: pd.DataFrame, coach_model: dict | None = None) -> p
             "Situation": _fourth_label(r), "Score": "Tied" if m == 0 else f"{m:+d}",
             "Go": r["Go"], "FG": r["FG"], "Punt": r["Punt"], "Call": r["Best"],
             "Choice": r.get("choice"), "Verdict": r.get("Verdict"), "WP lost": r.get("lost"),
-            **({"Coach usually": usual[i]} if usual else {})})
+            **({"Coach usually": usual[i]} if usual else {}),
+            **({f"{compare} would": other[i]} if other else {})})
     return pd.DataFrame(rows)
 
 
