@@ -4262,6 +4262,7 @@ def success_emoji(r) -> str:
 # leaves the other team by the punting spot.
 FOURTH_TOGO_BINS = [0, 1, 2, 3, 4, 5, 7, 10, 15, 99]  # ydstogo cells (a, b]
 FOURTH_PUNT_BINS = list(range(30, 101, 5))             # yardline_100 cells (a, b]
+FOURTH_TD_BINS = list(range(0, 101, 5))                # yardline_100 cells (a, b] of the "td" rows
 FOURTH_OPTIONS = ("Go", "FG", "Punt")
 FOURTH_PLAY_SECS = 6     # a snap's runoff, for every option, as nfl4th takes it
 FOURTH_FG_MAX = 45       # no field goal option past the 45 (a 62-yarder)
@@ -4279,7 +4280,8 @@ def fit_fourth_down(pbp: pd.DataFrame) -> pd.DataFrame:
     """The 4th-down table from nflverse-layout plays: kind "go" per ydstogo
     cell (`FOURTH_TOGO_BINS`), with `rate` (3rd and 4th downs, passes and runs,
     that gained a first down or scored), `extra` (a conversion's mean yards
-    past the marker) and `fail` (a failure's mean yards gained); kind "punt"
+    past the marker) and `fail` (a failure's mean yards gained); kind "td" per
+    spot (`FOURTH_TD_BINS`), `rate` the snap's own touchdown; kind "punt"
     per spot (`FOURTH_PUNT_BINS`), with `opp_yl` (the receiving team's mean
     yardline_100 on its first snap after the punt). `plays` counts each."""
     df = pbp.reset_index(drop=True)
@@ -4296,6 +4298,12 @@ def fit_fourth_down(pbp: pd.DataFrame) -> pd.DataFrame:
     go = g.groupby("bin").agg(rate=("conv", "mean"), extra=("extra", "mean"),
                               fail=("fail", "mean"), plays=("conv", "size")).reset_index()
     go.insert(0, "kind", "go")
+    # The offense's touchdown on the snap itself, by the spot: what going for it
+    # is worth when the clock runs out on the play.
+    tdg = pd.DataFrame({"bin": pd.cut(s["yardline_100"], FOURTH_TD_BINS, labels=False),
+                        "td": ((s["pass_touchdown"].fillna(0) == 1) | (s["rush_touchdown"].fillna(0) == 1))})
+    td = tdg.groupby("bin").agg(rate=("td", "mean"), plays=("td", "size")).reset_index()
+    td.insert(0, "kind", "td")
 
     # The first snap after a punt: the next row of the game with a down.
     downs = df[df["down"].notna()]
@@ -4314,7 +4322,7 @@ def fit_fourth_down(pbp: pd.DataFrame) -> pd.DataFrame:
     p["bin"] = pd.cut(p["yl"], FOURTH_PUNT_BINS, labels=False)
     punt = p.groupby("bin").agg(opp_yl=("opp_yl", "mean"), plays=("opp_yl", "size")).reset_index()
     punt.insert(0, "kind", "punt")
-    return pd.concat([go, punt], ignore_index=True)[["kind", "bin", "rate", "extra", "fail",
+    return pd.concat([go, td, punt], ignore_index=True)[["kind", "bin", "rate", "extra", "fail",
                                                     "opp_yl", "plays"]]
 
 
@@ -4408,6 +4416,31 @@ def _after(s: pd.DataFrame, yl, diff_change, flip: bool) -> pd.DataFrame:
     return out
 
 
+def _half_over_wp(s: pd.DataFrame, pts, wp, kickoff_yl) -> np.ndarray:
+    """The offense's win probability once the half ends with its margin
+    changed by `pts`: at the end of the game 1, 0 or ½ (a tie goes to
+    overtime); at halftime, the 2nd half's first snap after its kickoff, by
+    whoever receives it."""
+    diff = (s["score_differential"] + pts).to_numpy(float)
+    out = np.where(diff > 0, 1.0, np.where(diff < 0, 0.0, 0.5))
+    half = (s["qtr"] == 2).to_numpy()
+    if half.any():
+        h = s[half].copy()
+        recv = h["receive_2h_ko"].to_numpy() == 1  # the offense receives
+        h["home"] = np.where(recv, h["home"], 1 - h["home"])
+        h["score_differential"] = np.where(recv, diff[half], -diff[half])
+        h["half_seconds_remaining"] = 1800.0
+        h["game_seconds_remaining"] = 1800.0
+        h["posteam_timeouts_remaining"] = 3.0
+        h["defteam_timeouts_remaining"] = 3.0
+        h["receive_2h_ko"] = 0.0
+        h["down"], h["ydstogo"] = 1.0, 10.0
+        h["yardline_100"] = np.asarray(kickoff_yl(h), dtype=float)
+        p = np.asarray(wp(h[_WP_STATE_COLS]), dtype=float)
+        out[half] = np.where(recv, p, 1 - p)
+    return out
+
+
 def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff_yl) -> pd.DataFrame:
     """The offense's win probability after going for it, kicking and punting
     on each of `sits` (`fourth_situations()` rows): columns Go, FG, Punt (NaN
@@ -4453,6 +4486,22 @@ def fourth_down_wp(sits: pd.DataFrame, table: pd.DataFrame, wp, fg_prob, kickoff
     pb = pd.Series(pd.cut(yl, FOURTH_PUNT_BINS, labels=False))
     opp = punt.reindex(pb.fillna(0).astype(int)).to_numpy()
     out_punt = np.where(yl > FOURTH_PUNT_MIN, wp_off(_after(s, opp, 0, True), True), np.nan)
+
+    # The clock runs out on the play: the game's over (the 4th quarter) or the
+    # 2nd half's kickoff is next (the 2nd), whatever the WP model would make of
+    # a state at 0:00. Going for it then pays only with a touchdown on the snap.
+    end = (s["half_seconds_remaining"] <= FOURTH_PLAY_SECS).to_numpy() & (s["qtr"] <= 4).to_numpy()
+    if end.any():
+        e = s[end]
+        tdr = table[table["kind"] == "td"].set_index("bin")["rate"]
+        p_td = tdr.reindex(pd.Series(pd.cut(e["yardline_100"], FOURTH_TD_BINS, labels=False))
+                           .fillna(0).astype(int)).fillna(0).to_numpy()
+        after = lambda pts: _half_over_wp(e, pts, wp, kickoff_yl)
+        td_end = FOURTH_XP_PROB * after(7) + (1 - FOURTH_XP_PROB) * after(6)
+        none = after(0)
+        out_go[end] = p_td * td_end + (1 - p_td) * none
+        out_fg[end] = np.where(yl[end] <= FOURTH_FG_MAX, pfg[end] * after(3) + (1 - pfg[end]) * none, np.nan)
+        out_punt[end] = np.where(yl[end] > FOURTH_PUNT_MIN, none, np.nan)
 
     res = pd.DataFrame({"Go": out_go, "FG": out_fg, "Punt": out_punt, "Conv %": rate,
                         "FG %": np.where(yl <= FOURTH_FG_MAX, pfg, np.nan)})
@@ -4591,8 +4640,8 @@ def _offset_fit(eta: np.ndarray, y: np.ndarray, sd: float) -> float:
 
 
 GO_FEATURES = ["const", "gain", "gain_pos", "log_togo", "short", "yl", "yl2", "diff", "late",
-               "late_diff", "season"]
-FG_FEATURES = ["const", "yl", "yl2", "log_togo", "fg_prob", "diff", "late", "late_diff", "season"]
+               "late_diff", "last", "season"]
+FG_FEATURES = ["const", "yl", "yl2", "log_togo", "fg_prob", "diff", "late", "late_diff", "last", "season"]
 
 
 def coach_features(calls: pd.DataFrame) -> pd.DataFrame:
@@ -4602,10 +4651,11 @@ def coach_features(calls: pd.DataFrame) -> pd.DataFrame:
     yl = calls["yardline_100"] / 100
     diff = (calls["score_differential"] / 8).clip(-3, 3)
     late = ((calls["qtr"] == 4) & (calls["half_seconds_remaining"] <= 300)).astype(float)
+    last = (calls["half_seconds_remaining"] <= 20).astype(float)  # the half's last snap or two
     return pd.DataFrame({
         "const": 1.0, "gain": gain, "gain_pos": gain.clip(lower=0),
         "log_togo": np.log1p(calls["ydstogo"].clip(1, 30)), "short": (calls["ydstogo"] <= 1).astype(float),
-        "yl": yl, "yl2": yl ** 2, "diff": diff, "late": late, "late_diff": late * diff,
+        "yl": yl, "yl2": yl ** 2, "diff": diff, "late": late, "late_diff": late * diff, "last": last,
         "season": (calls["season"].fillna(2025) - 2022) / 3,
         "fg_prob": calls["FG %"].fillna(0),
     }, index=calls.index)

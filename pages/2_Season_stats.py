@@ -620,7 +620,7 @@ with tab_team:
                                "and by part of the field, shrunk toward 1 by his number of 4th downs. Model go %, "
                                "Agree % and WP lost/call are the decision model's, over his 4th downs. With "
                                "the leans, the choice (go, kick, punt) is predicted better in seasons left out "
-                               "of the fit (log loss 0.304 → 0.300, tools/build_coach_table.py).")
+                               "of the fit (log loss 0.299 → 0.295, tools/build_coach_table.py).")
             st.caption("Each 4th down in regulation, graded by the offense's win probability after going "
                        "for it, kicking or punting (nflfastR's WP model; conversion rates by distance from "
                        "NFL 2019–2025): Model go % is how often going was the best option, WP lost the "
