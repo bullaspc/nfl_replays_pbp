@@ -24,6 +24,7 @@ maps a live game exactly like a published one, and a game moving from live to
 published keeps the same layout. No Streamlit calls here.
 """
 
+import copy
 import html
 import io
 import json
@@ -546,6 +547,163 @@ def game_state(summary: dict) -> str:
     return ((comp.get("status") or {}).get("type") or {}).get("state") or "pre"
 
 
+# ESPN's feed now and then stamps every play of a drive with the clock at the
+# drive's start (Michigan at Ohio State, live in 2026: 30 plays on 4 clocks;
+# Buffalo at Akron, still so once final and in the release: 116 of 147 plays
+# on the clock before them; about 5% of the release's plays, in a fifth of
+# its games): it reads a play's clock from the text, and a stat-crew text
+# without its leading "(08:47)" carries the last one, so only the plays
+# whose text gives a clock (", clock 11:32" on scores and timeouts), the
+# period ends and the scoreboard stay right. Two snaps never start at the
+# same time, so a regulation period's run of plays on one clock is stale
+# once STALE_CLOCK_SNAPS snaps follow its first scrimmage snap (the score,
+# try, kickoff or timeout before that snap took no time off). Those snaps and
+# the plays among them get clocks estimated between that snap and the next
+# play with a different clock (or, for a live game's drive still going, the
+# scoreboard's clock now), in proportion to the real time (`wallclock`,
+# never earlier than a play before it) between them. tools/
+# validate_cfb_clock.py: on clean 2025-26 games made stale, the median miss
+# goes from 80-110 s to 20-35 s; 2 snaps is as accurate as 1 with half the
+# changes to plays whose own text clock agreed with the feed, and 3 misses more.
+STALE_CLOCK_SNAPS = 2
+_SNAP_TYPE = re.compile(r"Rush|Pass|Sack|Interception|Fumble", re.I)
+_NOT_SNAP = re.compile(r"Two Point|Extra Point", re.I)
+_SCORE_TYPE = re.compile(r"Touchdown|Safety", re.I)
+# A run is left as it is when its clock would have to fall faster than real
+# time (more than this much slack): the wallclocks are off.
+_CLOCK_SLACK_SECS = 60
+
+
+def _clock_secs(v) -> float:
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(v or ""))
+    return float(int(m.group(1)) * 60 + int(m.group(2))) if m else np.nan
+
+
+def _clock_text(secs: float) -> str:
+    return f"{int(secs) // 60}:{int(secs) % 60:02d}"
+
+
+def _snap_kinds(types) -> tuple[np.ndarray, np.ndarray]:
+    """(snap, scrimmage snap that isn't a score) per ESPN play type."""
+    t = pd.Series(types, dtype=object).fillna("").astype(str)
+    snap = t.str.contains(_SNAP_TYPE) & ~t.str.contains(_NOT_SNAP)
+    return snap.to_numpy(), (snap & ~t.str.contains(_SCORE_TYPE)).to_numpy()
+
+
+def stale_clocks(game, period, clock, wall, types, tail: tuple | None = None) -> np.ndarray:
+    """Seconds left in the period, estimated, for the plays of a stale run
+    after its first scrimmage snap (see `STALE_CLOCK_SNAPS`); NaN for every
+    other play.
+
+    Plays in feed order: `game` ids, `period`, `clock` (seconds left in the
+    period, NaN where missing), `wall` (`wallclock` as epoch seconds, NaN
+    where missing), `types` (ESPN's play type). `tail` (period, clock, wall)
+    ends the last play's run where no play follows: the scoreboard's clock,
+    while the game is on."""
+    game, period = np.asarray(game), np.asarray(period, float)
+    clock = np.asarray(clock, float)
+    snap, anchor_ok = _snap_kinds(types)
+    n = len(clock)
+    out = np.full(n, np.nan)
+    if n == 0:
+        return out
+    # Real time never runs backwards: a timeout logged before the play ahead of it, a 00:00:00 stamp.
+    wall = pd.Series(np.asarray(wall, float)).groupby(game).cummax().to_numpy()
+    same = np.r_[False, (game[1:] == game[:-1]) & (period[1:] == period[:-1]) & (clock[1:] == clock[:-1])]
+    starts = np.flatnonzero(~same)
+    ends = np.r_[starts[1:], n] - 1
+    anchor = np.minimum.reduceat(np.where(anchor_ok, np.arange(n), n), starts)
+    has = anchor < n
+    a = np.minimum(anchor, n - 1)
+    cs = np.cumsum(snap)
+    after = cs[ends] - cs[a]
+    stale = (has & (after >= STALE_CLOCK_SNAPS) & (period[starts] <= 4)
+             & ~np.isnan(clock[starts]) & ~np.isnan(wall[a]))
+    nx = np.minimum(ends + 1, n - 1)
+    follows = (ends + 1 < n) & (game[nx] == game[starts]) & (period[nx] == period[starts])
+    end_clock = np.where(follows, clock[nx], np.nan)
+    end_wall = np.where(follows, wall[nx], np.nan)
+    if tail is not None and ends[-1] == n - 1 and tail[0] == period[starts[-1]]:
+        end_clock[-1], end_wall[-1] = tail[1], max(tail[2], wall[n - 1]) if not np.isnan(wall[n - 1]) else tail[2]
+    with np.errstate(invalid="ignore"):
+        span = end_wall - wall[a]
+        drop = clock[starts] - end_clock
+        ok = stale & (span > 0) & (drop > 0) & (drop <= span + _CLOCK_SLACK_SECS)
+    for k in np.flatnonzero(ok):
+        s, e, t0 = a[k], ends[k], clock[starts[k]]
+        frac = np.clip((wall[s + 1:e + 1] - wall[s]) / span[k], 0.0, 1.0)
+        est = np.round(t0 - frac * drop[k])
+        # A play with no wallclock keeps the one before it; never back up.
+        out[s + 1:e + 1] = np.minimum.accumulate(np.where(np.isnan(est), t0, est))
+    return out
+
+
+def _epoch(values) -> np.ndarray:
+    t = pd.to_datetime(pd.Series(values), utc=True, errors="coerce")
+    return (t - pd.Timestamp(0, tz="UTC")).dt.total_seconds().to_numpy(float)
+
+
+def repair_stale_clock(summary: dict, now: pd.Timestamp | None = None) -> tuple[dict, int]:
+    """`summary` (ESPN's) with an estimated clock on every play of a stale
+    run (`stale_clocks`), and how many plays got one. A feed without one
+    comes back as it was; `now` (UTC) is when the scoreboard's clock was read."""
+    drives = summary.get("drives") or {}
+    groups = list(drives.get("previous") or []) + ([drives["current"]] if drives.get("current") else [])
+    plays, seen = [], set()
+    for d in groups:
+        for p in d.get("plays") or []:
+            if str(p.get("id")) not in seen:
+                seen.add(str(p.get("id")))
+                plays.append(p)
+    if not plays:
+        return summary, 0
+    status = ((summary.get("header") or {}).get("competitions") or [{}])[0].get("status") or {}
+    tail = None
+    if (status.get("type") or {}).get("state") == "in":
+        now = now if now is not None else pd.Timestamp.now(tz="UTC")
+        tail = (float(status.get("period") or 0), _clock_secs(status.get("displayClock")),
+                (now - pd.Timestamp(0, tz="UTC")).total_seconds())
+    est = stale_clocks(np.zeros(len(plays)), [(p.get("period") or {}).get("number") or np.nan for p in plays],
+                       [_clock_secs((p.get("clock") or {}).get("displayValue")) for p in plays],
+                       _epoch([p.get("wallclock") for p in plays]),
+                       [(p.get("type") or {}).get("text") for p in plays], tail)
+    fixed = {str(p.get("id")): e for p, e in zip(plays, est) if not np.isnan(e)}
+    if not fixed:
+        return summary, 0
+    out = copy.deepcopy(summary)
+    drives = out.get("drives") or {}
+    for d in list(drives.get("previous") or []) + ([drives["current"]] if drives.get("current") else []):
+        for p in d.get("plays") or []:
+            secs = fixed.get(str(p.get("id")))
+            if secs is not None:
+                p.setdefault("clock", {})["displayValue"] = _clock_text(secs)
+                if "value" in p["clock"]:
+                    p["clock"]["value"] = float(secs)
+    return out, len(fixed)
+
+
+def repair_raw_clock(raw: pd.DataFrame) -> pd.DataFrame:
+    """Release rows (sorted by game and play number) with `stale_clocks`'
+    estimates in `clock.displayValue` and `start.adj_TimeSecsRem`: what a
+    finished game's feed kept stale. The release's win probabilities were
+    computed on the stale clock and stay as published."""
+    if raw.empty or "wallclock" not in raw.columns:
+        return raw
+    clock = raw["clock.displayValue"].map(_clock_secs).to_numpy(float)
+    est = stale_clocks(raw["game_id"].to_numpy(), raw["period"].to_numpy(float), clock,
+                       _epoch(raw["wallclock"].to_numpy()), raw["type.text"].to_numpy())
+    hit = ~np.isnan(est)
+    if not hit.any():
+        return raw
+    raw = raw.copy()
+    idx = raw.index[hit]
+    raw.loc[idx, "clock.displayValue"] = [_clock_text(e) for e in est[hit]]
+    adj = pd.to_numeric(raw["start.adj_TimeSecsRem"], errors="coerce").astype(float)
+    adj.loc[idx] -= clock[hit] - est[hit]
+    raw["start.adj_TimeSecsRem"] = adj
+    return raw
+
+
 def live_raw(summary: dict, game_id, odds: dict | None = None) -> pd.DataFrame:
     """ESPN's summary for one game → rows with the release's `RAW_COLS`.
 
@@ -555,9 +713,11 @@ def live_raw(summary: dict, game_id, odds: dict | None = None) -> pd.DataFrame:
     4th-down and two-point models, so nothing but the spread needs the
     network: when the summary has no pickcenter, it asks ESPN's odds
     endpoint. `odds` (gameSpread, overUnder, homeFavorite,
-    gameSpreadAvailable) skips that too."""
+    gameSpreadAvailable) skips that too. A feed whose clock is stale gets
+    estimated clocks first (`repair_stale_clock`)."""
     from sportsdataverse.cfb import CFBPlayProcess  # heavy (polars, models): live games only
 
+    summary, _ = repair_stale_clock(summary)  # before its win probability reads the clock
     payload = {"timeouts": {}}
     payload.update({k: summary.get(k) or {} for k in _SUMMARY_DICTS})
     payload.update({k: summary.get(k) or [] for k in _SUMMARY_LISTS})
@@ -945,7 +1105,7 @@ def to_pbp(raw: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     in `columns` is present (NaN if the college feed doesn't have it)."""
     if raw.empty:
         return pd.DataFrame(columns=columns)
-    df = _relocate_late_rows(raw.sort_values(["game_id", "game_play_number"], kind="stable"))
+    df = _relocate_late_rows(repair_raw_clock(raw.sort_values(["game_id", "game_play_number"], kind="stable")))
     gid = df["game_id"]
     first_row = gid != gid.shift()
     home, away = df["homeTeamAbbrev"], df["awayTeamAbbrev"]
