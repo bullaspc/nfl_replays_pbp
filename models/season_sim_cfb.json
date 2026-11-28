@@ -1,0 +1,87 @@
+{
+ "features": {
+  "epa": {
+   "stat": "EPA/play",
+   "sign": 1,
+   "coef": 30.664
+  },
+  "pts": {
+   "stat": "Pts/Drive",
+   "sign": 1,
+   "coef": 27.644
+  },
+  "sr": {
+   "stat": "ED SR",
+   "sign": 1,
+   "coef": 111.262
+  },
+  "to": {
+   "stat": "Turnovers",
+   "sign": -1,
+   "coef": -2.675
+  }
+ },
+ "prior": {
+  "stat": "net EPA/play, last season",
+  "coef": 48.686
+ },
+ "g0": 8.0,
+ "hfa": 2.82,
+ "game_sd": 14.346,
+ "tau": {
+  "floor": 2.566,
+  "scale": 21.75,
+  "g1": 8
+ },
+ "fcs": {
+  "intercept": 27.801,
+  "slope": 0.78,
+  "sd": 16.053
+ },
+ "committee": {
+  "coef": {
+   "wins": 3.2347,
+   "losses": -4.3985,
+   "power": 1.0198,
+   "sos": 1.5202,
+   "champion": 0.0727,
+   "power4": 2.0179
+  },
+  "mean": [
+   6.2351,
+   5.5145,
+   1.0227,
+   -0.7328,
+   0.029,
+   0.5038
+  ],
+  "sd": [
+   2.8389,
+   2.6265,
+   12.4706,
+   5.638,
+   0.1678,
+   0.5
+  ],
+  "check": {
+   "top 4 of 4": 3.3,
+   "top 12 of 12": 10.8,
+   "top 25 of 25": 22.2,
+   "rank corr": 0.913
+  }
+ },
+ "fit": {
+  "seasons": "2016-2025",
+  "games": 7160,
+  "next week": {
+   "log loss": 0.5438,
+   "Brier": 0.1836,
+   "picked": 0.7203
+  },
+  "every game ahead": {
+   "log loss": 0.5783,
+   "Brier": 0.198,
+   "picked": 0.6898
+  }
+ }
+}

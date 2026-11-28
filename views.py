@@ -1679,9 +1679,9 @@ def prob_text(p) -> str:
         return "—"
     if p >= 1:
         return "100%"
-    if p < 0.005:
+    if p < 0.0095:  # under what rounds to 1%
         return "<1%"
-    if p > 0.995:
+    if p > 0.9905:
         return "\u2060>99%"  # the word joiner keeps st.table's markdown from reading a blockquote
     return f"{p:.0%}"
 

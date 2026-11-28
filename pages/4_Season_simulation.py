@@ -1,8 +1,10 @@
 """
-The Season simulation page: the rest of an NFL season played out 10,000
-times (season_sim.py), for each team's final record and its chances of the
-division, the playoffs and each round, the projected bracket and the draft
-order, each with the range the runs give at the confidence level picked.
+The Season simulation page: the rest of a season played out 10,000 times,
+for each team's final record and its chances of each title, the projected
+bracket and (NFL) the draft order, each with the range the runs give at the
+confidence level picked. NFL: season_sim.py, divisions, wild cards and the
+draft. College football (League switch): cfp_sim.py, conference title games
+and the 12-team College Football Playoff, 2024 on.
 
 Each game left gets an expected margin from the Matchup page's numbers
 (opponent-adjusted Proj., moved by the players gone on the injury reports
@@ -23,6 +25,7 @@ import streamlit as st
 
 import fresh  # reload modules a hot update left stale, before importing from them
 fresh.reload_stale()
+import cfp_sim
 import leagues
 import season_sim as sim
 from replay_core import FRANCHISE_MOVES, SEASON_MIN_PLAYS, season_qualified
@@ -32,14 +35,14 @@ from views import (bracket_html, mobile_css, prob_text, section_nav, stat_table,
 st.set_page_config(page_title="Season simulation", layout="wide", page_icon="🎲")
 mobile_css()  # the section links' sticky row
 
-league = leagues.NFL  # the NFL first; college has no division/playoff format to play out here
-FIRST_SEASON = 2016   # snap counts, injury reports and the model's fit start here
+FIRST_SEASON = 2016   # NFL: snap counts, injury reports and the model's fit start here
 _TODAY = date.today()
 LATEST_SEASON = _TODAY.year if _TODAY.month >= 9 else _TODAY.year - 1
 NOW = "Now"
 PROBS = ["Division", "Playoffs", "Bye", "Top seed", "Divisional", "Conf. game", "Super Bowl",
          "Champion", "#1 %", "Top 3 %", "Top 5 %", "Top 10 %", "W", "L", "If win", "If loss",
-         "Win %", "Home wins", "Away wins", "Share", "AFC wins"]
+         "Win %", "Home wins", "Away wins", "Share", "AFC wins",
+         "Title game", "Conf. title", "Bowl", "Playoff", "Quarterfinal", "Semifinal", "Final", "Top 25"]
 
 
 def _week_label(as_of: int | None) -> str:
@@ -49,7 +52,14 @@ def _week_label(as_of: int | None) -> str:
 # ---------- Sidebar ----------
 with st.sidebar:
     st.header("Season simulation")
-    st.caption("NFL")
+    league = leagues.LEAGUES[st.radio("League", list(leagues.LEAGUES), horizontal=True, key="_sim_league")]
+
+if league is leagues.COLLEGE:
+    import college_sim_view  # the college page: its own sidebar controls and sections
+    college_sim_view.render(LATEST_SEASON)
+    st.stop()
+
+with st.sidebar:
     season = int(st.number_input("Season", min_value=FIRST_SEASON, max_value=LATEST_SEASON,
                                  value=LATEST_SEASON, key="_sim_season"))
 

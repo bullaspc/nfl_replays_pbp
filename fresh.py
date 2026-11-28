@@ -16,8 +16,8 @@ import struct
 import sys
 
 # The app's modules, each after the ones it imports.
-ORDER = ["replay_core", "season_sim", "live_feed", "cfb_feed", "scoreboard", "nflfastr_models",
-         "season_store", "leagues", "records", "game_summary", "rosters", "views"]
+ORDER = ["replay_core", "season_sim", "cfp_sim", "live_feed", "cfb_feed", "scoreboard", "nflfastr_models",
+         "season_store", "leagues", "records", "game_summary", "rosters", "views", "college_sim_view"]
 # (module, mtime, size) already reloaded, so a .pyc that can't be rewritten
 # doesn't reload the module on every run.
 _reloaded: set[tuple[str, int, int]] = set()
