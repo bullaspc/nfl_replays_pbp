@@ -25,9 +25,11 @@ PROBS = ["Title game", "Conf. title", "Bowl", "Playoff", "Bye", "Quarterfinal", 
          "Champion", "Top 25", "Win %", "If win", "If loss", "Share", "Wins it", "Playoff if so", "If not"]
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _schedule(season: int) -> pd.DataFrame:
-    return leagues.load_cfb_schedule(season)
+    """The college schedule with ESPN's finals on the games it doesn't have
+    as completed yet (it's rebuilt a few times a day; ESPN has them in minutes)."""
+    return sim.cfb_with_finals(leagues.load_cfb_schedule(season))
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
@@ -67,10 +69,11 @@ def _prior(season: int) -> pd.Series | None:
 
 
 @st.cache_data(max_entries=4, show_spinner=False, ttl=6 * 3600)
-def _run(season: int, stamp: str, as_of: int | None):
+def _run(season: int, stamp: str, as_of: int | None, results: str):
     """The college simulation for a season from a week (None: now), cached by
-    the data's stamp: (CollegeInput, games left, CollegeResult, the weeks
-    the numbers cover)."""
+    the data's stamp and the games finished so far (`results`, so a new final
+    redoes it): (CollegeInput, games left, CollegeResult, the weeks the
+    numbers cover)."""
     model = cfp_sim.load_model()
     sched = _schedule(season)
     ids = leagues.load_cfb_team_ids(season, stamp)
@@ -163,7 +166,8 @@ def render(latest_season: int) -> None:
     stamp = COLLEGE.stamp()
     try:
         with st.spinner(f"Playing out the {season} season {sim.SIM_RUNS:,} times…"):
-            inp, left, res, span = _run(season, stamp, as_of)
+            inp, left, res, span = _run(season, stamp, as_of, sim.results_key(
+                sched.loc[sched["completed"].fillna(False).astype(bool), "game_id"]))
     except leagues.GameLoadError as e:
         st.title(f"🎲 {season} college football simulation")
         st.warning(str(e))

@@ -31,9 +31,12 @@ from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
+import requests
 from scipy.special import ndtr
 
 import replay_core as core
+import scoreboard
+from live_feed import ESPN_HEADERS
 
 SIM_RUNS = 10_000
 SIM_SEED = 2026  # fixed, so the same inputs give the same numbers on every rerun
@@ -174,6 +177,104 @@ def game_features(games: pd.DataFrame, proj: dict[str, pd.DataFrame], lost: dict
     out["prior"] = [prior.get(h, np.nan) - prior.get(a, np.nan) if prior is not None else np.nan
                     for h, a in zip(games["home"], games["away"])]
     return out
+
+
+# ---------- Results ESPN has before the schedule does ----------
+# nflverse's and sportsdataverse's schedules are rebuilt a few times a day, so
+# a game that ended an hour (or a morning) ago can still read as not played.
+# ESPN's scoreboard has the final within minutes: for each day with a game
+# that has kicked off and isn't final in the schedule (up to FINALS_DAYS
+# back), its finals are read and put on the schedule's rows.
+FINALS_DAYS = 10
+
+
+def espn_finals(league_key: str, day: str, timeout: float = 10) -> pd.DataFrame:
+    """ESPN's finished games on `day` (YYYYMMDD, US Eastern), for a league key
+    ("NFL" / "CFB"): event_id, home_score, away_score. Empty if it can't be read."""
+    url, params = scoreboard.SCOREBOARDS[league_key]
+    try:
+        r = requests.get(url, params={**params, "dates": day}, headers=ESPN_HEADERS, timeout=timeout)
+        r.raise_for_status()
+        events = r.json().get("events", [])
+    except Exception:
+        return pd.DataFrame(columns=["event_id", "home_score", "away_score"])
+    rows = []
+    for e in events:
+        if not e.get("status", {}).get("type", {}).get("completed"):
+            continue
+        comp = (e.get("competitions") or [{}])[0]
+        side = {c.get("homeAway"): c for c in comp.get("competitors", [])}
+        try:
+            rows.append({"event_id": str(e["id"]), "home_score": float(side["home"]["score"]),
+                         "away_score": float(side["away"]["score"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return pd.DataFrame(rows, columns=["event_id", "home_score", "away_score"])
+
+
+def _finals(league_key: str, days: list[str]) -> pd.DataFrame:
+    frames = [f for f in (espn_finals(league_key, d) for d in days) if not f.empty]
+    return (pd.concat(frames, ignore_index=True).drop_duplicates("event_id").set_index("event_id")
+            if frames else pd.DataFrame(columns=["home_score", "away_score"]))
+
+
+def pending_days(kickoff: pd.Series, done: pd.Series, now: pd.Timestamp | None = None) -> list[str]:
+    """The US Eastern days (YYYYMMDD) of games that have kicked off (UTC
+    `kickoff`) but aren't `done`, the last `FINALS_DAYS` only."""
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    k = pd.to_datetime(kickoff, utc=True, errors="coerce")
+    m = ~done.fillna(False).astype(bool) & (k <= now) & (k >= now - pd.Timedelta(days=FINALS_DAYS))
+    return sorted(set(k[m].dt.tz_convert("America/New_York").dt.strftime("%Y%m%d")))
+
+
+def nfl_with_finals(sched: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """nflverse's schedule with ESPN's finals on the games it doesn't have
+    a result for yet (matched by ESPN event id)."""
+    if sched.empty or "espn" not in sched.columns:
+        return sched
+    kick = pd.to_datetime(sched["gameday"].astype(str) + " " + sched["gametime"].fillna("00:00").astype(str),
+                          errors="coerce").dt.tz_localize("America/New_York", ambiguous="NaT",
+                                                          nonexistent="NaT").dt.tz_convert("UTC")
+    days = pending_days(kick, sched["result"].notna(), now)
+    if not days:
+        return sched
+    finals = _finals("NFL", days)
+    if finals.empty:
+        return sched
+    out = sched.copy()
+    hit = out["result"].isna() & out["espn"].astype(str).isin(finals.index)
+    ev = out.loc[hit, "espn"].astype(str)
+    out.loc[hit, "home_score"] = finals.loc[ev, "home_score"].to_numpy()
+    out.loc[hit, "away_score"] = finals.loc[ev, "away_score"].to_numpy()
+    out.loc[hit, "result"] = out.loc[hit, "home_score"] - out.loc[hit, "away_score"]
+    return out
+
+
+def cfb_with_finals(sched: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """sportsdataverse's college schedule with ESPN's finals on the games
+    it doesn't have as completed yet (its game_id is ESPN's event id)."""
+    if sched.empty or "start_date" not in sched.columns:
+        return sched
+    days = pending_days(sched["start_date"], sched["completed"], now)
+    if not days:
+        return sched
+    finals = _finals("CFB", days)
+    if finals.empty:
+        return sched
+    out = sched.copy()
+    hit = ~out["completed"].fillna(False).astype(bool) & out["game_id"].astype(str).isin(finals.index)
+    ev = out.loc[hit, "game_id"].astype(str)
+    out.loc[hit, "home_points"] = finals.loc[ev, "home_score"].to_numpy()
+    out.loc[hit, "away_points"] = finals.loc[ev, "away_score"].to_numpy()
+    out.loc[hit, "completed"] = True
+    return out
+
+
+def results_key(finished_ids) -> str:
+    """A short key for the set of finished games, so a cached run is
+    redone when a result comes in."""
+    import hashlib
+    return hashlib.sha1(",".join(sorted(map(str, finished_ids))).encode()).hexdigest()[:12]
 
 
 # ---------- The schedule ----------

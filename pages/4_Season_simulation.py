@@ -68,7 +68,14 @@ if model is None:
     st.title("🎲 Season simulation")
     st.error("The game model (models/season_sim.json) is missing: run tools/build_sim_model.py.")
     st.stop()
-sched = leagues.load_schedule(season)
+@st.cache_data(ttl=600, show_spinner=False)
+def _schedule(season: int) -> pd.DataFrame:
+    """nflverse's schedule with ESPN's finals on the games it doesn't have a
+    result for yet (it's rebuilt a few times a day; ESPN has them in minutes)."""
+    return sim.nfl_with_finals(leagues.load_schedule(season))
+
+
+sched = _schedule(season)
 if sched.empty:
     st.title(f"🎲 {season} NFL season simulation")
     st.warning("nflverse's schedule couldn't be read just now; try again in a minute.")
@@ -117,10 +124,11 @@ def _prior(season: int) -> pd.Series | None:
 
 
 @st.cache_data(max_entries=4, show_spinner=False, ttl=6 * 3600)
-def _run(season: int, stamp: str, avail_stamp: str, as_of: int | None):
+def _run(season: int, stamp: str, avail_stamp: str, as_of: int | None, results: str):
     """The simulation for a season from a week (None: now), cached by the
-    data's stamps: (SimInput, games left, lineup changes, SimResult, the
-    weeks the numbers cover)."""
+    data's stamps and the games finished so far (`results`, so a new final
+    redoes it): (SimInput, games left, lineup changes, SimResult, the weeks
+    the numbers cover)."""
     pbp = league.season_pbp(season, stamp)
     played_weeks = sorted(int(w) for w in pbp.loc[~pbp["postseason"], "week"].dropna().unique())
     weeks = [w for w in played_weeks if as_of is None or w < as_of]
@@ -131,7 +139,7 @@ def _run(season: int, stamp: str, avail_stamp: str, as_of: int | None):
         off = season_qualified(tables["offense"], SEASON_MIN_PLAYS)
         def_ = season_qualified(tables["defense"], SEASON_MIN_PLAYS)
     avail = league.availability(season)
-    inp, left, changes = sim.prepare(season, leagues.load_schedule(season), off, def_, _prior(season - 1),
+    inp, left, changes = sim.prepare(season, _schedule(season), off, def_, _prior(season - 1),
                                      leagues.load_team_divisions(), model, avail.snaps, avail.injuries,
                                      avail.roster, as_of)
     return inp, left, changes, sim.simulate(inp), (weeks[0], weeks[-1]) if weeks else None
@@ -139,7 +147,8 @@ def _run(season: int, stamp: str, avail_stamp: str, as_of: int | None):
 
 try:
     with st.spinner(f"Playing out the {season} season {sim.SIM_RUNS:,} times…"):
-        inp, left, changes, res, span = _run(season, stamp, avail_stamp, as_of)
+        inp, left, changes, res, span = _run(season, stamp, avail_stamp, as_of,
+                                             sim.results_key(sched.loc[sched["result"].notna(), "game_id"]))
 except leagues.GameLoadError as e:
     st.title(f"🎲 {season} NFL season simulation")
     st.warning(str(e))
