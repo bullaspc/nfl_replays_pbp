@@ -70,6 +70,24 @@
    "rank corr": 0.913
   }
  },
+ "postseason": {
+  "bowl": {
+   "games": 354,
+   "shrink": 0.492,
+   "sd": 16.951,
+   "log loss": 0.6756,
+   "Brier": 0.2413,
+   "picked": 0.5678
+  },
+  "playoff": {
+   "games": 46,
+   "shrink": 1.156,
+   "sd": 13.355,
+   "log loss": 0.5423,
+   "Brier": 0.1794,
+   "picked": 0.7609
+  }
+ },
  "fit": {
   "seasons": "2016-2025",
   "games": 7160,

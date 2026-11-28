@@ -20,6 +20,16 @@ schedule, a conference title and a Power 4 schedule, fitted on the
 committee's final rankings of 2016–2025, plus a draw for what the model
 doesn't see, so the same record can land a few places apart from run to run.
 
+Bowls: once the matchups are announced (Selection Day), the schedule's
+games are played out; before that (and simulating from an earlier week), each
+run fills the season's bowl slots with the bowl-eligible teams outside the
+playoff (six wins, one FCS win at most; 5–7 teams fill in when short), each
+paired with the next team in the committee's order from another conference.
+A bowl's margin is the model's `postseason.bowl.shrink` of the rating
+difference with its own spread: bowls, with players opting out, have gone
+by about half of it since 2016. Once the playoff field is announced, its seeds
+are the schedule's, not the committee model's.
+
 The field follows each season's rules (`cfp_format`): 2024, the five
 highest-ranked conference champions in and the top four champions seeded
 1–4; 2025, the same five champions and seeds straight by ranking; from 2026,
@@ -219,6 +229,84 @@ def playoff_results(sched: pd.DataFrame, ids: dict[int, str], as_of: int | None 
     return out
 
 
+def postseason_games(sched: pd.DataFrame, ids: dict[int, str], idx: dict[str, int],
+                     as_of: int | None = None) -> tuple[pd.DataFrame, dict[int, int]]:
+    """Once Selection Day has set them (and only when simulating from now):
+    the bowls outside the playoff with both teams FBS (game_id, bowl, date,
+    home, away as team indices, neutral, played, home_margin), and the
+    playoff's seeds (team index → seed) when the schedule lists all twelve."""
+    cols = ["game_id", "bowl", "date", "kickoff", "home", "away", "neutral", "played", "home_margin"]
+    if as_of is not None or sched.empty or "season_type" not in sched.columns:
+        return pd.DataFrame(columns=cols), {}
+    post = sched[sched["season_type"].astype(str).str.startswith("post")
+                 & sched["home_id"].notna() & sched["away_id"].notna()]
+    notes = post["notes"].fillna("").astype(str)
+    cfp = (post["playoff_round_name"].notna() if "playoff_round_name" in post.columns
+           else pd.Series(False, index=post.index)) | notes.str.contains("College Football Playoff")
+    seeds = {}
+    for side in ("home", "away"):
+        col = f"playoff_{side}_seed"
+        if col in post.columns:
+            for tid, sd in zip(post.loc[cfp, f"{side}_id"], post.loc[cfp, col]):
+                t = idx.get(ids.get(int(tid)))
+                if t is not None and pd.notna(sd):
+                    seeds[t] = int(sd)
+    if sorted(seeds.values()) != list(range(1, 13)):
+        seeds = {}
+    b = post[~cfp]
+    home = b["home_id"].astype(int).map(ids).map(idx)
+    away = b["away_id"].astype(int).map(ids).map(idx)
+    keep = home.notna() & away.notna()
+    b = b[keep]
+    played = b["completed"].eq(True) & b["home_points"].notna()
+    bowls = pd.DataFrame({
+        "game_id": b["game_id"].astype(str).to_numpy(), "bowl": b["notes"].fillna("Bowl").to_numpy(),
+        "date": [("" if pd.isna(d) else f"{d:%a %b} {d.day}")
+                 for d in pd.to_datetime(b["start_date"], utc=True, errors="coerce").dt.tz_convert("America/New_York")],
+        "kickoff": pd.to_datetime(b["start_date"], utc=True, errors="coerce").to_numpy(),
+        "home": home[keep].astype(int).to_numpy(), "away": away[keep].astype(int).to_numpy(),
+        "neutral": b["neutral_site"].eq(True).to_numpy(), "played": played.to_numpy(),
+        "home_margin": np.where(played, b["home_points"] - b["away_points"], np.nan),
+    }, columns=cols)
+    return bowls.sort_values(["kickoff", "game_id"]).reset_index(drop=True), seeds
+
+
+def bowl_slots(sched: pd.DataFrame, previous: pd.DataFrame | None = None) -> int:
+    """The season's bowl games outside the playoff: the schedule's, else (not
+    announced yet) last season's."""
+    for s in (sched, previous):
+        if s is None or s.empty or "season_type" not in s.columns:
+            continue
+        post = s[s["season_type"].astype(str).str.startswith("post") & s["fbs_participant"].fillna(False)]
+        notes = post["notes"].fillna("").astype(str)
+        cfp = (post["playoff_round_name"].notna() if "playoff_round_name" in post.columns
+               else pd.Series(False, index=post.index)) | notes.str.contains("College Football Playoff")
+        n = int((~cfp).sum())
+        if n:
+            return n
+    return 0
+
+
+def new_to_fbs(conferences: pd.DataFrame, earlier: list[pd.DataFrame]) -> set[int]:
+    """ESPN ids of the teams moving up from FCS (`read_conferences` of the
+    season and of the two before it): FBS now but not in each of those two
+    seasons. The NCAA gives them a bowl only when there aren't enough
+    eligible teams."""
+    before = [set(e["team_id"]) for e in earlier if e is not None and not e.empty]
+    if not before:
+        return set()
+    always = set.intersection(*before)
+    return set(conferences.loc[~conferences["team_id"].isin(always), "team_id"].astype(int))
+
+
+def bowl_model(model: dict) -> tuple[float, float]:
+    """A bowl's (shrink, spread): how much of the rating difference its
+    margin follows, and its own noise (tools/build_cfb_sim_model.py's
+    postseason check); the regular season's without it."""
+    b = model.get("postseason", {}).get("bowl", {})
+    return float(b.get("shrink", 1.0)), float(b.get("sd", model["game_sd"]))
+
+
 # ---------- Ratings ----------
 def team_features(off: pd.DataFrame, def_: pd.DataFrame, model: dict) -> pd.DataFrame:
     """Each team's part of the model's features (`model["features"]`):
@@ -287,6 +375,10 @@ class CollegeInput:
     fixed_title: dict = field(default_factory=dict)      # conference → (team a, team b) already set
     title_results: dict = field(default_factory=dict)    # conference → winner index (played)
     playoff_results: dict = field(default_factory=dict)  # frozenset({i, j}) → winner index
+    bowl_slots: int = 0                                   # bowl games outside the playoff
+    bowls: pd.DataFrame | None = None                     # the bowls announced (`postseason_games`), else None
+    fixed_seeds: dict = field(default_factory=dict)       # team index → seed, once the field is announced
+    transition: set = field(default_factory=set)          # indices of teams up from FCS in the last two seasons
 
 
 @dataclass
@@ -309,16 +401,25 @@ class CollegeResult:
     played_conf: np.ndarray  # conference record so far: wins
     played_conf_losses: np.ndarray
     conf_games: np.ndarray   # conference games in all
+    eligible: np.ndarray     # runs × T bool: six wins (one FCS win counted at most)
+    bowl_game: np.ndarray    # runs × T bool: plays a bowl outside the playoff
+    bowl_win: np.ndarray     # runs × T bool: and wins it
+    final_wins: np.ndarray   # runs × T: wins with the bowl or playoff games
+    final_losses: np.ndarray
+    bowls: pd.DataFrame | None = None  # the bowls announced, with each one's chances
 
 
 def prepare(season: int, sched: pd.DataFrame, conferences: pd.DataFrame, ids: dict[int, str],
             off: pd.DataFrame | None, def_: pd.DataFrame | None, prior: pd.Series | None, model: dict,
-            as_of: int | None = None) -> tuple[CollegeInput, pd.DataFrame]:
+            as_of: int | None = None, bowl_slots: int = 0,
+            transition: set[int] = frozenset()) -> tuple[CollegeInput, pd.DataFrame]:
     """The simulation's input: the FBS teams (`conferences`, ESPN's), their
     power ratings from the season tables (`off` / `def_`, the FBS teams',
     opponent-adjusted; None before any game) and last season's (`prior`),
-    and the schedule (`ids`: ESPN id → the play-by-play's abbreviation).
-    Also the games left with their expected margins and win chances."""
+    and the schedule (`ids`: ESPN id → the play-by-play's abbreviation),
+    with `bowl_slots` bowl games to fill before the matchups are out
+    (`transition`: ESPN ids of teams still moving up from FCS, `new_to_fbs`). Also the
+    games left with their expected margins and win chances."""
     conf = conferences.assign(abbr=conferences["team_id"].map(ids).fillna(conferences["abbr"]))
     teams = list(conf["abbr"])
     idx = {t: i for i, t in enumerate(teams)}
@@ -359,10 +460,21 @@ def prepare(season: int, sched: pd.DataFrame, conferences: pd.DataFrame, ids: di
         fixed[c] = (r.home, r.away)
         if r.played:
             results[c] = r.home if r.home_margin > 0 else r.away
+    bowls, seeds = postseason_games(sched, ids, idx, as_of)
+    if not bowls.empty:  # each announced bowl's chances, as the runs play it
+        shrink, sd_b = bowl_model(model)
+        mu = shrink * (p[bowls["home"]] - p[bowls["away"]] + np.where(bowls["neutral"], 0.0, hfa))
+        bowls["mu"] = mu
+        bowls["p_home"] = ndtr(mu / np.sqrt(sd_b ** 2 + shrink ** 2 * (tau[bowls["home"]] ** 2
+                                                                         + tau[bowls["away"]] ** 2)))
+        bowls["home_team"] = [teams[i] for i in bowls["home"]]
+        bowls["away_team"] = [teams[i] for i in bowls["away"]]
     inp = CollegeInput(season, teams, list(conf["conference"]), list(conf["division"].where(conf["division"].notna(), None)),
                        p, tau, games, hfa, model["game_sd"], fcs, model, fixed, results,
                        {frozenset(idx[t] for t in k): idx[w] for k, w in playoff_results(sched, ids, as_of).items()
-                        if all(t in idx for t in k)})
+                        if all(t in idx for t in k)},
+                       bowl_slots if bowls.empty else len(bowls), None if bowls.empty else bowls, seeds,
+                       {idx[ids[i]] for i in transition if ids.get(i) in idx})
     left = games[~games["played"]].copy()
     # A game's spread: its own noise (an FCS game's is wider) and both FBS teams' rating errors.
     fcs_game = (left["home"] < 0) | (left["away"] < 0)
@@ -561,8 +673,25 @@ def simulate(inp: CollegeInput, runs: int = sim.SIM_RUNS, seed: int = sim.SIM_SE
     rank = np.empty((runs, T), np.int16)
     rank[rows[:, None], order] = np.arange(1, T + 1, dtype=np.int16)[None, :]
 
-    seed = _select_field(inp, rank, champion)
+    if inp.fixed_seeds:  # the field Selection Day announced
+        seed = np.zeros((runs, T), np.int8)
+        for t, k in inp.fixed_seeds.items():
+            seed[:, t] = k
+    else:
+        seed = _select_field(inp, rank, champion)
     stage = _play_bracket(inp, seed, strength, rng)
+
+    # Bowls: six wins, counting one win over an FCS team at most.
+    fh, fa = (h >= 0) & (a < 0), (a >= 0) & (h < 0)
+    fcs_wins = cr[:, fh] @ H[fh] + (1 - cr[:, fa]) @ A[fa]
+    counted = wins - np.maximum(fcs_wins - 1, 0)
+    eligible = counted >= BOWL_WINS
+    bowl_game, bowl_win = _play_bowls(inp, rank, seed, counted, strength, rng)
+    in_field = seed > 0
+    cfp_w = np.where(in_field, stage - np.where(seed <= 4, 2, 1), 0).clip(min=0)
+    cfp_l = (in_field & (stage < 5)).astype(np.float32)
+    final_wins = wins + bowl_win + cfp_w
+    final_losses = losses + (bowl_game & ~bowl_win) + cfp_l
     played = g[g["played"]]
 
     def tally(frame, mask=None):
@@ -585,7 +714,63 @@ def simulate(inp: CollegeInput, runs: int = sim.SIM_RUNS, seed: int = sim.SIM_SE
                                 away_team=[inp.teams[i] if i >= 0 else FCS for i in a[left]])
     return CollegeResult(inp.teams, inp.conference, runs, wins, losses, conf_w, title_game, champion,
                          rank, seed, stage, outcomes, left_games.reset_index(drop=True),
-                         pw, pl, cw, cl, conf_n)
+                         pw, pl, cw, cl, conf_n, eligible, bowl_game, bowl_win, final_wins, final_losses,
+                         inp.bowls)
+
+
+def _play_bowls(inp: CollegeInput, rank: np.ndarray, seed: np.ndarray, counted: np.ndarray,
+                strength: np.ndarray, rng) -> tuple[np.ndarray, np.ndarray]:
+    """Each run's bowls outside the playoff (runs × T: plays one, wins it):
+    the ones announced, or `inp.bowl_slots` games filled by the eligible
+    teams outside the field in the committee's order (the lowest left out
+    when there are too many; when too few, eligible teams still moving up
+    from FCS, then 5–7 teams, as the NCAA fills them), each paired with the
+    next team from another conference."""
+    runs, T = rank.shape
+    rows = np.arange(runs)
+    shrink, sd = bowl_model(inp.model)
+    bowl_game = np.zeros((runs, T), bool)
+    bowl_win = np.zeros((runs, T), bool)
+    if inp.bowls is not None and not inp.bowls.empty:
+        for r in inp.bowls.itertuples(index=False):
+            h, a = r.home, r.away
+            if r.played:
+                home_won = np.full(runs, r.home_margin > 0)
+            else:
+                adv = 0.0 if r.neutral else inp.hfa
+                m = shrink * (strength[:, h] - strength[:, a] + adv) + rng.normal(0.0, sd, runs)
+                home_won = m > 0
+            bowl_game[:, h] = bowl_game[:, a] = True
+            bowl_win[:, h], bowl_win[:, a] = home_won, ~home_won
+        return bowl_game, bowl_win
+    slots = 2 * inp.bowl_slots
+    if not slots:
+        return bowl_game, bowl_win
+    conf = inp.conference
+    run_i, t1, t2 = [], [], []
+    order = np.argsort(rank, axis=1)
+    out = seed > 0
+    elig = counted >= BOWL_WINS
+    five = counted == BOWL_WINS - 1
+    new = inp.transition
+    for s in range(runs):
+        o = order[s]
+        pool = [t for t in o if elig[s, t] and not out[s, t] and t not in new]
+        if len(pool) < slots:
+            pool += [t for t in o if elig[s, t] and not out[s, t] and t in new][:slots - len(pool)]
+        if len(pool) < slots:
+            pool += [t for t in o if five[s, t] and not out[s, t] and t not in new][:slots - len(pool)]
+        pool = pool[:slots]
+        pool = pool[:len(pool) - len(pool) % 2]  # pairs only
+        while len(pool) >= 2:
+            t = pool.pop(0)
+            j = next((i for i, x in enumerate(pool) if conf[x] != conf[t]), 0)
+            run_i.append(s); t1.append(t); t2.append(pool.pop(j))
+    run_i, t1, t2 = np.array(run_i, int), np.array(t1, int), np.array(t2, int)
+    m = shrink * (strength[run_i, t1] - strength[run_i, t2]) + rng.normal(0.0, sd, len(run_i))
+    bowl_game[run_i, t1] = bowl_game[run_i, t2] = True
+    bowl_win[run_i, t1], bowl_win[run_i, t2] = m > 0, m <= 0
+    return bowl_game, bowl_win
 
 
 def _select_field(inp: CollegeInput, rank: np.ndarray, champion: np.ndarray) -> np.ndarray:
@@ -685,6 +870,9 @@ def team_table(res: CollegeResult, level: float) -> pd.DataFrame:
         "Quarterfinal %": (res.stage >= 2).mean(0), "Semifinal %": (res.stage >= 3).mean(0),
         "Final %": (res.stage >= 4).mean(0), "Champion %": (res.stage == 5).mean(0),
         "Avg rank": res.rank.mean(0), "Top 25 %": (res.rank <= 25).mean(0),
+        "Eligible %": res.eligible.mean(0), "Bowl game %": res.bowl_game.mean(0),
+        "Bowl win %": res.bowl_win.mean(0), "Postseason %": (res.bowl_game | (res.seed > 0)).mean(0),
+        "Final W": res.final_wins.mean(0), "Final L": res.final_losses.mean(0),
     })
 
 

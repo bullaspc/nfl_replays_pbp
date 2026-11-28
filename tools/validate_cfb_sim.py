@@ -11,8 +11,8 @@ Check the Season simulation's college view against the seasons that followed.
    (tools/build_cfb_sim_model.py's rows from VALIDATE_CACHE, the feature set
    and g0 kept), against what happened: final wins (regular season and title
    game) inside each confidence level's range, and the chances of the title
-   game, the conference title, bowl eligibility, the playoff and the
-   national title (log loss and Brier score, next to the base rate).
+   game, the conference title, bowl eligibility, a bowl game, the playoff
+   and the national title (log loss and Brier score, next to the base rate).
 
     python tools/validate_cfb_sim.py [first=2024] [last=2025] [weeks=5,9,13] [pbp_dir]
 """
@@ -42,12 +42,15 @@ def held_out_model(season: int) -> tuple[dict, bool]:
     games = pd.concat([pd.read_pickle(f) for f in keep], ignore_index=True)
     teams = pd.concat([pd.read_pickle(Path(str(f).replace("_games", "_teams"))) for f in keep], ignore_index=True)
     games = games[games["margin"].notna()].reset_index(drop=True)
-    return fit_model(games, teams, list(model["features"]), model["g0"]), True
+    refit = fit_model(games, teams, list(model["features"]), model["g0"])
+    refit["postseason"] = model.get("postseason", {})  # bowls' spread (scored here on who plays, not who wins)
+    return refit, True
 
 
 def actual(sched: pd.DataFrame, conf: pd.DataFrame, ids: dict[int, str]) -> pd.DataFrame:
     """What happened per FBS team: wins (regular season and title game),
-    title game, conference champion, playoff, national champion."""
+    title game, conference champion, bowl eligible (one FCS win counted at
+    most), a bowl game outside the playoff, playoff, national champion."""
     fbs = set(conf["team_id"])
     g = cfp_sim.schedule_games(sched, fbs)
     g = g[g["played"]]
@@ -58,12 +61,18 @@ def actual(sched: pd.DataFrame, conf: pd.DataFrame, ids: dict[int, str]) -> pd.D
               ((mine["away_id"] == r.team_id) & (mine["home_margin"] < 0))
         titles = mine[mine["title"] != ""]
         t_won = won[titles.index]
+        opp = np.where(mine["home_id"] == r.team_id, mine["away_id"], mine["home_id"])
+        fcs_wins = int((won & ~pd.Series(opp, index=mine.index).isin(fbs)).sum())
         rows[ids.get(r.team_id, r.abbr)] = {"wins": float(won.sum()), "title_game": float(len(titles) > 0),
-                                            "champion": float(t_won.any())}
+                                            "champion": float(t_won.any()),
+                                            "eligible": float(won.sum() - max(fcs_wins - 1, 0) >= cfp_sim.BOWL_WINS)}
     out = pd.DataFrame.from_dict(rows, orient="index")
     post = sched[sched["playoff_round_name"].notna()] if "playoff_round_name" in sched.columns else sched.iloc[0:0]
     field_ids = set(post["home_id"].dropna().astype(int)) | set(post["away_id"].dropna().astype(int))
     out["playoff"] = [float(any(ids.get(i) == t for i in field_ids)) for t in out.index]
+    bowls, _ = cfp_sim.postseason_games(sched, ids, {t: i for i, t in enumerate(out.index)})
+    in_bowl = {out.index[i] for i in set(bowls["home"]) | set(bowls["away"])}
+    out["bowl_game"] = [float(t in in_bowl) for t in out.index]
     final = post[post["playoff_round_name"] == "National Championship"]
     champ = ""
     if not final.empty and final["home_points"].notna().all():
@@ -107,13 +116,15 @@ def check_season(season: int, weeks: list[int], pbp_dir: str | None) -> pd.DataF
     pt = tables(ppbp, {pids[i] for i in pfbs if i in pids})
     prior = pt[0]["EPA/play"] - pt[1]["EPA/play"]
     conf = cfp_sim.read_conferences(season)
+    new = cfp_sim.new_to_fbs(conf, [cfp_sim.read_conferences(season - 1), cfp_sim.read_conferences(season - 2)])
     truth = actual(sched, conf, ids)
     fbs_abbr = {ids[i] for i in fbs if i in ids}
     rows = []
     for k in weeks:
         t = tables(pbp[pbp["week"] < k], fbs_abbr)
         off, de = t if t else (None, None)
-        inp, _ = cfp_sim.prepare(season, sched, conf, ids, off, de, prior, model, as_of=k)
+        inp, _ = cfp_sim.prepare(season, sched, conf, ids, off, de, prior, model, as_of=k,
+                                 bowl_slots=cfp_sim.bowl_slots(sched), transition=new)
         res = cfp_sim.simulate(inp)
         tt = cfp_sim.team_table(res, 0.9).set_index("Team")
         for i, team in enumerate(res.teams):
@@ -123,7 +134,8 @@ def check_season(season: int, weeks: list[int], pbp_dir: str | None) -> pd.DataF
             row = {"season": season, "week": k, "team": team, "held_out": held_out, "mean": tt.at[team, "W"],
                    "actual": a["wins"], "p_title_game": tt.at[team, "Title game %"], "title_game": a["title_game"],
                    "p_champion": tt.at[team, "Conf champ %"], "champion": a["champion"],
-                   "p_bowl": tt.at[team, "Bowl %"], "bowl": float(a["wins"] >= cfp_sim.BOWL_WINS),
+                   "p_eligible": tt.at[team, "Eligible %"], "eligible": a["eligible"],
+                   "p_bowl_game": tt.at[team, "Bowl game %"], "bowl_game": a["bowl_game"],
                    "p_playoff": tt.at[team, "Playoff %"], "playoff": a["playoff"],
                    "p_national": tt.at[team, "Champion %"], "national": a["national"]}
             w = res.wins[:, i]
@@ -160,7 +172,7 @@ def main(first: int = 2024, last: int = 2025, weeks=(5, 9, 13), pbp_dir: str | N
     print(pd.DataFrame(out).round(3).to_string(index=False))
     out = []
     for k, d in df.groupby("week"):
-        for what in ("title_game", "champion", "bowl", "playoff", "national"):
+        for what in ("title_game", "champion", "eligible", "bowl_game", "playoff", "national"):
             y, p = d[what].to_numpy(), d[f"p_{what}"].to_numpy()
             base = np.full(len(y), y.mean())
             out.append({"from week": k, "what": what, "log loss": _ll(p, y), "base": _ll(base, y),

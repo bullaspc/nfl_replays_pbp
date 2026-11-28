@@ -21,7 +21,7 @@ from replay_core import SEASON_MIN_PLAYS, season_qualified
 from views import bracket_html, prob_text, section_nav, stat_table, style_seed_odds, style_sim_table
 
 COLLEGE = leagues.COLLEGE
-PROBS = ["Title game", "Conf. title", "Bowl", "Playoff", "Bye", "Quarterfinal", "Semifinal", "Final",
+PROBS = ["Title game", "Conf. title", "Eligible", "Bowl game", "Bowl win", "Playoff", "Bye", "Quarterfinal", "Semifinal", "Final",
          "Champion", "Top 25", "Win %", "If win", "If loss", "Share", "Wins it", "Playoff if so", "If not"]
 
 
@@ -86,8 +86,12 @@ def _run(season: int, stamp: str, as_of: int | None, results: str):
                                        "Opponent-adjusted")
         off = season_qualified(tables["offense"], SEASON_MIN_PLAYS)
         def_ = season_qualified(tables["defense"], SEASON_MIN_PLAYS)
-    inp, left = cfp_sim.prepare(season, sched, _conferences(season), dict(zip(ids["id"], ids["abbr"])),
-                                off, def_, _prior(season - 1), model, as_of)
+    conf = _conferences(season)
+    # Bowl slots: the season's once announced, else last season's; teams up from FCS go last.
+    slots = cfp_sim.bowl_slots(sched, _schedule(season - 1))
+    new = cfp_sim.new_to_fbs(conf, [_conferences(season - 1), _conferences(season - 2)])
+    inp, left = cfp_sim.prepare(season, sched, conf, dict(zip(ids["id"], ids["abbr"])),
+                                off, def_, _prior(season - 1), model, as_of, slots, new)
     return inp, left, cfp_sim.simulate(inp), (weeks[0], weeks[-1]) if weeks else None
 
 
@@ -197,6 +201,7 @@ def render(latest_season: int) -> None:
                + f". The playoff: {cfp_sim.format_note(season)}. Ranges hold at least {level_label} of the "
                f"runs; a probability's own margin of error is at most ±{sim.mc_margin(0.5, res.runs, level):.1%}.")
     section_nav([("Playoff race", "race"), ("Bracket", "bracket"), ("Conferences", "conferences"),
+                 ("Bowls", "bowls"),
                  ("Team", "team"), ("Games", "games"), ("How it works", "how")])
 
     # ---------- Playoff race ----------
@@ -266,7 +271,8 @@ def render(latest_season: int) -> None:
         f"Wins ({level_label})": [f"{lo:.0f}–{hi:.0f}" if lo != hi else f"{lo:.0f}"
                                   for lo, hi in zip(c["W low"], c["W high"])],
         "Title game": c["Title game %"].to_numpy(), "Conf. title": c["Conf champ %"].to_numpy(),
-        "Bowl": c["Bowl %"].to_numpy(), "Playoff": c["Playoff %"].to_numpy(),
+        "Eligible": c["Eligible %"].to_numpy(), "Bowl game": c["Bowl game %"].to_numpy(),
+        "Bowl win": c["Bowl win %"].to_numpy(), "Playoff": c["Playoff %"].to_numpy(),
         "Champion": c["Champion %"].to_numpy(),
     })
     cv.index = pd.Index([nm(t) for t in c["Team"]], name="Team")
@@ -279,10 +285,48 @@ def render(latest_season: int) -> None:
             "Share": tm["Share"], "Wins it": tm["Wins"]}), PROBS), hide_index=True)
     st.caption("By projected conference wins. **Title game** is the share of runs a team plays in the "
                "conference's title game (the top two by conference record; in the Sun Belt the two division "
-               "winners), **Conf. title** wins it, **Bowl** reaches six wins. Ties in the standings go to "
+               "winners), **Conf. title** wins it, **Eligible** reaches six wins (one over an FCS team counted at "
+               "most), **Bowl game** plays in a bowl outside the playoff and **Bowl win** wins it (see Bowls). "
+               "Ties in the standings go to "
                "head-to-head (when each pair played), the record against common conference opponents, the "
                "conference opponents' combined record, then the team rating (the conferences use computer "
                "rankings last). **Wins it**: how often the first team named wins that game.")
+
+    # ---------- Bowls ----------
+    st.subheader("Bowls", anchor="bowls")
+    if res.bowls is not None and not res.bowls.empty:
+        b = res.bowls
+        fav = np.where(b["mu"] >= 0, b["home_team"], b["away_team"])
+        result = [("" if not pl else f"{nm(h) if m > 0 else nm(a)} won by {abs(m):.0f}")
+                  for pl, h, a, m in zip(b["played"], b["home_team"], b["away_team"], b["home_margin"])]
+        stat_table(style_sim_table(pd.DataFrame({
+            "Bowl": b["bowl"], "Date": b["date"],
+            "Game": [f"{nm(a)} vs {nm(h)}" if n else f"{nm(a)} @ {nm(h)}"
+                     for a, h, n in zip(b["away_team"], b["home_team"], b["neutral"])],
+            "Proj.": [f"{nm(t)} by {abs(m):.1f}" for t, m in zip(fav, b["mu"])],
+            "Win %": np.maximum(b["p_home"], 1 - b["p_home"]), "Result": result,
+        }), PROBS), hide_index=True)
+        st.caption("The bowls announced, outside the playoff: the model's expected margin and the "
+                   "favorite's chance, with bowls' own spread (How it works). Played ones keep their result.")
+    else:
+        # In doubt: neither a bowl nor the playoff settled (a playoff team's bowl odds aren't a bubble).
+        bub = tt[(tt["Postseason %"] > 0.02) & (tt["Postseason %"] < 0.98)]
+        bub = bub.sort_values(["Postseason %", "Eligible %"], ascending=False)
+        bv = pd.DataFrame({
+            "Conf": bub["Conference"].to_numpy(), "Now": bub["Now"].to_numpy(),
+            "Proj.": [f"{w:.1f}–{l:.1f}" for w, l in zip(bub["W"], bub["L"])],
+            "Eligible": bub["Eligible %"].to_numpy(), "Bowl game": bub["Bowl game %"].to_numpy(),
+            "Playoff": bub["Playoff %"].to_numpy(), "Bowl win": bub["Bowl win %"].to_numpy(),
+        })
+        bv.index = pd.Index([nm(t) for t in bub["Team"]], name="Team")
+        n_bowls = res.bowl_game.sum(1).mean() / 2
+        st.markdown(f"**On the bowl bubble** · {n_bowls:.0f} bowls outside the playoff")
+        stat_table(style_sim_table(bv, PROBS))
+        st.caption("The teams whose postseason is in doubt: a bowl or the playoff in between 2% and 98% of the "
+                   "runs. The matchups come out on Selection Day; until then each run fills the bowls with the "
+                   "eligible teams outside the playoff (How it works), so **Bowl game** can sit below "
+                   "**Eligible** when there are more eligible teams than bowls (the lowest-ranked are left out), "
+                   "and above it when 5–7 teams fill in.")
 
     # ---------- Team ----------
     st.subheader("Team", anchor="team")
@@ -295,12 +339,18 @@ def render(latest_season: int) -> None:
         c1 = st.columns(2, wrap=False)
         c1[0].metric("Now", row["Now"], help=f"Conference {row['Conf now']}")
         c1[1].metric("Projected", f"{row['W']:.1f}–{row['L']:.1f}",
-                     help=f"Wins in {level_label} of the runs: {row['W low']:.0f}–{row['W high']:.0f}")
+                     help=f"Regular season and title game; wins in {level_label} of the runs: "
+                          f"{row['W low']:.0f}–{row['W high']:.0f}. With the bowl or playoff games: "
+                          f"{row['Final W']:.1f}–{row['Final L']:.1f}")
         c2 = st.columns(2, wrap=False)
         c2[0].metric("Playoff", prob_text(row["Playoff %"]).replace("⁠", ""),
                      help=f"Conference title {prob_text(row['Conf champ %'])} · bye {prob_text(row['Bye %'])}")
         c2[1].metric("National title", prob_text(row["Champion %"]).replace("⁠", ""),
                      help=f"Avg committee rank {row['Avg rank']:.1f}")
+    st.caption(f"Bowl eligible {prob_text(row['Eligible %']).replace(chr(0x2060), '')} · a bowl game outside the "
+               f"playoff {prob_text(row['Bowl game %']).replace(chr(0x2060), '')} · wins it "
+               f"{prob_text(row['Bowl win %']).replace(chr(0x2060), '')} · final record with the bowl or "
+               f"playoff games {row['Final W']:.1f}–{row['Final L']:.1f}")
     dist = cfp_sim.wins_distribution(res, team)
     fig = go.Figure(go.Bar(x=dist.index, y=dist.to_numpy(), marker_color="#1a9e8f",
                            text=[prob_text(p).replace("⁠", "") for p in dist.to_numpy()],
@@ -355,6 +405,7 @@ def render(latest_season: int) -> None:
     # ---------- How it works ----------
     st.subheader("How it works", anchor="how")
     fit = model.get("fit", {})
+    bowl = model.get("postseason", {}).get("bowl", {})
     com = model.get("committee", {})
     chk = com.get("check", {})
     with st.expander("The model, the committee and the confidence levels", expanded=False,
@@ -386,7 +437,18 @@ top 12 and {chk.get('top 25 of 25', float('nan')):.1f} of its top 25. The curren
 reference; the runs don't start from it.
 
 **The field.** {cfp_sim.format_note(season)}. The first round is played at the better seed's
-home, the rest at neutral sites; games already played keep their result.
+home, the rest at neutral sites; games already played keep their result. Once the field is announced,
+its seeds are the schedule's.
+
+**Bowls.** Six wins make a team eligible (one over an FCS team counted at most). Until the matchups
+are announced, each run fills the season's {res.bowl_game.sum(1).mean() / 2:.0f} bowls outside the playoff with
+the eligible teams outside it in the committee model's order: the lowest left out when there are too
+many; when too few, eligible teams moving up from FCS, then 5–7 teams. Each is paired with the next team
+from another conference: no conference tie-ins, so who plays where is rough, but how strong the
+opponent is holds. Bowls haven't gone by the ratings the way the season did: from the end-of-season
+ratings, 2016–2025's {bowl.get('games', 0)} bowls went by {bowl.get('shrink', 1.0):.2f} of the rating gap with
+{bowl.get('sd', 0):.0f} points of spread (opt-outs), so a bowl's favorite is only a modest one; playoff games went by
+the ratings like the regular season.
 
 **Title games.** From the final regular-season results, the standings put 16 of 2024–25's 18 title games
 together in every run (2025's five-way ACC tie included); the two misses were three- and four-way ties in
@@ -397,6 +459,6 @@ error is at most ±{sim.mc_margin(0.5, res.runs, level):.1%}. The ranges hold at
 `tools/validate_cfb_sim.py` simulated 2024 and 2025 from weeks 5, 9 and 13 with models fitted without
 them: final wins landed in the 90% ranges 95–100% of the time, as often as the runs put them there, and
 the playoff chances tracked what happened (teams given 40–60% made it 48% of the time; two seasons are a
-small sample). From week 9 the projected wins missed by 0.9 on average. Bowl games other than the
-playoff aren't played out.
+small sample), and so did who'd play a bowl (from week 13, a Brier score of 0.085 against 0.25 for the
+same chance for every team). From week 9 the projected wins missed by 0.9 on average.
 """)

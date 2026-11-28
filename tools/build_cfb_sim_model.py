@@ -297,6 +297,62 @@ def fit_model(games: pd.DataFrame, teams: pd.DataFrame, names: list[str], g0: fl
     return model
 
 
+def postseason_check(teams: pd.DataFrame, model: dict, seasons: list[int]) -> dict:
+    """End-of-season power ratings against the bowls and playoff games that
+    followed: log loss and winners picked with the regular season's spread,
+    and the margin's slope on the rating difference and its own spread
+    (players opting out of bowls make them noisier). Returns the bowls' fit
+    for the model: `shrink` (the slope) and `sd` (a game's own noise)."""
+    names = list(model["features"])
+    b = np.array([model["hfa"], *[model["features"][n]["coef"] for n in names], model["prior"]["coef"]])
+    t = committee_rows(teams, names, model["g0"], b, -model["fcs"]["intercept"])
+    power = {(s, tm): p for s, tm, p in zip(t["season"], t["team"], t["power"])}
+    played = {(s, tm): g for s, tm, g in zip(t["season"], t["team"], t["games"])}
+    rows = []
+    for season in seasons:
+        sch = cfb_feed.read_schedule(season)
+        post = sch[sch["season_type"].astype(str).str.startswith("post") & sch["home_points"].notna()]
+        for r in post.itertuples(index=False):
+            h, a = (season, r.home_abbreviation), (season, r.away_abbreviation)
+            if h not in power or a not in power:
+                continue
+            notes = str(r.notes or "")
+            cfp = isinstance(r.playoff_round_name, str) or "Playoff" in notes
+            rows.append({"season": season, "kind": "playoff" if cfp else "bowl",
+                         "pred": power[h] - power[a] + (0.0 if r.neutral_site else model["hfa"]),
+                         "margin": float(r.home_points - r.away_points),
+                         "tau2": float(sim.team_sd(model, np.array([played[h]]))[0] ** 2
+                                       + sim.team_sd(model, np.array([played[a]]))[0] ** 2)})
+    df = pd.DataFrame(rows)
+    df = df[df["margin"] != 0]
+    out = {}
+    print("\nBowls and playoff games against the end-of-season ratings (2016 on):")
+    for kind, d in df.groupby("kind"):
+        won = (d["margin"] > 0).astype(float).to_numpy()
+        p_reg = ndtr(d["pred"] / np.sqrt(model["game_sd"] ** 2 + d["tau2"]))
+        slope = float((d["pred"] * d["margin"]).sum() / (d["pred"] ** 2).sum())
+        # The run's margin is slope × (strength difference) + the game's own
+        # noise, so the rating errors count slope² over.
+        resid = d["margin"] - slope * d["pred"]
+        sd = float(np.sqrt(max(np.mean(resid ** 2 - slope ** 2 * d["tau2"]), 1.0)))
+        p_fit = ndtr(slope * d["pred"] / np.sqrt(sd ** 2 + slope ** 2 * d["tau2"]))
+        # The slope a season at a time out of sample, for the log loss it would have had.
+        p_oos = np.full(len(d), np.nan)
+        for s_ in d["season"].unique():
+            m = (d["season"] == s_).to_numpy()
+            sl = float((d.loc[~m, "pred"] * d.loc[~m, "margin"]).sum() / (d.loc[~m, "pred"] ** 2).sum())
+            r_ = d.loc[~m, "margin"] - sl * d.loc[~m, "pred"]
+            sd_ = float(np.sqrt(max(np.mean(r_ ** 2 - sl ** 2 * d.loc[~m, "tau2"]), 1.0)))
+            p_oos[m] = ndtr(sl * d.loc[m, "pred"] / np.sqrt(sd_ ** 2 + sl ** 2 * d.loc[m, "tau2"]))
+        fmt = lambda x: ", ".join(f"{k} {v:.3f}" for k, v in _scores(x, won).items())
+        print(f"  {kind}s ({len(d)}): with the regular season's model {fmt(p_reg)}; the margin's slope on "
+              f"the rating difference {slope:.2f}, own spread {sd:.1f} points (regular season 1.00, "
+              f"{model['game_sd']:.1f}) → {fmt(p_fit)}; a season at a time out of sample {fmt(p_oos)}")
+        out[kind] = {"games": int(len(d)), "shrink": round(slope, 3), "sd": round(sd, 3),
+                     **{k: round(v, 4) for k, v in _scores(p_fit, won).items()}}
+    return out
+
+
 def main(first: int = 2016, last: int = 2025, pbp_dir: str | None = None) -> None:
     seasons = list(range(first, last + 1))
     with ProcessPoolExecutor(max_workers=min(4, len(seasons))) as pool:
@@ -355,6 +411,7 @@ def main(first: int = 2016, last: int = 2025, pbp_dir: str | None = None) -> Non
     dec = pd.qcut(p, 10)
     print(pd.DataFrame({"predicted": p, "won": won}).groupby(dec, observed=True).mean().round(3).to_string())
 
+    model["postseason"] = postseason_check(teams, model, seasons)
     model["fit"] = {"seasons": f"{first}-{last}", "games": int(fbs["game_id"].nunique()),
                     "next week": {k: round(v, 4) for k, v in _scores(p[nxt], won[nxt]).items()},
                     "every game ahead": {k: round(v, 4) for k, v in _scores(p, won).items()}}
