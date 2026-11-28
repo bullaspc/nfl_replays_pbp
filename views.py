@@ -1666,3 +1666,84 @@ def keep_screen_awake(enabled: bool) -> None:
 }})();
 </script>
 """, height="content")
+
+
+# ---------- Season simulation ----------
+def prob_text(p) -> str:
+    """A share of the simulation's runs as a percent: "—" for none, "<1%" and
+    ">99%" just short of none and all (a rounded 0% or 100% would read as
+    certain), "100%" only for every run."""
+    if pd.isna(p):
+        return ""
+    if p <= 0:
+        return "—"
+    if p >= 1:
+        return "100%"
+    if p < 0.005:
+        return "<1%"
+    if p > 0.995:
+        return "\u2060>99%"  # the word joiner keeps st.table's markdown from reading a blockquote
+    return f"{p:.0%}"
+
+
+def _prob_tint(p) -> str:
+    """Green, stronger the likelier; nothing for none. Translucent, so it
+    reads on either theme."""
+    if pd.isna(p) or p <= 0:
+        return ""
+    r, g, b = _GAIN
+    return f"background-color: rgba({r}, {g}, {b}, {0.06 + 0.5 * min(float(p), 1.0):.2f})"
+
+
+CALL_TINTS = {"In": _GAIN, "Likely": _GAIN, "Unlikely": _LOSS, "Out": _LOSS}
+
+
+def _call_tint(v: str) -> str:
+    key = str(v).split(" ")[-1] if isinstance(v, str) else ""
+    rgb = CALL_TINTS.get(key)
+    alpha = 0.4 if key in ("In", "Out") else 0.2
+    return "" if rgb is None else "background-color: rgba({}, {}, {}, {})".format(*rgb, alpha)
+
+
+def style_sim_table(df: pd.DataFrame, probs: list[str], decimals: dict | None = None):
+    """A Season simulation table: the `probs` columns (shares of runs) as
+    `prob_text` tinted green by how likely, `decimals` columns with that many
+    decimals, a Call column tinted (in/likely green, unlikely/out red)."""
+    fmt = {c: prob_text for c in probs if c in df.columns}
+    fmt.update({c: f"{{:.{d}f}}" for c, d in (decimals or {}).items() if c in df.columns})
+    styled = df.style.format(fmt, na_rep="")
+    styled = smap(styled, _prob_tint, subset=[c for c in probs if c in df.columns])
+    if "Call" in df.columns:
+        styled = smap(styled, _call_tint, subset=["Call"])
+    return _centered(styled)
+
+
+def style_seed_odds(df: pd.DataFrame):
+    """A season_sim.seed_table: each seed's share of runs, tinted."""
+    return _centered(smap(df.style.format(prob_text), _prob_tint))
+
+
+def bracket_html(seeds: list[tuple[int, str, str, float]], games: list[tuple[int, int, float]],
+                 byes: list[int], logos: dict[str, str]) -> str:
+    """The projected first round of one conference: the bye team(s), then each
+    wild-card game, `seeds` (seed, team, name, the share of runs at that
+    seed) and `games` (home seed, away seed, home team's chance to win)."""
+    by = {s: (t, n, p) for s, t, n, p in seeds}
+
+    def line(seed: int, p_game: float | None) -> str:
+        t, n, p = by[seed]
+        logo = logos.get(t)
+        img = (f"<img src='{escape(logo)}' style='height:1.3em;width:1.3em;object-fit:contain;"
+               f"vertical-align:middle;margin-right:0.35em'>" if logo else "")
+        right = (f"<b>{prob_text(p_game)}</b>" if p_game is not None else "<i>bye</i>")
+        return (f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                f"gap:0.5em;padding:0.15em 0'><span><b>{seed}</b>&nbsp;{img}{escape(n)}"
+                f"<span style='opacity:0.6;font-size:0.8em'>&nbsp;{prob_text(p)} at {seed}</span></span>"
+                f"{right}</div>")
+
+    box = ("border:1px solid rgba(128,128,128,0.4);border-radius:0.4rem;padding:0.35rem 0.6rem;"
+           "margin-bottom:0.45rem")
+    parts = [f"<div style='{box}'>{line(s, None)}</div>" for s in byes]
+    for h, a, p in games:
+        parts.append(f"<div style='{box}'>{line(h, p)}{line(a, 1 - p)}</div>")
+    return "<div>" + "".join(parts) + "</div>"

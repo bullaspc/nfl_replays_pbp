@@ -31,13 +31,22 @@ STATS = ["EPA/play", "Pass EPA/play", "Rush EPA/play", "Pass SR", "Rush SR", "1s
          "Lost Poss."]
 
 
-def read_season(season: int, path: str | None = None) -> pd.DataFrame:
-    """A season's regular-season pbp, with the betting line and result."""
+XRUSH_TABLE = Path(__file__).resolve().parent.parent / "models" / "xrush_yards.csv"
+
+
+def read_season(season: int, path: str | None = None, regular: bool = True) -> pd.DataFrame:
+    """A season's regular-season pbp (every game with `regular` False), with
+    the betting line and result."""
     extra = list(core.NFLVERSE_NAME_COLS)
+    read = [c for c in core.PBP_COLS if c != "xrush_yards"]  # the app's own, added below
     pbp = pd.read_parquet(path or PBP_URL.format(y=season),
-                          columns=core.PBP_COLS + extra + ["season_type", "spread_line", "result"])
+                          columns=read + extra + ["season_type", "spread_line", "result"])
     pbp = core.name_nullified(pbp).drop(columns=extra)  # as leagues.nflverse_pbp() does
-    return pbp[pbp["season_type"] == "REG"].sort_values(["game_id", "play_id"])
+    xrush = pd.read_csv(XRUSH_TABLE)
+    pbp = core.add_expected_rush(pbp, xrush[xrush["league"] == "NFL"].drop(columns="league"))
+    if regular:
+        pbp = pbp[pbp["season_type"] == "REG"]
+    return pbp.sort_values(["game_id", "play_id"])
 
 
 def offense_games(pbp: pd.DataFrame, first_week: int = 4, kinds=("raw", "adjusted"),

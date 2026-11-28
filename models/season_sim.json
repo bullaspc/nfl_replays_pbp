@@ -1,0 +1,68 @@
+{
+ "features": {
+  "epa": {
+   "stat": "EPA/play",
+   "sign": 1,
+   "coef": 58.476
+  },
+  "pts": {
+   "stat": "Pts/Drive",
+   "sign": 1,
+   "coef": 9.144
+  }
+ },
+ "prior": {
+  "stat": "net EPA/play, last season",
+  "coef": 25.951
+ },
+ "g0": 6.0,
+ "hfa": 2.021,
+ "game_sd": 12.165,
+ "tau": {
+  "floor": 3.407,
+  "scale": 8.971,
+  "g1": 8
+ },
+ "decay": {
+  "report": [
+   1.0,
+   0.663,
+   0.47,
+   0.392,
+   0.361,
+   0.352,
+   0.342,
+   0.342
+  ],
+  "roster": [
+   1.0,
+   0.938,
+   0.897,
+   0.865,
+   0.835,
+   0.811,
+   0.785,
+   0.761
+  ]
+ },
+ "fit": {
+  "seasons": "2016-2025",
+  "rows": 24474,
+  "games": 2639,
+  "next week": {
+   "log loss": 0.6379,
+   "Brier": 0.2234,
+   "picked": 0.6367
+  },
+  "next week, betting line": {
+   "log loss": 0.61,
+   "Brier": 0.2111,
+   "picked": 0.6657
+  },
+  "every game ahead": {
+   "log loss": 0.6532,
+   "Brier": 0.2303,
+   "picked": 0.6197
+  }
+ }
+}
